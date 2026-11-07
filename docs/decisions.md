@@ -75,6 +75,7 @@ new entry that points back to the old one.
 | 59  | M0 exit criterion: measurements with the Render IR       | Approved       |
 | 60  | Job system: deques, waits and inline mode                | Approved       |
 | 61  | `AX_ERR_INVALID_ARGUMENT`; the Render IR uses it         | Approved       |
+| 62  | Node store: rows, slots, links and side components       | Approved       |
 
 ---
 
@@ -2061,3 +2062,81 @@ build cannot do it", not as "this input is wrong".
 
 **Status.** Approved by the owner (the code); the Render IR switch is recorded here as the owner
 asked.
+
+## 62. Node store: rows, slots, links and side components
+
+**Context.** "Retained node tree" stores nodes as rows in dense component arrays: hierarchy, style
+inputs, layout outputs, transforms, paint and dirty flags as hot arrays, optional side components,
+and handles that stay stable while storage compacts. Only the scene thread touches it. The owner
+asked for the side-component mechanism only (concrete components arrive with their features), for
+the local transform to be stored rather than the world one, and for the scene-thread tag to be
+checked in debug builds.
+
+**Decision.** `core/` is a new module (library `ax_core`, depending on base only). The node store
+is in its internal SDK, `core/include/axion/core/ax_node_store.h`; the stable ABI so far has
+`ax_node.h` (the `ax_node` handle and `ax_node_kind`, with `AX_NODE_VIEW = 1`) and `ax_prop.h`
+(the value type `ax_dimension`: value plus `AX_UNIT_AUTO` (0) / `POINTS` / `PERCENT`).
+- **Rows, always dense.** One element per live node in each hot column, indexed by row:
+  - `slot_of_row`, `kind`, `dirty`, `component_mask`;
+  - `links`: parent, first and last child, previous and next sibling;
+  - `style`: the layout inputs (`width`, `height`, `left`, `top` as `ax_dimension`), where flex
+    adds its fields;
+  - `layout`: the frame in the parent's space, zero until layout exists;
+  - `paint`: background (decision 50's color) and four corner radii;
+  - `composite`: the **local** transform and opacity. The world transform is never stored; it is
+    computed when needed, so a transform change never has to touch the subtree.
+
+  Destroying a node moves the last row into its place (swap-remove). Columns grow together,
+  geometrically, all or nothing. The pointer fields are handled generically through a table of
+  offsets and `memcpy`, so no typed column pointer is accessed through a `void *` lvalue.
+- **Handles: slot and generation**, with decision 7's rules (generations from 1, increased when the
+  node is destroyed, a slot retired instead of wrapping). The slot table maps a slot to its row;
+  stale, null and unknown handles return `AX_ERR_INVALID_HANDLE` without asserting and without
+  recording `ax_last_error` (decision 6): the store is a mechanism, and the transactions built on
+  it record errors.
+- **Links hold slots, not rows**, so moving rows (swap-remove, compaction) never rewrites them.
+- **Two slot modes:**
+  - internal: `ax_node_store_create` hands out slots, recycling freed ones LIFO (tests, and any
+    scene-side node);
+  - external: `ax_node_store_create_at` creates a node at a handle reserved elsewhere, so the app
+    thread can hand out handles without waiting for the scene (designed with the transactions).
+    A slot the store has not seen starts at generation 1, and the store reports through
+    `on_slot_freed` the handle each destroyed node's slot must use next, keeping no free list.
+- **Hierarchy:** `append_child`, `insert_before` (a null anchor appends) and `detach`. A node that
+  already has a parent is moved, so reparenting and reordering children are the same operation.
+  A cycle (the parent is the child or inside its subtree) or an anchor that is not a child of the
+  parent is `AX_ERR_INVALID_ARGUMENT`, with nothing changed. `destroy` removes the whole subtree in
+  post-order without a stack, by always freeing the first leaf.
+- **Compaction:** `ax_node_store_compact` reorders the rows into pre-order (each root in current
+  row order, then its subtree depth-first), so traversals walk memory in order. Handles, links and
+  components do not change. It uses one scratch buffer and leaves the store unchanged on
+  `AX_ERR_OUT_OF_MEMORY`. When to compact (for example after many removals) is for the frame
+  pipeline to decide.
+- **Side components:** up to 32 types registered at run time with a size, an alignment and an
+  optional `on_remove` callback. Each type is stored dense with swap-remove, with an owner slot per
+  element and a paged sparse index from slot to element (pages of 256, allocated on demand). A
+  node's mask records its components, which are removed with the node. Element pointers are valid
+  until the next add or remove of that type.
+- **Scene thread only.** The store records its owning thread at init (`ax_thread_current_id`), and
+  every function asserts in debug builds that the caller is that thread.
+  `ax_node_store_bind_thread` hands it to the calling thread. Until the scene thread exists (next
+  step of M1), the thread that calls the world's apply function is the scene thread: the world
+  binds its store to the thread that creates it, and a test that applies from another thread binds
+  it there first.
+- **Tests** (`tests/unit/core/`, label `core`, now also run by the TSan job):
+  - default values, stale handles, LIFO recycling with a new generation, a retired slot;
+  - swap-remove keeps every other node and its data;
+  - append, insert, reorder, detach, reparent a subtree, and rejected cycles and anchors with no
+    change;
+  - destroying a subtree;
+  - compaction into pre-order with stable handles and data, over two trees with holes;
+  - external slots: reserved handles, gaps, wrong generations, reported next handles;
+  - side components across sparse pages, removal with their nodes, `on_remove` counts;
+  - out of memory at every allocation of create, add-component and compact, with the store
+    consistent and no leak;
+  - another thread taking ownership, and a death test for use from a thread that does not own the
+    store;
+  - `core.abi_headers`: the stable umbrella pulls in no internal header.
+
+**Status.** Approved (part of the approved plan; the local transform and the scene-thread tag were
+the owner's adjustments).
