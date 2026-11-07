@@ -53,7 +53,7 @@ AX_TEST(allocations_do_not_overlap)
     fixture_init(&f, 1024);
 
     for (i = 0; i < 200; ++i) {
-        ptrs[i] = (unsigned char *)ax_arena_alloc(&f.arena, 1 + i % 50, 1u << (i % 6));
+        ptrs[i] = (unsigned char *)ax_arena_alloc(&f.arena, 1 + i % 50, (size_t)1 << (i % 6));
         AX_REQUIRE(ptrs[i] != NULL);
         memset(ptrs[i], (int)i, 1 + i % 50);
     }

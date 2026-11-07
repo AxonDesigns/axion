@@ -40,7 +40,7 @@ AX_STATIC_ASSERT(AX_ALIGNOF(CONDITION_VARIABLE) <= 8, "ax_cond storage under-ali
 #define MUTEX(m)  ((SRWLOCK *)(void *)(m)->storage)
 #define COND(c)   ((CONDITION_VARIABLE *)(void *)(c)->storage)
 
-static void fatal(const char *what)
+AX_NORETURN static void fatal(const char *what)
 {
     fprintf(stderr, "axion: %s failed (error %lu)\n", what, (unsigned long)GetLastError());
     fflush(stderr);
@@ -156,7 +156,6 @@ bool ax_cond_wait_timeout(ax_cond *cond, ax_mutex *mutex, uint64_t timeout_ns)
         return false;
     }
     fatal("SleepConditionVariableSRW");
-    return false;
 }
 
 void ax_cond_signal(ax_cond *cond)
