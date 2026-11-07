@@ -9,6 +9,8 @@
 
 #include "ax_node.h"
 #include "ax_prop.h"
+#include "ax_txn.h"
+#include "ax_world.h"
 #include <axion/ax_base.h>
 
 #endif /* AX_CORE_H */

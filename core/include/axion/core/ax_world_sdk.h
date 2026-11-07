@@ -141,6 +141,14 @@ AX_API void ax_world_finish_txn(ax_world world, ax_txn *t, ax_result result, uin
  * generation is the next one the slot may use). thread: scene */
 AX_API void ax_world_recycle_handle(ax_world world, ax_node next_handle);
 
+/*
+ * Applies, in order, every committed transaction whose commit time (world clock) is at most
+ * deadline_ns, each atomically: all of its commands, or none. A rejected transaction is reported
+ * to the app thread (ax_world_poll_txn_error). Later commits wait for the next call. Returns how
+ * many transactions were applied or rejected. thread: scene
+ */
+AX_API uint32_t ax_world_apply_pending(ax_world world, uint64_t deadline_ns);
+
 AX_EXTERN_C_END
 
 #endif /* AX_CORE_WORLD_SDK_H */

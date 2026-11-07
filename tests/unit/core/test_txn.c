@@ -502,6 +502,22 @@ AX_TEST(destroying_a_world_frees_queued_and_open_transactions)
     AX_CHECK_EQ_U(ax_tracking_allocator_deinit(&tracker), 0);
 }
 
+/* Reads every pending rejection, adding the dropped ones each call reports. */
+static uint32_t drain_errors(ax_world w)
+{
+    ax_txn_error err;
+    uint32_t total = 0;
+    for (;;) {
+        uint32_t dropped = 0;
+        bool got = ax_world_poll_txn_error(w, &err, &dropped);
+        total += dropped;
+        if (!got) {
+            return total;
+        }
+        total++;
+    }
+}
+
 /* ---- Two threads (TSan) ---------------------------------------------------------------------- */
 
 enum { STRESS_TXNS = 20000 };
@@ -560,7 +576,6 @@ AX_TEST(the_queue_carries_transactions_between_two_threads)
     ax_thread scene;
     uint64_t seq;
     uint32_t errors = 0;
-    ax_txn_error err;
     if (!ax_threads_supported()) {
         AX_SKIP("needs threads");
     }
@@ -581,31 +596,15 @@ AX_TEST(the_queue_carries_transactions_between_two_threads)
         }
         AX_REQUIRE(ax_txn_commit(t, &got) == AX_OK);
         AX_CHECK_EQ_U(got, seq);
-        {
-            uint32_t dropped = 0;
-            while (ax_world_poll_txn_error(ctx.world, &err, &dropped)) {
-                errors++;
-            }
-            errors += dropped;
-        }
+        errors += drain_errors(ctx.world);
     }
     /* Keep reading rejections until the scene has caught up, so none overflows the queue. */
     while (ax_world_last_applied_seq(ctx.world) < STRESS_TXNS) {
-        uint32_t dropped = 0;
-        while (ax_world_poll_txn_error(ctx.world, &err, &dropped)) {
-            errors++;
-        }
-        errors += dropped;
+        errors += drain_errors(ctx.world);
         ax_thread_yield();
     }
     ax_thread_join(&scene);
-    {
-        uint32_t dropped = 0;
-        while (ax_world_poll_txn_error(ctx.world, &err, &dropped)) {
-            errors++;
-        }
-        errors += dropped;
-    }
+    errors += drain_errors(ctx.world);
     AX_CHECK_EQ_U(ctx.bad, 0);
     AX_CHECK_EQ_U(ctx.last_seq, STRESS_TXNS);
     AX_CHECK_EQ_U(ax_world_last_applied_seq(ctx.world), STRESS_TXNS);

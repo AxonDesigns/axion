@@ -9,6 +9,7 @@
 #   include/axion/core/   internal SDK (node store, ...), never part of the ABI
 
 add_library(ax_core STATIC
+    src/apply.c
     src/node_store.c
     src/prop_registry.c
     src/scene.c

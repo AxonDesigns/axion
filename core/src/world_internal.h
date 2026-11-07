@@ -100,6 +100,10 @@ typedef struct world_impl {
     uint32_t return_backlog_count;
     uint32_t return_backlog_capacity;
     bool suppress_recycle; /* rolling back: the app thread recycles a rejected txn's creates */
+    void *undo;            /* apply.c's undo log, reused between transactions */
+    uint32_t undo_capacity;
+    ax_node *removed; /* subtrees removed by the transaction being applied */
+    uint32_t removed_capacity;
     bool scene_ready;
 } world_impl;
 
@@ -140,5 +144,8 @@ void ax__world_push_txn(world_impl *w, ax_txn *t);
 
 /* Frees a transaction object and its buffer (world teardown). */
 void ax__txn_free(world_impl *w, ax_txn *t);
+
+/* Frees apply.c's buffers (world teardown). */
+void ax__apply_free(world_impl *w);
 
 #endif /* AX_CORE_WORLD_INTERNAL_H */

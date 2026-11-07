@@ -10,7 +10,9 @@
 #if defined(AX_BASE_COMPILER_H) || defined(AX_BASE_ASSERT_H) || defined(AX_BASE_ATOMIC_H) || \
     defined(AX_BASE_THREAD_H) || defined(AX_BASE_ARENA_H) || defined(AX_BASE_POOL_H) ||      \
     defined(AX_BASE_ARRAY_H) || defined(AX_BASE_MEMORY_H) || defined(AX_BASE_MATH_H) ||      \
-    defined(AX_BASE_ERROR_SET_H) || defined(AX_CORE_NODE_STORE_H)
+    defined(AX_BASE_ERROR_SET_H) || defined(AX_BASE_SPSC_RING_H) ||                          \
+    defined(AX_CORE_NODE_STORE_H) || defined(AX_CORE_PROP_REGISTRY_H) ||                     \
+    defined(AX_CORE_SCENE_H) || defined(AX_CORE_WORLD_SDK_H)
 #    error "a stable ABI header of core includes an internal SDK header"
 #endif
 

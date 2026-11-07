@@ -5,6 +5,7 @@
 
 set(_ax_core_tests
     test_abi_headers.c
+    test_apply.c
     test_dirty.c
     test_node_store.c
     test_props.c

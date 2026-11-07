@@ -82,6 +82,7 @@ static void free_world(world_impl *w)
         ax_node_store_bind_thread(&w->scene.store); /* torn down on the calling thread */
         ax_scene_deinit(&w->scene);
     }
+    ax__apply_free(w);
     ax_mem_free(&a, w->free_handles, sizeof(ax_node) * w->free_handle_capacity);
     ax_mem_free(&a, w->recycle_backlog, sizeof(ax_node) * w->recycle_backlog_capacity);
     ax_mem_free(&a, w->return_backlog, sizeof(ax_txn *) * w->return_backlog_capacity);

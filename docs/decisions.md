@@ -81,6 +81,7 @@ new entry that points back to the old one.
 | 65  | Transaction queue: a linked SPSC queue, not a ring       | Deviation      |
 | 66  | Handle reservation on the app thread                     | Implementation |
 | 67  | The world, the transaction API and its encoding          | Implementation |
+| 68  | Applying transactions atomically; rejection              | Implementation |
 
 ---
 
@@ -2411,5 +2412,83 @@ returns slots**.
   of recording error, handle reservation (decision 66), a warm transaction without allocations,
   rejections reaching the app thread (and the 64-record limit), teardown with queued and open
   transactions, and the two-thread stress of decision 65.
+
+**Status.** Implementation, pending the owner's approval.
+
+## 68. Applying transactions atomically; rejection
+
+**Context.** The scene thread drains the transaction queue; commits that arrived before the
+deadline apply atomically and later ones wait. The owner asked for:
+- an apply function with a deadline that tests call (`ax_world_apply_pending`; the real frame
+  boundary comes with the scene thread);
+- order by sequence;
+- an invalid transaction (a stale handle, a malformed command) rejected whole, never in part,
+  with the error reaching the app thread;
+- what happens to the dirty flags of a rejected transaction (they may stay set), with a test.
+
+**Decision.** `core/src/apply.c`; `ax_world_apply_pending(world, deadline_ns)` in the internal
+SDK, on the scene thread.
+- **Deadline and order.** Transactions are taken in queue order, which is sequence order, while
+  the oldest one's commit time (world clock, decision 67) is at most the deadline (inclusive). The
+  first later one stops the drain, so a newer transaction never overtakes an older one. The call
+  returns how many were applied or rejected.
+- **Atomic by undo log.**
+  - Each command is validated against the state the previous commands left, and applied at once.
+    Validating the whole transaction first was rejected: commands depend on each other (a create
+    followed by sets and moves; cycles that only appear after earlier moves), so it would mean
+    simulating the tree.
+  - Each change records how to undo it before it happens: a create (destroy the node), a set (the
+    old value; one entry per longhand for a shorthand), a move or a removal (the old parent and old
+    next sibling).
+  - On the first failure the log is replayed backwards, which restores every value, every child
+    order and the node count exactly.
+  - The log's memory (four entries per command) is reserved before the first command, so undoing
+    never allocates and cannot fail; if that reservation fails the transaction is rejected with
+    `AX_ERR_OUT_OF_MEMORY` before anything changes.
+- **Deferred removal.** `remove` detaches the node and its subtree during the transaction and
+  destroys them only after the last command succeeded, so a removal can be undone. A later command
+  that names a node inside a removed subtree fails with `AX_ERR_INVALID_HANDLE`, as the API
+  documents (`ax_txn_remove`).
+- **What the scene validates:**
+  - every node a command names is live and not removed earlier in the transaction;
+  - a create's handle is one the app thread reserved (decision 62's `create_at`);
+  - properties exist (run-time ones included) and values pass `ax_prop_check_value`;
+  - inserts make no cycle and their anchor is the parent's child;
+  - a transition's property is animatable;
+  - each command's op and size are valid, with no bytes after the last command.
+- **Rejection reaches the app thread** through `ax_world_finish_txn` (decision 67): the sequence,
+  the result, the failing command's index and a message ("command 12: the node is stale or
+  unknown"). The handles the transaction created are recycled by the app thread at the next
+  generation once the object returns (decision 66); the rollback destroys those nodes without
+  reporting their slots, so each slot comes back once.
+- **Dirty flags of a rejected transaction stay set.** Applying and undoing both go through the
+  scene, which marks what they touch. After a rejection, values and structure are as before, but:
+  - the touched nodes keep their flags (`LAYOUT`, `LAYOUT_CHILD`, `COMPOSITE`...);
+  - the layout root list may hold a node the rollback destroyed.
+
+  Both only cost the next frame redundant work: flags are never missing, so nothing is ever left
+  stale. Restoring the flags exactly would need them in the undo log too, which the owner allowed
+  us to skip. Layout must skip root candidates that are no longer live; it already must, because
+  any transaction can destroy a root (decision 64).
+- **Tests** (`tests/unit/core/test_apply.c`):
+  - a transaction applies only at the boundary, and later ones use its handles;
+  - deadlines (inclusive) and sequence order, with a manual clock;
+  - a transaction exercising every kind of change, failing at command 12, leaves every value,
+    parent and sibling and the node count as they were; its created handle stays stale and its
+    slot comes back one generation later;
+  - each kind of scene rejection (a cycle, a node removed earlier, an unknown run-time property,
+    a transition on an unknown property, a foreign anchor, a double removal, a corrupted command
+    size), each after a valid change, each leaving the tree unchanged;
+  - the dirty flags and the stale root a rejection leaves, as described above;
+  - a removal destroys the subtree and its slots come back at the next generation;
+  - **stress, app thread against scene thread, under TSan:** 4000 transactions with random creates,
+    sets, moves, reorders and removals over eight groups. One in eight ends with a stale handle or a
+    cycle and must be rejected whole. The app thread keeps a model of the valid ones; at the end the
+    scene matches it exactly (children order, values, dead handles, node count), and the rejections
+    match the invalid transactions one for one. Repeated locally 30 times under TSan, 15 pinned to
+    one CPU, and 100 Release runs, without a failure.
+- Fixed in the same step: the two-thread test of decision 65 summed the dropped rejections only
+  from the last poll call, so it miscounted when the error queue overflowed (seen on the macOS
+  runner). Both stress tests now add every call's count.
 
 **Status.** Implementation, pending the owner's approval.
