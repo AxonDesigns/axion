@@ -32,6 +32,12 @@
 #    include <intrin.h>
 #endif
 
+#if defined(_MSC_VER)
+/* C4324: "structure was padded due to alignment specifier". The padding is the point: deque
+ * indices, statistics and the sleep state sit on their own cache lines. */
+#    pragma warning(disable : 4324)
+#endif
+
 #define CACHE_LINE 64
 
 /* Backoff of an idle thread before it sleeps: spins, then yields. */
