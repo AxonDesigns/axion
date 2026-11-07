@@ -82,9 +82,9 @@ new entry that points back to the old one.
 | 66  | Handle reservation on the app thread                     | Approved       |
 | 67  | The world, the transaction API and its encoding          | Approved       |
 | 68  | Applying transactions atomically; rejection              | Approved       |
-| 69  | The app thread's mirror                                  | Implementation |
-| 70  | Reference benchmarks: core and jobs                      | Implementation |
-| 71  | The IDL: `.axidl`, and the line between ABI and SDK      | Implementation |
+| 69  | The app thread's mirror                                  | Approved       |
+| 70  | Reference benchmarks: core and jobs                      | Approved       |
+| 71  | The IDL: `.axidl`, and the line between ABI and SDK      | Approved       |
 
 ---
 
@@ -2548,6 +2548,11 @@ the channel for layout results in place.
     yet; they arrive with `ax_prop_info` (M2, decision 63).
 - **Not mirrored yet:** child order (only the parent), inherited (computed) values, run-time
   properties. Each is added when something needs it.
+- **To decide before flex (the owner's note for the layout step):** every mirror entry is copied
+  into three copies, so it must not grow with every style input. Before flex adds its fields to
+  `ax_node_style`, decide what the mirror reflects: probably the layout frame and the values the
+  app reads back, not the whole style. That may mean a mirror entry of its own instead of copying
+  the store's style struct.
 - **Tests** (`tests/unit/core/test_mirror.c`):
   - nothing is visible before a publication and a sync;
   - values, parents, the shorthand rule and the errors; a removal, and the slot's reuse at the next
@@ -2564,7 +2569,7 @@ the channel for layout results in place.
       first read;
     - repeated 20 times under TSan, 10 pinned to one CPU, and 100 Release runs, without a failure.
 
-**Status.** Implementation, pending the owner's approval.
+**Status.** Approved by the owner.
 
 ## 70. Reference benchmarks: core and jobs
 
@@ -2618,7 +2623,7 @@ within 15%):
   one job per batch, or a root job that fans out on a worker.
 - No gate: these numbers depend on the machine and are for comparisons over time.
 
-**Status.** Implementation, pending the owner's approval.
+**Status.** Approved by the owner.
 
 ## 71. The IDL: `.axidl`, and the line between ABI and SDK
 
@@ -2675,4 +2680,4 @@ thread. The owner asked, before fixing the transaction API, how it will be descr
 - **Thread tags** in the C headers keep decision 32's comment form (`thread: app`) until the
   generator writes them from the IDL.
 
-**Status.** Implementation, pending the owner's approval.
+**Status.** Approved by the owner.
