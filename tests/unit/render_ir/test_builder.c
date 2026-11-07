@@ -339,27 +339,27 @@ AX_TEST(validate_rejects_malformed_snapshots)
 
     handmade_init(&h);
     h.layers[1].parent = 1; /* its own parent */
-    AX_CHECK_RESULT(ax_ir_validate(&h.ir), AX_ERR_UNSUPPORTED);
+    AX_CHECK_RESULT(ax_ir_validate(&h.ir), AX_ERR_INVALID_ARGUMENT);
 
     handmade_init(&h);
     h.layers[0].subtree_end = 1; /* the child is outside the root */
-    AX_CHECK_RESULT(ax_ir_validate(&h.ir), AX_ERR_UNSUPPORTED);
+    AX_CHECK_RESULT(ax_ir_validate(&h.ir), AX_ERR_INVALID_ARGUMENT);
 
     handmade_init(&h);
     h.layers[1].subtree_end = 3; /* past the end */
-    AX_CHECK_RESULT(ax_ir_validate(&h.ir), AX_ERR_UNSUPPORTED);
+    AX_CHECK_RESULT(ax_ir_validate(&h.ir), AX_ERR_INVALID_ARGUMENT);
 
     handmade_init(&h);
     h.layers[1].items_offset = 8; /* inside another record */
-    AX_CHECK_RESULT(ax_ir_validate(&h.ir), AX_ERR_UNSUPPORTED);
+    AX_CHECK_RESULT(ax_ir_validate(&h.ir), AX_ERR_INVALID_ARGUMENT);
 
     handmade_init(&h);
     h.layers[1].item_count = 2;
-    AX_CHECK_RESULT(ax_ir_validate(&h.ir), AX_ERR_UNSUPPORTED);
+    AX_CHECK_RESULT(ax_ir_validate(&h.ir), AX_ERR_INVALID_ARGUMENT);
 
     handmade_init(&h);
     h.layers[1].items_size = sizeof(ax_ir_rect_item) + 8; /* past the stream */
-    AX_CHECK_RESULT(ax_ir_validate(&h.ir), AX_ERR_UNSUPPORTED);
+    AX_CHECK_RESULT(ax_ir_validate(&h.ir), AX_ERR_INVALID_ARGUMENT);
 
     handmade_init(&h);
     ih.type = AX_IR_ITEM_RECT;
@@ -367,24 +367,24 @@ AX_TEST(validate_rejects_malformed_snapshots)
     ih.size = 16; /* a known rect smaller than its record */
     memcpy((uint8_t *)h.items + sizeof(ax_ir_rect_item), &ih, sizeof ih);
     h.layers[1].items_size = 16;
-    AX_CHECK_RESULT(ax_ir_validate(&h.ir), AX_ERR_UNSUPPORTED);
+    AX_CHECK_RESULT(ax_ir_validate(&h.ir), AX_ERR_INVALID_ARGUMENT);
 
     handmade_init(&h);
     ih.type = 999;
     ih.size = 12; /* not a multiple of 8 */
     memcpy((uint8_t *)h.items + sizeof(ax_ir_rect_item), &ih, sizeof ih);
-    AX_CHECK_RESULT(ax_ir_validate(&h.ir), AX_ERR_UNSUPPORTED);
+    AX_CHECK_RESULT(ax_ir_validate(&h.ir), AX_ERR_INVALID_ARGUMENT);
 
     handmade_init(&h);
     ih.size = 0; /* would never advance */
     memcpy((uint8_t *)h.items, &ih, sizeof ih);
-    AX_CHECK_RESULT(ax_ir_validate(&h.ir), AX_ERR_UNSUPPORTED);
+    AX_CHECK_RESULT(ax_ir_validate(&h.ir), AX_ERR_INVALID_ARGUMENT);
 
     handmade_init(&h);
     h.ir.layer_stride = sizeof(ax_ir_layer) - 4;
-    AX_CHECK_RESULT(ax_ir_validate(&h.ir), AX_ERR_UNSUPPORTED);
+    AX_CHECK_RESULT(ax_ir_validate(&h.ir), AX_ERR_INVALID_ARGUMENT);
 
     handmade_init(&h);
     h.ir.layer_count = 0;
-    AX_CHECK_RESULT(ax_ir_validate(&h.ir), AX_ERR_UNSUPPORTED);
+    AX_CHECK_RESULT(ax_ir_validate(&h.ir), AX_ERR_INVALID_ARGUMENT);
 }

@@ -74,6 +74,7 @@ new entry that points back to the old one.
 | 58  | Roping of thin rotated lines with sRGB-space blending    | Approved       |
 | 59  | M0 exit criterion: measurements with the Render IR       | Approved       |
 | 60  | Job system: deques, waits and inline mode                | Approved       |
+| 61  | `AX_ERR_INVALID_ARGUMENT`; the Render IR uses it         | Approved       |
 
 ---
 
@@ -2032,3 +2033,31 @@ the benchmarks of this milestone's seventh step measure it.
 
 **Status.** Approved (part of the approved plan; the bounded sleep was the owner's adjustment;
 the owner reviewed the commit and asked for the limitation and the web note above).
+
+## 61. `AX_ERR_INVALID_ARGUMENT`; the Render IR uses it
+
+> Amends decision 51's error codes.
+
+**Context.** Decision 51 reported malformed Render IR snapshots as `AX_ERR_UNSUPPORTED`, because
+the stable ABI had no invalid-argument code and M0 did not need one. M1's transactions reject
+malformed commands (a stale reference is `AX_ERR_INVALID_HANDLE`, but a cycle in the tree, a
+property of the wrong type or a truncated record is not), and `AX_ERR_UNSUPPORTED` reads as "this
+build cannot do it", not as "this input is wrong".
+
+**Decision.**
+- `AX_ERR_INVALID_ARGUMENT = 7` is appended to `ax_result` (values are fixed forever, so it takes
+  the next number), with its name in `ax_result_name`. It means the input breaks the API's rules;
+  `ax_last_error()` says which rule.
+- **The Render IR switches to it** (pre-1.0, so no compatibility is owed):
+  - `ax_ir_validate` and `ax_ir_deserialize`: not a snapshot, truncated, malformed tree, items
+    out of range, bad sizes;
+  - the builder's misuse in release builds: a pop without a push, `end` with layers still pushed,
+    `end` without `begin` (debug builds still assert).
+- **`AX_ERR_UNSUPPORTED` stays** where the input may be valid but this build cannot handle it:
+  a big-endian host, and a layer count or item stream beyond the format's 32-bit offsets.
+- `AX_ERR_ABI_MISMATCH` stays for another major version.
+- Tests: `base.types` pins the value and the name; the Render IR's validation, corruption and
+  truncation tests now expect the new code.
+
+**Status.** Approved by the owner (the code); the Render IR switch is recorded here as the owner
+asked.

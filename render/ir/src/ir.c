@@ -40,23 +40,24 @@ ax_result ax_ir_validate(const ax_render_ir *ir)
     uint32_t i;
 
     if (ir == NULL) {
-        return ax_set_error(AX_ERR_UNSUPPORTED, "render IR: NULL snapshot");
+        return ax_set_error(AX_ERR_INVALID_ARGUMENT, "render IR: NULL snapshot");
     }
     if (ir->version_major != AX_IR_VERSION_MAJOR) {
         return ax_set_error(AX_ERR_ABI_MISMATCH, "render IR: version %u.%u, this build reads %u.x",
                             ir->version_major, ir->version_minor, AX_IR_VERSION_MAJOR);
     }
     if (ir->layer_count == 0 || ir->layers == NULL) {
-        return ax_set_error(AX_ERR_UNSUPPORTED, "render IR: no root layer");
+        return ax_set_error(AX_ERR_INVALID_ARGUMENT, "render IR: no root layer");
     }
     if (ir->layer_stride < AX__IR_LAYER_SIZE_1_0 || ir->layer_stride % 4u != 0) {
-        return ax_set_error(AX_ERR_UNSUPPORTED, "render IR: layer stride %u", ir->layer_stride);
+        return ax_set_error(AX_ERR_INVALID_ARGUMENT, "render IR: layer stride %u",
+                            ir->layer_stride);
     }
     if (ir->damage_count != 0 && ir->damage == NULL) {
-        return ax_set_error(AX_ERR_UNSUPPORTED, "render IR: damage rects missing");
+        return ax_set_error(AX_ERR_INVALID_ARGUMENT, "render IR: damage rects missing");
     }
     if (ir->items_size % AX_IR_ITEM_ALIGN != 0 || (ir->items_size != 0 && ir->items == NULL)) {
-        return ax_set_error(AX_ERR_UNSUPPORTED, "render IR: item stream of %u bytes",
+        return ax_set_error(AX_ERR_INVALID_ARGUMENT, "render IR: item stream of %u bytes",
                             ir->items_size);
     }
 
@@ -70,15 +71,17 @@ ax_result ax_ir_validate(const ax_render_ir *ir)
         }
         if (i == 0) {
             if (l->parent != AX_IR_NO_LAYER || l->subtree_end != ir->layer_count) {
-                return ax_set_error(AX_ERR_UNSUPPORTED, "render IR: malformed root layer");
+                return ax_set_error(AX_ERR_INVALID_ARGUMENT, "render IR: malformed root layer");
             }
         } else if (depth == 0 || l->parent != stack[depth - 1] || l->subtree_end <= i ||
                    l->subtree_end > ax_ir_layer_at(ir, l->parent)->subtree_end) {
-            return ax_set_error(AX_ERR_UNSUPPORTED, "render IR: layer %u is not in pre-order", i);
+            return ax_set_error(AX_ERR_INVALID_ARGUMENT, "render IR: layer %u is not in pre-order",
+                                i);
         }
         if (l->subtree_end > i + 1) {
             if (depth == AX_COUNTOF(stack)) {
-                return ax_set_error(AX_ERR_UNSUPPORTED, "render IR: layers nested deeper than %u",
+                return ax_set_error(AX_ERR_INVALID_ARGUMENT,
+                                    "render IR: layers nested deeper than %u",
                                     (unsigned)AX_COUNTOF(stack));
             }
             stack[depth++] = i;
@@ -87,7 +90,8 @@ ax_result ax_ir_validate(const ax_render_ir *ir)
         /* Item range and records. */
         if (l->items_offset % AX_IR_ITEM_ALIGN != 0 || l->items_offset > ir->items_size ||
             l->items_size > ir->items_size - l->items_offset) {
-            return ax_set_error(AX_ERR_UNSUPPORTED, "render IR: layer %u items out of range", i);
+            return ax_set_error(AX_ERR_INVALID_ARGUMENT, "render IR: layer %u items out of range",
+                                i);
         }
         offset = l->items_offset;
         while (offset < l->items_offset + l->items_size) {
@@ -96,7 +100,7 @@ ax_result ax_ir_validate(const ax_render_ir *ir)
             if (h.size < sizeof h || h.size % AX_IR_ITEM_ALIGN != 0 ||
                 h.size > l->items_offset + l->items_size - offset ||
                 h.size < known_item_size(h.type)) {
-                return ax_set_error(AX_ERR_UNSUPPORTED,
+                return ax_set_error(AX_ERR_INVALID_ARGUMENT,
                                     "render IR: layer %u, item at byte %u: type %u, size %u", i,
                                     offset, h.type, h.size);
             }
@@ -104,8 +108,9 @@ ax_result ax_ir_validate(const ax_render_ir *ir)
             ++count;
         }
         if (count != l->item_count) {
-            return ax_set_error(AX_ERR_UNSUPPORTED, "render IR: layer %u has %u items, says %u", i,
-                                count, l->item_count);
+            return ax_set_error(AX_ERR_INVALID_ARGUMENT,
+                                "render IR: layer %u has %u items, says %u", i, count,
+                                l->item_count);
         }
     }
     return AX_OK;
@@ -278,7 +283,7 @@ void ax_ir_pop_layer(ax_ir_builder *b)
     close_implicit(b);
     AX_ASSERT_MSG(b->depth > 1, "ax_ir_pop_layer without a matching push");
     if (b->depth <= 1) {
-        fail(b, AX_ERR_UNSUPPORTED);
+        fail(b, AX_ERR_INVALID_ARGUMENT);
         return;
     }
     close_layer(b);
@@ -368,14 +373,14 @@ ax_result ax_ir_builder_end(ax_ir_builder *b, const ax_render_ir **out_ir)
     AX_ASSERT_MSG(b->recording, "ax_ir_builder_end without ax_ir_builder_begin");
     *out_ir = NULL;
     if (!b->recording) {
-        return ax_set_error(AX_ERR_UNSUPPORTED, "render IR: end without begin");
+        return ax_set_error(AX_ERR_INVALID_ARGUMENT, "render IR: end without begin");
     }
     b->recording = false;
     if (b->error == AX_OK) {
         close_implicit(b);
         AX_ASSERT_MSG(b->depth == 1, "ax_ir_builder_end with layers still pushed");
         if (b->depth != 1) {
-            b->error = AX_ERR_UNSUPPORTED;
+            b->error = AX_ERR_INVALID_ARGUMENT;
         }
     }
     if (b->error != AX_OK) {
