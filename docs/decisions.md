@@ -56,6 +56,8 @@ new entry that points back to the old one.
 | 40  | Pace configures by frame callbacks; held targets         | Implementation |
 | 41  | Sanitizers must not abort inside death tests             | Approved       |
 | 42  | Marshalled calls when the main thread stops              | Approved       |
+| 43  | Dawn and wgpu-native as pinned official binaries         | Approved       |
+| 44  | GPU driver leaks under LeakSanitizer                     | Implementation |
 
 ---
 
@@ -951,3 +953,82 @@ its memory was freed.
     allocation), so ordering is a property of the structure.
 
 **Status.** Approved by the owner.
+
+## 43. Dawn and wgpu-native as pinned official binaries
+
+**Context.** The document consumes Dawn as prebuilt binaries per platform and keeps wgpu-native
+compiling in CI as the alternative. The owner asked for official binaries only, pinned to an exact
+version at least two weeks old, with verified checksums.
+
+**Decision.**
+- **Dawn, official release binaries.** The Dawn project publishes daily release assets built by
+  its own CI on GitHub (`google/dawn` releases).
+  - Pinned: `v20261022.205350` (commit `5373085`, published 2026-10-23).
+  - Packages: `ubuntu-latest-Release` (Linux x86_64) and `macos-latest-Release` /
+    `macos-15-intel-Release` (macOS). Each is a static `libwebgpu_dawn.a` with headers and a CMake
+    package.
+  - Checked before pinning: the Linux package creates Wayland surfaces through
+    `VK_KHR_wayland_surface`, and loads `libvulkan.so.1` at run time without linking any windowing
+    library.
+  - No build from source and no third-party binaries, so this is not a deviation.
+- **Where the pins live.** Versions, URLs and SHA-256 checksums are only in
+  `gpu/third_party/webgpu_deps.cmake`. Provenance, licences (Dawn BSD 3-Clause plus the
+  permissively licensed code it vendors), checksums and the update procedure are in
+  `gpu/third_party/README.md`.
+- **Fetching.**
+  - CMake downloads the archive at configure time, checks its SHA-256 (`file(DOWNLOAD ...
+    EXPECTED_HASH)`) and unpacks it into `.deps/` at the repository root. `.deps/` is shared
+    between build trees and ignored by git.
+  - A stamp records the checksum after a complete extraction, so an interrupted download is
+    redone and a changed pin replaces the directory.
+  - `AX_DAWN_ROOT` / `AX_WGPU_NATIVE_ROOT` select an unpacked package instead (offline builds).
+  - CI caches `.deps/` keyed on the manifest's hash.
+- **Release package for every configuration.** The Debug packages are 250-850 MB. Dawn keeps its
+  API validation in release builds, so Debug and sanitizer builds link the Release package too.
+- **C++ runtime.** Dawn is static C++. gpu/ links `stdc++` (Linux) or `c++` (Apple) explicitly,
+  because AXION links with the C driver. No C++ compiler is enabled in the project.
+- **Selecting the implementation.** CMake cache variable `AX_WEBGPU=dawn|wgpu-native`; the
+  interface target `ax_webgpu` carries the headers (as system headers), the libraries and
+  `AX_WEBGPU_DAWN` or `AX_WEBGPU_WGPU_NATIVE`.
+- **wgpu-native.** Pinned: official release `v29.0.1.1` (2026-06-23), Linux x86_64 package only.
+  - Its `webgpu.h` and Dawn's agree on every struct and enum gpu/ uses. Differences are isolated
+    in one place in gpu/'s sources.
+  - A CI job builds gpu/ against it (GCC, ASan+UBSan) and runs the gpu/ offscreen tests. It is
+    never shipped.
+- **Where gpu/ builds.** `AX_BUILD_GPU` defaults on for Linux and macOS. Windows waits for the
+  Win32 backend, where the choice between Dawn's Debug package and building gpu/ with `/MD` is
+  still open. The web waits for emdawnwebgpu.
+
+**Status.** Approved (part of the approved plan).
+
+## 44. GPU driver leaks under LeakSanitizer
+
+**Context.** WebGPU implementations probe GPU drivers when an instance or adapter is created.
+NVIDIA's driver, Mesa's lavapipe and the libraries they use (D-Bus, LLVM) allocate
+process-lifetime state and never free it, which LeakSanitizer reports in ASan builds.
+- With the default fast unwinder, driver frames have no frame pointers, so the stacks stop inside
+  the driver.
+- The Vulkan loader unloads the driver libraries (ICDs) when the last `VkInstance` is destroyed,
+  so by exit time their frames print as `<unknown module>`.
+- Neither case can be matched by module name.
+
+**Decision.**
+- **Suppressions name driver modules only:** `tools/sanitizers/lsan-gpu-drivers.supp` lists
+  `libnvidia-*`, `libEGL_nvidia`, `libGLX_nvidia`, `libvulkan_lvp`, `libgallium-*`, `libLLVM`,
+  `libEGL_mesa` and `libdbus-1`. No entry names AXION, Dawn or wgpu-native code, so a WebGPU
+  object AXION forgets to release is still reported.
+- **Conditions arranged by the gpu/ tests, so module names are visible:**
+  - `LSAN_OPTIONS=fast_unwind_on_malloc=0:suppressions=...` gives full stacks, on gpu/ tests in
+    ASan builds only;
+  - `axt_gpu_pin_drivers()` keeps one Vulkan instance alive until exit (test code only), so the
+    loader never unloads the drivers.
+- **Checked locally (NVIDIA 615.78):** the wgpu-native instance test reported 3.8 KB in 26
+  allocations before; with both measures and the file, it is clean. An entry matching
+  wgpu-native's own instance-probing frames also worked, but was dropped, because it names
+  implementation code.
+- **Other sanitizers:** TSan is not suppressed or disabled for gpu/. If TSan runs over gpu/ report
+  races inside the uninstrumented libraries, suppressions limited to those libraries' symbols will
+  be added here.
+
+**Status.** Implementation, following the owner's rule for sanitizers and uninstrumented
+libraries.

@@ -14,3 +14,6 @@ compile_commands.json
 *.swp
 *~
 .DS_Store
+
+# Pinned prebuilt dependencies (cmake/AxionPrebuilt.cmake)
+/.deps/

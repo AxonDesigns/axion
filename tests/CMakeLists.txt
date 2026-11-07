@@ -108,6 +108,9 @@ if(AX_BUILD_PLATFORM)
     add_subdirectory(unit/platform)
     add_subdirectory(integration/wayland)
 endif()
+if(AX_BUILD_GPU)
+    add_subdirectory(unit/gpu)
+endif()
 
 # Every header must compile on its own (includes what it uses). One generated translation unit
 # per header, built with the same strict settings; failure breaks the build.

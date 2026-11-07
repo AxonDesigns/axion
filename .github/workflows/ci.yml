@@ -36,6 +36,13 @@ jobs:
           - { name: "Linux / GCC / Release",         os: ubuntu-latest,  preset: gcc-release }
           - { name: "Linux / Clang / ASan+UBSan",    os: ubuntu-latest,  preset: clang-asan }
           - { name: "Linux / Clang / Release",       os: ubuntu-latest,  preset: clang-release }
+          # The alternative WebGPU implementation (decision 43): builds gpu/ against wgpu-native
+          # and runs its offscreen tests only.
+          - name: "Linux / GCC / ASan+UBSan / wgpu-native (gpu only)"
+            os: ubuntu-latest
+            preset: gcc-asan
+            configure_args: "-DAX_WEBGPU=wgpu-native"
+            test_args: "-L ^gpu$"
     steps:
       - uses: actions/checkout@v4
 
@@ -58,8 +65,18 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libwayland-dev libwayland-bin weston
 
+      # Pinned prebuilt WebGPU packages (gpu/third_party/webgpu_deps.cmake), unpacked into .deps/.
+      # CMake verifies each archive's checksum when it downloads one; a cache hit was verified
+      # when it was saved.
+      - name: Cache WebGPU packages
+        if: runner.os != 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: .deps
+          key: webgpu-${{ runner.os }}-${{ runner.arch }}-${{ contains(matrix.configure_args, 'wgpu-native') && 'wgpu-native' || 'dawn' }}-${{ hashFiles('gpu/third_party/webgpu_deps.cmake') }}
+
       - name: Configure
-        run: cmake --preset ${{ matrix.preset }}
+        run: cmake --preset ${{ matrix.preset }} ${{ matrix.configure_args }}
 
       # -k 0: keep going after a failure, so one run reports every compile error.
       - name: Build
@@ -67,12 +84,12 @@ jobs:
 
       - name: Test
         if: runner.os != 'Linux'
-        run: ctest --preset ${{ matrix.preset }}
+        run: ctest --preset ${{ matrix.preset }} ${{ matrix.test_args }}
 
       # Linux also runs the Wayland integration tests against a headless weston.
       - name: Test (with headless weston)
         if: runner.os == 'Linux'
-        run: tools/ci/with-weston.sh ctest --preset ${{ matrix.preset }}
+        run: tools/ci/with-weston.sh ctest --preset ${{ matrix.preset }} ${{ matrix.test_args }}
 
   emscripten:
     name: Web / Emscripten / base only (single-threaded)
