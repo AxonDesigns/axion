@@ -97,11 +97,13 @@ typedef struct wl_window {
     bool pending_suspended;
     bool pending_maximized;
     bool pending_fullscreen;
+    bool pending_tiled;
     bool configured;
     uint32_t last_serial;
     float logical_width, logical_height; /* last configured */
     float desc_width, desc_height;
-    float scale; /* preferred scale from the compositor */
+    float floating_width, floating_height; /* size outside maximized/fullscreen/tiled states */
+    float scale;                           /* preferred scale from the compositor */
     bool fractional_scale_known;
     bool resizable;
     float min_width, min_height;

@@ -91,6 +91,22 @@ uint64_t ax_frame_clock_predict(const ax_frame_clock *clock, uint64_t now_ns)
     return clock->last_present_ns + k * r;
 }
 
+uint64_t ax_frame_clock_target(const ax_frame_clock *clock, uint64_t now_ns)
+{
+    uint64_t t = ax_frame_clock_predict(clock, now_ns);
+    if (clock->last_target_ns != 0 && t <= clock->last_target_ns) {
+        t = clock->last_target_ns + ax_frame_clock_refresh(clock);
+    }
+    return t;
+}
+
+void ax_frame_clock_committed(ax_frame_clock *clock, uint64_t target_ns)
+{
+    if (target_ns > clock->last_target_ns) {
+        clock->last_target_ns = target_ns;
+    }
+}
+
 void ax_frame_clock_reset_stats(ax_frame_clock *clock)
 {
     clock->presented = 0;

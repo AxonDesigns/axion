@@ -48,6 +48,10 @@ new entry that points back to the old one.
 | 32  | Main-thread calls are marshalled; thread tags            | Approved       |
 | 33  | libwayland-cursor as cursor fallback                     | Approved       |
 | 34  | Configure handoff between main thread and presenter      | Approved       |
+| 35  | Commit requests from the main thread                     | Approved       |
+| 36  | Restore the floating size after maximize                 | Implementation |
+| 37  | Frame targets never go backwards                         | Implementation |
+| 38  | Notes: prepare_commit and the Vulkan WSI                 | Notes          |
 
 ---
 
@@ -678,3 +682,116 @@ lagging behind the window edge.
     - the timeout expires.
 
 **Status.** Approved (part of the approved plan).
+
+## 35. Commit requests from the main thread
+
+**Context.** `xdg_toplevel.set_min_size`, `set_max_size` and the rest of the double-buffered
+state the main thread sends only apply with the surface's next commit. Only the presenter
+commits (decision 34), and an idle presenter commits nothing.
+
+**Decision.**
+- Whenever the main thread sends commit-time state, it sets the surface's `commit_requested`
+  flag and wakes presenters (`ax__window_request_commit`). `ax_window_set_min_size` is the first
+  user.
+- `ax_surface_wait_frame` returns `AX_WAKE_COMMIT_REQUESTED`, and `ax_frame_target` reports
+  `commit_requested`, so even a presenter with nothing animating commits once.
+- `ax_surface_prepare_commit` clears the flag before preparing the commit. State the main thread
+  sent before raising the flag is already ahead on the wire, so that commit carries it.
+- Test: `wayland.present.commit_time_state_wakes_an_idle_presenter`.
+
+**Status.** Approved by the owner.
+
+## 36. Restore the floating size after maximize
+
+**Context.** A configure of 0x0 lets the client pick its size. Leaving the maximized state (and
+fullscreen and tiling) sends exactly that. The first implementation kept the current, maximized
+size, so unmaximizing did nothing; the presenter integration test against weston caught it.
+
+**Decision.**
+- The backend remembers the floating size: the last size configured while not maximized,
+  fullscreen or tiled, starting from `ax_window_desc`'s size.
+- A 0x0 configure uses the floating size, so leaving those states restores the size the window
+  had before.
+- Interactive resizes update the floating size, as they should.
+
+**Status.** Implementation.
+
+## 37. Frame targets never go backwards
+
+**Context.** Before the first presentation report arrives, the frame clock can only guess the
+next present time (one refresh from now). The first real reports can put the next vblank
+earlier than that guess, and animations sampling the prediction would then step backwards.
+
+**Decision.**
+- `ax_surface_begin_frame` reports `ax_frame_clock_target`: the prediction, but never at or
+  before the previous committed frame's target. If it would be, the target is that target plus
+  one refresh.
+- This is also the correct model: frames reach the screen in order, at most one per refresh.
+- The chain only advances in `ax_surface_prepare_commit`. Calling `begin_frame` without
+  committing does not push targets ahead, and after an idle period the plain prediction is
+  ahead again and wins.
+- Trade-off: an early guess that was too far ahead keeps targets offset by at most one refresh
+  until the presenter misses a frame or idles, rather than ever moving backwards.
+- Unit test: `platform.frame_clock.targets_never_go_backwards_between_committed_frames`.
+- Weston 15 reports presentation times on `CLOCK_MONOTONIC_RAW`. They are converted to
+  `ax_time_monotonic_ns`'s clock with the clocks' offset at receipt.
+
+**Status.** Implementation.
+
+## 38. Notes: prepare_commit and the Vulkan WSI
+
+**Context.** Nothing is implemented yet. These are notes for the GPU step, recorded now because
+`ax_surface_prepare_commit` was designed around them. With Vulkan (Dawn on top of it), the
+commit is made by the driver's WSI inside `vkQueuePresentKHR`. Mesa's Wayland WSI attaches,
+damages and commits there, and depending on the Mesa version and the compositor it requests its
+own frame callbacks (FIFO throttling), or uses `wp_fifo_v1` plus `wp_commit_timing_v1` instead.
+
+**How it fits.**
+- Per frame, the renderer:
+  1. calls `ax_surface_begin_frame`;
+  2. makes sure the swapchain extent equals the frame's `pixel_width` x `pixel_height`. On
+     Wayland `currentExtent` is the special value 0xFFFFFFFF, so the swapchain decides, and it
+     must be recreated (with `oldSwapchain`) before drawing a frame that acknowledges a new
+     size;
+  3. renders;
+  4. calls `ax_surface_prepare_commit`;
+  5. calls `vkQueuePresentKHR`.
+- The ack, viewport, frame-callback and feedback requests are marshalled before Mesa's commit on
+  the same connection, so they ride that commit. Only the presenter commits (decision 34), so
+  nothing can slip in between.
+- Mesa never touches `wp_viewport` or the buffer scale. Our viewport destination maps its buffer
+  as it does the shm buffers.
+
+**Risks to resolve in that step.**
+1. **Double throttling.** With FIFO, Mesa may block in present (or acquire) on its own frame
+   callback while `ax_surface_wait_frame` waits on ours, adding a frame of latency or halving
+   the rate.
+   - Option (a): use MAILBOX/IMMEDIATE and pace with our frame callback and frame clock only, as
+     browsers do.
+   - Option (b): use FIFO and skip our wait when the driver throttles.
+   - Measure both with `examples/m0_window --stats`.
+2. **Who reads the socket.** Mesa dispatches its own queue and may read the display fd inside
+   present/acquire. That breaks "the main thread is the only reader". libwayland's
+   `prepare_read` protocol keeps it safe, but our presenter queue's events could then be read
+   by Mesa without the main thread bumping `wake_gen`. Since this only happens on the presenter
+   thread itself, the next `wait_frame` dispatches them before sleeping. Confirm, or make
+   `wait_frame` also poll the fd.
+3. **Swapchain recreation cost** during interactive resize (a new extent every configure).
+   Possible stalls; consider rate-limiting to one recreation per frame. That already falls out
+   of latching only the newest configure.
+4. **A failed present after an ack** (`VK_ERROR_OUT_OF_DATE_KHR`, `SUBOPTIMAL`).
+   - The ack then applies with the next successful commit.
+   - That is correct only if the next frame acknowledges the newest serial, with a buffer of
+     that size. The presenter must not mark the serial acknowledged when present fails; today
+     `prepare_commit` marks it on success, before the caller's commit.
+   - Revisit: possibly an `ax_surface_commit_failed()` that re-arms the ack.
+5. **Feedback ownership.** Mesa may create its own `wp_presentation_feedback` for
+   `VK_KHR_present_wait` / present ids. Two feedbacks per commit are fine, but ours must keep
+   being created through our wrapper.
+6. **`wp_commit_timing_v1`.** If the compositor supports it, the predicted present time could
+   become the commit's target time (later, with `VK_EXT_present_timing`).
+7. **Dawn.** Dawn's surface `Configure(width, height)` must be called with the latched pixel
+   size each time it changes. Check that Dawn applies it synchronously and does not commit on
+   its own.
+
+**Status.** Notes for the GPU step, requested by the owner.

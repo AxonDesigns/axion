@@ -18,8 +18,9 @@ typedef struct ax_frame_clock {
     uint64_t nominal_refresh_ns;  /* from the system when known, else a default */
     uint64_t measured_refresh_ns; /* smoothed measurement; 0 until two frames were presented */
     uint64_t last_present_ns;
-    uint64_t last_msc; /* media stream counter (vblank count) of the last present */
-    bool have_last;    /* last_present_ns is valid (anchors predictions) */
+    uint64_t last_msc;       /* media stream counter (vblank count) of the last present */
+    uint64_t last_target_ns; /* target of the last committed frame, 0 if none */
+    bool have_last;          /* last_present_ns is valid (anchors predictions) */
     bool have_msc;
     bool interval_valid; /* the next present may be measured against the last one */
 
@@ -58,6 +59,17 @@ uint64_t ax_frame_clock_refresh(const ax_frame_clock *clock);
 /* Predicted present time of the next frame started at now_ns: the first refresh boundary after
  * now_ns, counted from the last presented frame (now_ns + one refresh before any report). */
 uint64_t ax_frame_clock_predict(const ax_frame_clock *clock, uint64_t now_ns);
+
+/*
+ * Target present time for a frame about to be drawn at now_ns: the prediction, but never at or
+ * before the previous committed frame's target (one commit per refresh at most: frames reach the
+ * screen in order). Animations sample this, so it never goes backwards between committed frames,
+ * even when the first estimates (made before any presentation report) were too far ahead.
+ */
+uint64_t ax_frame_clock_target(const ax_frame_clock *clock, uint64_t now_ns);
+
+/* Records that a frame with this target was committed. */
+void ax_frame_clock_committed(ax_frame_clock *clock, uint64_t target_ns);
 
 void ax_frame_clock_reset_stats(ax_frame_clock *clock);
 

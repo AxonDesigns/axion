@@ -124,6 +124,7 @@ static void toplevel_configure(void *data, struct xdg_toplevel *t, int32_t width
     ww->pending_suspended = false;
     ww->pending_maximized = false;
     ww->pending_fullscreen = false;
+    ww->pending_tiled = false;
     for (state = (const uint32_t *)states->data;
          (const char *)state < (const char *)states->data + states->size; ++state) {
         switch (*state) {
@@ -135,6 +136,12 @@ static void toplevel_configure(void *data, struct xdg_toplevel *t, int32_t width
             break;
         case XDG_TOPLEVEL_STATE_FULLSCREEN:
             ww->pending_fullscreen = true;
+            break;
+        case 5: /* XDG_TOPLEVEL_STATE_TILED_LEFT .. TILED_BOTTOM (since 2) */
+        case 6:
+        case 7:
+        case 8:
+            ww->pending_tiled = true;
             break;
         case 9: /* XDG_TOPLEVEL_STATE_SUSPENDED (since 6), spelled out for older headers */
             ww->pending_suspended = true;
@@ -179,11 +186,15 @@ static void xdg_surface_configure(void *data, struct xdg_surface *s, uint32_t se
     bool first = !ww->configured;
     (void)s;
 
-    /* 0 means the client chooses: keep the current size (the requested one at first). */
-    width = ww->pending_width > 0 ? (float)ww->pending_width
-                                  : (ww->configured ? ww->logical_width : ww->desc_width);
-    height = ww->pending_height > 0 ? (float)ww->pending_height
-                                    : (ww->configured ? ww->logical_height : ww->desc_height);
+    /* 0 means the client chooses: its floating size, which is the size it had before being
+     * maximized, made fullscreen or tiled (so leaving those states restores it), and the
+     * requested size at first. */
+    width = ww->pending_width > 0 ? (float)ww->pending_width : ww->floating_width;
+    height = ww->pending_height > 0 ? (float)ww->pending_height : ww->floating_height;
+    if (!ww->pending_maximized && !ww->pending_fullscreen && !ww->pending_tiled) {
+        ww->floating_width = width;
+        ww->floating_height = height;
+    }
     size_changed = first || width != ww->logical_width || height != ww->logical_height;
 
     ww->last_serial = serial;
@@ -242,6 +253,8 @@ ax_result ax_wl_window_create(ax_app_impl *app, ax_window_impl *w, const ax_wind
     ww->desc_height = desc->height > 0.0f ? desc->height : 480.0f;
     ww->logical_width = ww->desc_width;
     ww->logical_height = ww->desc_height;
+    ww->floating_width = ww->desc_width;
+    ww->floating_height = ww->desc_height;
     ww->min_width = desc->min_width;
     ww->min_height = desc->min_height;
     ww->resizable = (desc->flags & AX_WINDOW_RESIZABLE) != 0;

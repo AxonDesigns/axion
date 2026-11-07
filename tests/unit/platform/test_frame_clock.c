@@ -104,3 +104,32 @@ AX_TEST(discarded_frames_are_counted)
     ax_frame_clock_discarded(&c);
     AX_CHECK_EQ_U(c.discarded, 2);
 }
+
+AX_TEST(targets_never_go_backwards_between_committed_frames)
+{
+    ax_frame_clock c;
+    uint64_t t1;
+    uint64_t t2;
+    uint64_t t3;
+    ax_frame_clock_init(&c, HZ60);
+
+    /* Before any report: a guess one refresh ahead. */
+    t1 = ax_frame_clock_target(&c, 1000 * MS);
+    ax_frame_clock_committed(&c, t1);
+    /* The first report (for a frame shown at 990 ms) puts the vblanks earlier than guessed: the
+     * plain prediction for the next frame lands before t1, but the target must not. */
+    ax_frame_clock_presented(&c, 990 * MS, HZ60, 50, true, 0);
+    AX_CHECK(ax_frame_clock_predict(&c, 1001 * MS) <= t1);
+    t2 = ax_frame_clock_target(&c, 1001 * MS);
+    AX_CHECK(t2 > t1);
+    AX_CHECK_EQ_U(t2, t1 + HZ60);
+    ax_frame_clock_committed(&c, t2);
+
+    /* Asking again without committing does not advance the chain. */
+    AX_CHECK_EQ_U(ax_frame_clock_target(&c, 1001 * MS), t2 + HZ60);
+    AX_CHECK_EQ_U(ax_frame_clock_target(&c, 1001 * MS), t2 + HZ60);
+
+    /* After an idle second the prediction is far ahead and wins. */
+    t3 = ax_frame_clock_target(&c, 2000 * MS);
+    AX_CHECK(t3 > 2000 * MS && t3 <= 2000 * MS + HZ60);
+}

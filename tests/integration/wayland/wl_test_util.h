@@ -59,4 +59,35 @@ bool axt_wait_event(ax_app app, uint32_t type, ax_window window, ax_event *out,
 
 #define AXT_SECONDS(s) ((uint64_t)(s) * 1000000000u)
 
+/* ---- shared-memory buffers, for presenting without a GPU (tests only; never in platform/) ---- */
+
+struct wl_display;
+struct wl_event_queue;
+struct wl_registry;
+struct wl_shm;
+struct wl_surface;
+struct wl_buffer;
+
+#define AXT_SHM_MAX_BUFFERS 32
+
+typedef struct axt_shm {
+    struct wl_buffer *buffers[AXT_SHM_MAX_BUFFERS]; /* attached, not yet released */
+    struct wl_display *display;
+    struct wl_event_queue *queue; /* the surface's presenter queue */
+    struct wl_display *display_wrapper;
+    struct wl_registry *registry;
+    struct wl_shm *shm;
+} axt_shm;
+
+/* Binds wl_shm on the surface's presenter queue (from ax_surface_get_native). Presenter thread. */
+bool axt_shm_init(axt_shm *s, ax_surface surface);
+/* Destroys buffers the compositor has not released yet: every object on the surface's queue must
+ * be gone before the window is destroyed. Presenter thread, after its last commit. */
+void axt_shm_deinit(axt_shm *s);
+
+/* Attaches a new width x height buffer filled with `color` (XRGB8888), damages it and commits.
+ * The buffer is destroyed when the compositor releases it. Presenter thread. */
+bool axt_shm_commit(axt_shm *s, struct wl_surface *surface, uint32_t width, uint32_t height,
+                    uint32_t color);
+
 #endif /* AX_WL_TEST_UTIL_H */

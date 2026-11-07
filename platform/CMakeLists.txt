@@ -16,6 +16,7 @@ set(_ax_platform_common
     src/common/event_queue.c
     src/common/frame_clock.c
     src/common/hit_test.c
+    src/common/present.c
     src/common/window.c)
 
 set(_ax_platform_wayland

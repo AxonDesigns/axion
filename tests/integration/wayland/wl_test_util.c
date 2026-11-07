@@ -2,12 +2,18 @@
  * Copyright 2026 Axon Works
  * SPDX-License-Identifier: Apache-2.0
  */
-#define _POSIX_C_SOURCE 200809L
+#define _GNU_SOURCE /* memfd_create */
 
 #include "wl_test_util.h"
 
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
+#include <unistd.h>
+
+#include <wayland-client.h>
+
+#include "axion/platform/ax_surface_native.h"
 
 #include "axion/base/ax_thread.h"
 
@@ -103,4 +109,137 @@ bool axt_wait_event(ax_app app, uint32_t type, ax_window window, ax_event *out, 
     c.out = out;
     c.found = false;
     return axt_pump_until(app, event_arrived, &c, timeout_ns);
+}
+
+/* ---- shm ----------------------------------------------------------------------------------------
+ */
+
+static void registry_global(void *data, struct wl_registry *registry, uint32_t name,
+                            const char *interface, uint32_t version)
+{
+    axt_shm *s = (axt_shm *)data;
+    (void)version;
+    if (strcmp(interface, wl_shm_interface.name) == 0 && s->shm == NULL) {
+        s->shm = (struct wl_shm *)wl_registry_bind(registry, name, &wl_shm_interface, 1);
+    }
+}
+
+static void registry_global_remove(void *data, struct wl_registry *registry, uint32_t name)
+{
+    (void)data;
+    (void)registry;
+    (void)name;
+}
+
+static const struct wl_registry_listener registry_listener = {registry_global,
+                                                              registry_global_remove};
+
+bool axt_shm_init(axt_shm *s, ax_surface surface)
+{
+    ax_surface_native native;
+    memset(s, 0, sizeof *s);
+    memset(&native, 0, sizeof native);
+    native.struct_size = sizeof native;
+    if (ax_surface_get_native(surface, &native) != AX_OK || native.kind != AX_NATIVE_WAYLAND) {
+        return false;
+    }
+    s->display = (struct wl_display *)native.u.wayland.display;
+    s->queue = (struct wl_event_queue *)native.u.wayland.queue;
+    /* A registry on the presenter queue, so wl_shm and every buffer made from it deliver their
+     * events there. The roundtrip reads the socket from this thread, which libwayland supports
+     * alongside the main thread's reads. */
+    s->display_wrapper = (struct wl_display *)wl_proxy_create_wrapper(s->display);
+    wl_proxy_set_queue((struct wl_proxy *)s->display_wrapper, s->queue);
+    s->registry = wl_display_get_registry(s->display_wrapper);
+    wl_registry_add_listener(s->registry, &registry_listener, s);
+    if (wl_display_roundtrip_queue(s->display, s->queue) < 0 || s->shm == NULL) {
+        axt_shm_deinit(s);
+        return false;
+    }
+    return true;
+}
+
+void axt_shm_deinit(axt_shm *s)
+{
+    int i;
+    for (i = 0; i < AXT_SHM_MAX_BUFFERS; ++i) {
+        if (s->buffers[i] != NULL) {
+            wl_buffer_destroy(s->buffers[i]);
+        }
+    }
+    if (s->shm != NULL) {
+        wl_shm_destroy(s->shm);
+    }
+    if (s->registry != NULL) {
+        wl_registry_destroy(s->registry);
+    }
+    if (s->display_wrapper != NULL) {
+        wl_proxy_wrapper_destroy(s->display_wrapper);
+    }
+    memset(s, 0, sizeof *s);
+}
+
+static void buffer_release(void *data, struct wl_buffer *buffer)
+{
+    axt_shm *s = (axt_shm *)data;
+    int i;
+    for (i = 0; i < AXT_SHM_MAX_BUFFERS; ++i) {
+        if (s->buffers[i] == buffer) {
+            s->buffers[i] = NULL;
+        }
+    }
+    wl_buffer_destroy(buffer);
+}
+
+static const struct wl_buffer_listener buffer_listener = {buffer_release};
+
+bool axt_shm_commit(axt_shm *s, struct wl_surface *surface, uint32_t width, uint32_t height,
+                    uint32_t color)
+{
+    size_t stride = (size_t)width * 4u;
+    size_t size = stride * height;
+    int fd = memfd_create("axion-test-buffer", MFD_CLOEXEC);
+    uint32_t *pixels;
+    struct wl_shm_pool *pool;
+    struct wl_buffer *buffer;
+    size_t i;
+    int slot;
+
+    for (slot = 0; slot < AXT_SHM_MAX_BUFFERS && s->buffers[slot] != NULL; ++slot) {
+    }
+    if (slot == AXT_SHM_MAX_BUFFERS) {
+        if (fd >= 0) {
+            close(fd);
+        }
+        return false; /* the compositor is holding every buffer */
+    }
+    if (fd < 0) {
+        return false;
+    }
+    if (ftruncate(fd, (off_t)size) != 0) {
+        close(fd);
+        return false;
+    }
+    pixels = (uint32_t *)mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (pixels == MAP_FAILED) {
+        close(fd);
+        return false;
+    }
+    for (i = 0; i < size / 4u; ++i) {
+        pixels[i] = color;
+    }
+    munmap(pixels, size);
+    pool = wl_shm_create_pool(s->shm, fd, (int32_t)size);
+    buffer = wl_shm_pool_create_buffer(pool, 0, (int32_t)width, (int32_t)height, (int32_t)stride,
+                                       WL_SHM_FORMAT_XRGB8888);
+    wl_shm_pool_destroy(pool);
+    close(fd);
+    wl_buffer_add_listener(buffer, &buffer_listener, s);
+    s->buffers[slot] = buffer;
+
+    wl_surface_attach(surface, buffer, 0, 0);
+    wl_surface_damage_buffer(surface, 0, 0, (int32_t)width, (int32_t)height);
+    wl_surface_commit(surface);
+    wl_display_flush(s->display);
+    return true;
 }
