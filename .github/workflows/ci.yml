@@ -6,9 +6,10 @@
 
 name: CI
 
+# Every pushed branch is tested, so work branches are green before their pull request.
 on:
   push:
-    branches: [main]
+    branches: ["**"]
   pull_request:
   workflow_dispatch:
 
