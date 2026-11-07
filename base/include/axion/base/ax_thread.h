@@ -14,9 +14,14 @@
  * the owning thread or unlocking from another thread aborts instead of deadlocking.
  *
  * Implementations: thread_win32.c (Windows), thread_posix.c (everything with pthreads) and
- * thread_single.c (Emscripten built without -pthread: the cooperative single-threaded web mode,
- * where ax_thread_create returns AX_ERR_UNSUPPORTED and mutexes and condition variables work for
- * the one thread there is).
+ * thread_single.c (Emscripten built without -pthread: the cooperative single-threaded web mode).
+ *
+ * Without threads (ax_threads_supported() returns false): ax_thread_create returns
+ * AX_ERR_UNSUPPORTED, and mutexes work for the one thread there is. Condition-variable waits do
+ * not exist in that mode: no other thread could ever signal, so ax_cond_wait and
+ * ax_cond_wait_timeout are usage errors (debug builds assert; release builds return as a spurious
+ * wakeup, with ax_cond_wait_timeout returning true). Code shared with the single-threaded build
+ * checks ax_threads_supported() before waiting.
  */
 #ifndef AX_BASE_THREAD_H
 #define AX_BASE_THREAD_H
@@ -65,6 +70,13 @@ AX_API int ax_thread_join(ax_thread *thread);
 /* Gives up the rest of the calling thread's time slice. */
 AX_API void ax_thread_yield(void);
 
+/*
+ * A nonzero id for the calling thread, unique for the life of the process (ids are never reused,
+ * unlike OS thread ids). Cheap after the first call on a thread. Used for thread-affinity checks.
+ * Thread: any.
+ */
+AX_API uint64_t ax_thread_current_id(void);
+
 /* ---- Mutexes --------------------------------------------------------------------------------- */
 
 AX_API void ax_mutex_init(ax_mutex *mutex);
@@ -88,7 +100,6 @@ AX_API void ax_cond_wait(ax_cond *cond, ax_mutex *mutex);
  * mutex is held again on return. A timeout is not an error. Waits may overshoot by the OS clock's
  * resolution (milliseconds on Windows), never undershoot. Loops that wait for a condition with a
  * deadline recompute the remaining time from ax_time_monotonic_ns() after each wake.
- * In the single-threaded build no other thread can signal, so it returns false immediately.
  */
 AX_API bool ax_cond_wait_timeout(ax_cond *cond, ax_mutex *mutex, uint64_t timeout_ns);
 

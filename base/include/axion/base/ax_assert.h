@@ -16,7 +16,7 @@
 #ifndef AX_BASE_ASSERT_H
 #define AX_BASE_ASSERT_H
 
-#include "../ax_platform.h"
+#include "../ax_config.h"
 #include "ax_compiler.h"
 
 #ifndef AX_ENABLE_ASSERTS

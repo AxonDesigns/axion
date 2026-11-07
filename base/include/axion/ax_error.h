@@ -11,7 +11,7 @@
 #ifndef AX_ERROR_H
 #define AX_ERROR_H
 
-#include "ax_platform.h"
+#include "ax_config.h"
 #include "ax_types.h"
 
 AX_EXTERN_C_BEGIN

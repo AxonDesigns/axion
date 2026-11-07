@@ -30,14 +30,24 @@ typedef struct thread_impl {
 
 AX_STATIC_ASSERT(sizeof(thread_impl) <= AX_THREAD_STORAGE_SIZE, "ax_thread storage too small");
 AX_STATIC_ASSERT(AX_ALIGNOF(thread_impl) <= 8, "ax_thread storage under-aligned");
-AX_STATIC_ASSERT(sizeof(SRWLOCK) <= AX_THREAD_STORAGE_SIZE, "ax_mutex storage too small");
-AX_STATIC_ASSERT(AX_ALIGNOF(SRWLOCK) <= 8, "ax_mutex storage under-aligned");
+/* Debug builds record the owning thread so misuse aborts with a message, matching the
+ * error-checking mutexes used on POSIX; SRW locks themselves detect nothing (decision 27). The
+ * owner is read and written with Interlocked operations, so checking it from another thread is
+ * not a data race. */
+typedef struct mutex_impl {
+    SRWLOCK lock;
+    volatile LONG owner; /* GetCurrentThreadId() of the holder, 0 when unlocked (debug only) */
+} mutex_impl;
+
+AX_STATIC_ASSERT(sizeof(mutex_impl) <= AX_THREAD_STORAGE_SIZE, "ax_mutex storage too small");
+AX_STATIC_ASSERT(AX_ALIGNOF(mutex_impl) <= 8, "ax_mutex storage under-aligned");
+AX_STATIC_ASSERT(sizeof(DWORD) == sizeof(LONG), "thread ids are stored in a LONG");
 AX_STATIC_ASSERT(sizeof(CONDITION_VARIABLE) <= AX_THREAD_STORAGE_SIZE, "ax_cond storage too small");
 AX_STATIC_ASSERT(AX_ALIGNOF(CONDITION_VARIABLE) <= 8, "ax_cond storage under-aligned");
 
 /* The storage arrays are only ever accessed through these native types, never as bytes. */
 #define THREAD(t) ((thread_impl *)(void *)(t)->storage)
-#define MUTEX(m)  ((SRWLOCK *)(void *)(m)->storage)
+#define MUTEX(m)  ((mutex_impl *)(void *)(m)->storage)
 #define COND(c)   ((CONDITION_VARIABLE *)(void *)(c)->storage)
 
 AX_NORETURN static void fatal(const char *what)
@@ -46,6 +56,34 @@ AX_NORETURN static void fatal(const char *what)
     fflush(stderr);
     abort();
 }
+
+#if AX_ENABLE_ASSERTS
+AX_NORETURN static void misuse(const char *what)
+{
+    fprintf(stderr, "axion: %s\n", what);
+    fflush(stderr);
+    abort();
+}
+
+static DWORD owner_of(mutex_impl *m)
+{
+    return (DWORD)InterlockedCompareExchange(&m->owner, 0, 0);
+}
+
+static void set_owner(mutex_impl *m, DWORD owner)
+{
+    InterlockedExchange(&m->owner, (LONG)owner);
+}
+
+/* Before releasing the lock (unlock, or a condition wait): the caller must hold it. */
+static void release_ownership(mutex_impl *m, const char *what)
+{
+    if (owner_of(m) != GetCurrentThreadId()) {
+        misuse(what);
+    }
+    set_owner(m, 0);
+}
+#endif
 
 /* ---- Threads --------------------------------------------------------------------------------- */
 
@@ -100,27 +138,51 @@ void ax_thread_yield(void)
 
 void ax_mutex_init(ax_mutex *mutex)
 {
-    InitializeSRWLock(MUTEX(mutex));
+    InitializeSRWLock(&MUTEX(mutex)->lock);
+    MUTEX(mutex)->owner = 0;
 }
 
 void ax_mutex_deinit(ax_mutex *mutex)
 {
+#if AX_ENABLE_ASSERTS
+    if (owner_of(MUTEX(mutex)) != 0) {
+        misuse("ax_mutex_deinit: the mutex is still locked");
+    }
+#endif
     (void)mutex; /* SRW locks own no resources */
 }
 
 void ax_mutex_lock(ax_mutex *mutex)
 {
-    AcquireSRWLockExclusive(MUTEX(mutex));
+#if AX_ENABLE_ASSERTS
+    if (owner_of(MUTEX(mutex)) == GetCurrentThreadId()) {
+        misuse("ax_mutex_lock: this thread already holds the mutex (relocking would deadlock)");
+    }
+#endif
+    AcquireSRWLockExclusive(&MUTEX(mutex)->lock);
+#if AX_ENABLE_ASSERTS
+    set_owner(MUTEX(mutex), GetCurrentThreadId());
+#endif
 }
 
 bool ax_mutex_try_lock(ax_mutex *mutex)
 {
-    return TryAcquireSRWLockExclusive(MUTEX(mutex)) != 0;
+    /* Like an error-checking pthread mutex, a try-lock by the holder simply fails. */
+    if (!TryAcquireSRWLockExclusive(&MUTEX(mutex)->lock)) {
+        return false;
+    }
+#if AX_ENABLE_ASSERTS
+    set_owner(MUTEX(mutex), GetCurrentThreadId());
+#endif
+    return true;
 }
 
 void ax_mutex_unlock(ax_mutex *mutex)
 {
-    ReleaseSRWLockExclusive(MUTEX(mutex));
+#if AX_ENABLE_ASSERTS
+    release_ownership(MUTEX(mutex), "ax_mutex_unlock: the calling thread does not hold the mutex");
+#endif
+    ReleaseSRWLockExclusive(&MUTEX(mutex)->lock);
 }
 
 /* ---- Condition variables --------------------------------------------------------------------- */
@@ -137,9 +199,15 @@ void ax_cond_deinit(ax_cond *cond)
 
 void ax_cond_wait(ax_cond *cond, ax_mutex *mutex)
 {
-    if (!SleepConditionVariableSRW(COND(cond), MUTEX(mutex), INFINITE, 0)) {
+#if AX_ENABLE_ASSERTS
+    release_ownership(MUTEX(mutex), "ax_cond_wait: the calling thread does not hold the mutex");
+#endif
+    if (!SleepConditionVariableSRW(COND(cond), &MUTEX(mutex)->lock, INFINITE, 0)) {
         fatal("SleepConditionVariableSRW");
     }
+#if AX_ENABLE_ASSERTS
+    set_owner(MUTEX(mutex), GetCurrentThreadId());
+#endif
 }
 
 bool ax_cond_wait_timeout(ax_cond *cond, ax_mutex *mutex, uint64_t timeout_ns)
@@ -153,6 +221,7 @@ bool ax_cond_wait_timeout(ax_cond *cond, ax_mutex *mutex, uint64_t timeout_ns)
         uint64_t now = ax_time_monotonic_ns();
         uint64_t remaining;
         uint64_t ms;
+        BOOL woke;
         if (now >= deadline) {
             return false;
         }
@@ -162,7 +231,15 @@ bool ax_cond_wait_timeout(ax_cond *cond, ax_mutex *mutex, uint64_t timeout_ns)
         if (ms > 0xFFFFFFFEu) {
             ms = 0xFFFFFFFEu;
         }
-        if (SleepConditionVariableSRW(COND(cond), MUTEX(mutex), (DWORD)ms, 0)) {
+#if AX_ENABLE_ASSERTS
+        release_ownership(MUTEX(mutex),
+                          "ax_cond_wait_timeout: the calling thread does not hold the mutex");
+#endif
+        woke = SleepConditionVariableSRW(COND(cond), &MUTEX(mutex)->lock, (DWORD)ms, 0);
+#if AX_ENABLE_ASSERTS
+        set_owner(MUTEX(mutex), GetCurrentThreadId());
+#endif
+        if (woke) {
             return true;
         }
         if (GetLastError() != ERROR_TIMEOUT) {

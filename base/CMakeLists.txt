@@ -24,6 +24,7 @@ add_library(ax_base STATIC
     src/array.c
     src/error.c
     src/pool.c
+    src/thread_common.c
     src/tracking_allocator.c
     src/types.c
     ${_ax_thread_src})

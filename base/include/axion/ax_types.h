@@ -11,7 +11,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "ax_platform.h"
+#include "ax_config.h"
 
 AX_EXTERN_C_BEGIN
 

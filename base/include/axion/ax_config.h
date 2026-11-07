@@ -2,11 +2,12 @@
  * Copyright 2026 Axon Works
  * SPDX-License-Identifier: Apache-2.0
  *
- * Stable ABI: platform and compiler detection, the AX_API export macro and C++ linkage guards.
+ * Stable ABI: build configuration. Platform and compiler detection, the AX_API export macro and
+ * C++ linkage guards.
  * Every AX_OS_* / AX_COMPILER_* macro is always defined, as 0 or 1, so code tests them with #if.
  */
-#ifndef AX_PLATFORM_H
-#define AX_PLATFORM_H
+#ifndef AX_CONFIG_H
+#define AX_CONFIG_H
 
 /* ---- Operating system ------------------------------------------------------------------------ */
 
@@ -114,4 +115,4 @@
 #    define AX_EXTERN_C_END
 #endif
 
-#endif /* AX_PLATFORM_H */
+#endif /* AX_CONFIG_H */

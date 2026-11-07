@@ -6,9 +6,10 @@
 
 name: CI
 
+# Every pushed branch is tested, so work branches are green before their pull request.
 on:
   push:
-    branches: [main]
+    branches: ["**"]
   pull_request:
   workflow_dispatch:
 
@@ -49,6 +50,14 @@ jobs:
       - name: CMake and Ninja
         uses: lukka/get-cmake@latest
 
+      # The platform module (Linux only for now) needs libwayland and wayland-scanner; weston
+      # runs headless for the Wayland integration tests.
+      - name: Wayland development packages
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libwayland-dev libwayland-bin weston
+
       - name: Configure
         run: cmake --preset ${{ matrix.preset }}
 
@@ -57,7 +66,13 @@ jobs:
         run: cmake --build --preset ${{ matrix.preset }} -- -k 0
 
       - name: Test
+        if: runner.os != 'Linux'
         run: ctest --preset ${{ matrix.preset }}
+
+      # Linux also runs the Wayland integration tests against a headless weston.
+      - name: Test (with headless weston)
+        if: runner.os == 'Linux'
+        run: tools/ci/with-weston.sh ctest --preset ${{ matrix.preset }}
 
   emscripten:
     name: Web / Emscripten / base only (single-threaded)

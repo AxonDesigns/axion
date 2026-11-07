@@ -28,7 +28,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "../ax_platform.h"
+#include "../ax_config.h"
 #include "ax_assert.h"
 #include "ax_compiler.h"
 

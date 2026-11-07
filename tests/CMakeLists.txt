@@ -6,6 +6,23 @@ target_include_directories(ax_test_harness PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/h
 target_link_libraries(ax_test_harness PUBLIC ax_base)
 ax_target_defaults(ax_test_harness)
 
+# Assertions (and so death tests) exist in builds without NDEBUG: Debug with single-config
+# generators, which is all the presets use.
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set(AX_TESTS_HAVE_ASSERTS ON)
+else()
+    set(AX_TESTS_HAVE_ASSERTS OFF)
+endif()
+
+# A death test passes by aborting, so a sanitizer report must not abort inside one or it would pass
+# for the wrong reason (macOS sanitizers abort by default). These settings make a report end the
+# process with the sanitizer's non-zero exit code instead, failing the test (decision 41). They
+# replace the test presets' sanitizer options for death tests only.
+set(AX_DEATH_TEST_ENVIRONMENT
+    "ASAN_OPTIONS=abort_on_error=0:halt_on_error=1:strict_string_checks=1"
+    "UBSAN_OPTIONS=abort_on_error=0:halt_on_error=1:print_stacktrace=1"
+    "TSAN_OPTIONS=abort_on_error=0:halt_on_error=1")
+
 # ax_add_unit_test(<module> <source>)
 #   <source> is relative to the calling CMakeLists.txt.
 #   Builds one executable per test file and registers each AX_TEST(<case>) in it as the ctest
@@ -20,11 +37,15 @@ function(ax_add_unit_test module source)
 
     # Re-run the scan whenever the test file changes.
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_src}")
-    file(STRINGS "${_src}" _lines REGEX "^AX_TEST\\([A-Za-z0-9_]+\\)")
+    file(STRINGS "${_src}" _lines REGEX "^AX_(DEATH_)?TEST\\([A-Za-z0-9_]+\\)")
     set(_cases "")
+    set(_death_cases "")
     foreach(_line IN LISTS _lines)
-        string(REGEX REPLACE "^AX_TEST\\(([A-Za-z0-9_]+)\\).*" "\\1" _case "${_line}")
+        string(REGEX REPLACE "^AX_(DEATH_)?TEST\\(([A-Za-z0-9_]+)\\).*" "\\2" _case "${_line}")
         list(APPEND _cases "${_case}")
+        if(_line MATCHES "^AX_DEATH_TEST")
+            list(APPEND _death_cases "${_case}")
+        endif()
     endforeach()
     if(NOT _cases)
         message(FATAL_ERROR "${source}: no AX_TEST(...) cases found")
@@ -35,8 +56,13 @@ function(ax_add_unit_test module source)
     set(_decls "")
     set(_table "")
     foreach(_case IN LISTS _cases)
+        if(_case IN_LIST _death_cases)
+            set(_is_death 1)
+        else()
+            set(_is_death 0)
+        endif()
         string(APPEND _decls "void ax_test__${_case}(void);\n")
-        string(APPEND _table "    {\"${_case}\", ax_test__${_case}},\n")
+        string(APPEND _table "    {\"${_case}\", ax_test__${_case}, ${_is_death}},\n")
     endforeach()
     set(_main "${CMAKE_CURRENT_BINARY_DIR}/generated/${_exe}_main.c")
     file(CONFIGURE OUTPUT "${_main}" @ONLY CONTENT
@@ -59,18 +85,43 @@ int main(int argc, char **argv)
     ax_target_defaults(${_exe})
 
     foreach(_case IN LISTS _cases)
-        add_test(NAME "${_suite}.${_case}" COMMAND ${_exe} ${_case})
-        set_tests_properties("${_suite}.${_case}" PROPERTIES LABELS "${module}" TIMEOUT 60)
+        if(_case IN_LIST _death_cases)
+            # Death tests need the assertions they trigger: only in builds that keep them.
+            if(NOT AX_TESTS_HAVE_ASSERTS)
+                continue()
+            endif()
+            add_test(NAME "${_suite}.${_case}" COMMAND ${_exe} ${_case})
+            set_tests_properties("${_suite}.${_case}" PROPERTIES
+                LABELS "${module};death" TIMEOUT 60 SKIP_RETURN_CODE 77
+                ENVIRONMENT "${AX_DEATH_TEST_ENVIRONMENT}")
+        else()
+            add_test(NAME "${_suite}.${_case}" COMMAND ${_exe} ${_case})
+            set_tests_properties("${_suite}.${_case}" PROPERTIES
+                LABELS "${module}" TIMEOUT 60 SKIP_RETURN_CODE 77)
+        endif()
     endforeach()
 endfunction()
 
+add_subdirectory(unit/harness)
 add_subdirectory(unit/base)
+if(AX_BUILD_PLATFORM)
+    add_subdirectory(unit/platform)
+    add_subdirectory(integration/wayland)
+endif()
 
 # Every header must compile on its own (includes what it uses). One generated translation unit
 # per header, built with the same strict settings; failure breaks the build.
-file(GLOB _ax_headers RELATIVE "${PROJECT_SOURCE_DIR}/base/include"
-     CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/base/include/axion/*.h"
-                       "${PROJECT_SOURCE_DIR}/base/include/axion/base/*.h")
+set(_ax_header_modules base)
+if(AX_BUILD_PLATFORM)
+    list(APPEND _ax_header_modules platform)
+endif()
+set(_ax_headers "")
+foreach(_m IN LISTS _ax_header_modules)
+    file(GLOB _m_headers RELATIVE "${PROJECT_SOURCE_DIR}/${_m}/include"
+         CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/${_m}/include/axion/*.h"
+                           "${PROJECT_SOURCE_DIR}/${_m}/include/axion/${_m}/*.h")
+    list(APPEND _ax_headers ${_m_headers})
+endforeach()
 set(_ax_header_tus "")
 foreach(_h IN LISTS _ax_headers)
     string(MAKE_C_IDENTIFIER "${_h}" _id)
@@ -80,4 +131,7 @@ foreach(_h IN LISTS _ax_headers)
 endforeach()
 add_library(ax_header_check OBJECT ${_ax_header_tus})
 target_link_libraries(ax_header_check PRIVATE ax_base)
+if(AX_BUILD_PLATFORM)
+    target_link_libraries(ax_header_check PRIVATE ax_platform)
+endif()
 ax_target_defaults(ax_header_check)

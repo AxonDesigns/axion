@@ -38,6 +38,24 @@ new entry that points back to the old one.
 | 22  | Threading failures and debug checks                      | Implementation |
 | 23  | Emscripten CI toolchain                                  | Implementation |
 | 24  | `AX_MAX_ALIGN` instead of `max_align_t`                  | Deviation      |
+| 25  | No condition-variable waits without threads              | Approved       |
+| 26  | Pre-1.0 versions require an exact minor                  | Approved       |
+| 27  | Debug owner checks for Windows mutexes                   | Approved       |
+| 28  | Death tests, skipped tests and thread ids                | Implementation |
+| 29  | Rename base's ax_platform.h to ax_config.h               | Approved       |
+| 30  | Platform module layout and Wayland build                 | Approved       |
+| 31  | Event queue: SPSC ring and overflow policy               | Approved       |
+| 32  | Main-thread calls are marshalled; thread tags            | Approved       |
+| 33  | libwayland-cursor as cursor fallback                     | Approved       |
+| 34  | Configure handoff between main thread and presenter      | Approved       |
+| 35  | Commit requests from the main thread                     | Approved       |
+| 36  | Restore the floating size after maximize                 | Implementation |
+| 37  | Frame targets never go backwards                         | Implementation |
+| 38  | Notes: prepare_commit and the Vulkan WSI                 | Notes          |
+| 39  | Hit-test move/resize and cursors (first version)         | Approved       |
+| 40  | Pace configures by frame callbacks; held targets         | Implementation |
+| 41  | Sanitizers must not abort inside death tests             | Approved       |
+| 42  | Marshalled calls when the main thread stops              | Approved       |
 
 ---
 
@@ -61,9 +79,9 @@ embeddable building blocks (arenas, pools, mutexes) that cannot be opaque withou
 an error path per object.
 
 **Decision.**
-- `base/include/axion/`: the stable C ABI. `ax_platform.h`, `ax_types.h`, `ax_error.h` (reading
-  the error only), `ax_allocator.h` (the type and `ax_default_allocator()` only), `ax_handle.h`,
-  `ax_version.h` and the umbrella `ax_base.h`.
+- `base/include/axion/`: the stable C ABI. `ax_config.h` (named `ax_platform.h` until decision
+  29), `ax_types.h`, `ax_error.h` (reading the error only), `ax_allocator.h` (the type and
+  `ax_default_allocator()` only), `ax_handle.h`, `ax_version.h` and the umbrella `ax_base.h`.
 - `base/include/axion/base/`: the internal SDK shared between AXION modules. `ax_assert.h`,
   `ax_atomic.h`, `ax_thread.h`, `ax_arena.h`, `ax_pool.h`, `ax_array.h`,
   `ax_tracking_allocator.h`, `ax_error_set.h` (`ax_set_error()`, `ax_clear_error()`), plus
@@ -203,6 +221,8 @@ addition.
 
 ## 10. Single-threaded web build
 
+> Superseded in part by decision 25: condition-variable waits are usage errors without threads.
+
 **Decision.**
 - **Which implementation:** Emscripten without `-pthread` uses `thread_single.c`. CMake chooses it
   when `EMSCRIPTEN AND NOT AX_WEB_THREADS`, and each implementation file `#error`s if it is built
@@ -236,6 +256,8 @@ addition.
 **Status.** Implementation (in the approved plan).
 
 ## 12. Version encoding and single source of truth
+
+> The compatibility rule is superseded by decision 26: while the major is 0, the minor must match.
 
 **Decision.**
 - `ax_version()` returns a `uint32_t` packing major (10 bits), minor (10 bits) and patch (12 bits),
@@ -371,6 +393,8 @@ is no tree of empty folders.
 
 ## 22. Threading failures and debug checks
 
+> The Windows gap is closed by decision 27.
+
 **Decision.**
 - **No error paths after creation:** per decision 3, initialization, locking and waiting have no
   error path. A pthread or Win32 failure other than a documented result (`EBUSY`, `ETIMEDOUT`,
@@ -404,3 +428,526 @@ demanding scalar types (`long long`, `long double`, `double`, object and functio
 code uses it wherever it would have used `_Alignof(max_align_t)`.
 
 **Status.** Deviation, forced by MSVC's C11 support.
+
+## 25. No condition-variable waits without threads
+
+**Supersedes part of** decisions 9 and 10.
+
+**Context.** Decision 10 had `ax_cond_wait_timeout` return false at once in the single-threaded
+web build. That broke decision 9's guarantee that false means at least `timeout_ns` elapsed.
+
+**Decision.** Without threads, condition-variable waits do not exist: no other thread could
+ever signal.
+- `ax_cond_wait_timeout` is a usage error, exactly like `ax_cond_wait`: debug builds assert.
+- Release builds return as a spurious wakeup would. `ax_cond_wait_timeout` returns true, which
+  callers already handle and which never claims a timeout that did not happen.
+- `ax_thread.h` documents it, and code shared with the single-threaded build checks
+  `ax_threads_supported()` before waiting.
+
+**Status.** Approved by the owner.
+
+## 26. Pre-1.0 versions require an exact minor
+
+**Supersedes** the compatibility rule in decision 12.
+
+**Context.** Decision 12 accepted any runtime with the same major and a minor at least the
+header's. Before 1.0 nothing is promised stable, so a 0.4 runtime cannot be trusted to serve
+code built against 0.3.
+
+**Decision.**
+- `ax_version_compatible(required, provided)` in `ax_version.h` implements the rule. It is a
+  `static inline` function, so bindings and plugins can call it before trusting any other
+  symbol of the runtime.
+- The rule:
+  - the major must match;
+  - while the major is 0, the minor must also match exactly;
+  - from 1.0 on, the runtime minor must be at least the required minor.
+- The patch never matters.
+- Decision 12 described the old rule but no code implemented it; this is the first
+  implementation, with tests.
+
+**Status.** Approved by the owner.
+
+## 27. Debug owner checks for Windows mutexes
+
+**Supersedes** the "known gap on Windows" in decision 22.
+
+**Decision.**
+- Debug builds on Windows record the owning thread (`GetCurrentThreadId()`) next to the SRW
+  lock inside `ax_mutex`'s storage. They read and write it with `Interlocked` operations, so
+  checking it from another thread is not a data race.
+- They abort with a message, matching POSIX error-checking mutexes:
+  - on relocking from the owner;
+  - on unlocking (or waiting on a condition variable) from a thread that does not hold the
+    mutex;
+  - on destroying a locked mutex.
+- A try-lock by the holder simply fails, as with an error-checking pthread mutex.
+- Condition waits clear the owner before sleeping and restore it after.
+- Release builds keep the plain SRW lock.
+- Death tests in `test_thread.c` cover these aborts on every platform; see decision 28.
+
+**Status.** Approved by the owner.
+
+## 28. Death tests, skipped tests and thread ids
+
+> Amended by decision 41: death tests run with sanitizers set not to abort, so a sanitizer report fails them.
+
+**Context.** Misuse checks that abort (decision 27, and the platform module's thread checks)
+need tests that expect the process to die. Wayland tests need to skip cleanly where no
+compositor is available. Thread-affinity checks need a cheap, comparable thread id.
+
+**Decision.**
+- **`AX_DEATH_TEST(name)`:** defines a case that must abort.
+  - CMake registers it only when `CMAKE_BUILD_TYPE` is Debug, where assertions exist.
+  - The harness turns `SIGABRT` into a successful exit (`_Exit(0)`) and fails the case if it
+    returns. ctest's `WILL_FAIL` cannot be used, because it does not cover deaths by signal.
+  - "Run all" skips death tests; ctest runs each one by name in its own process.
+  - Caveat: an ASan report also ends in `abort()`, so inside a death test it would count as a
+    pass.
+- **`AX_SKIP(reason)`:** exits a case with code 77, which ctest reports as skipped
+  (`SKIP_RETURN_CODE`).
+- **Windows:** the harness disables the CRT's abort dialog and Windows Error Reporting, so
+  aborts never hang unattended runs.
+- **`ax_thread_current_id()`:** a new base function. It returns a nonzero `uint64_t`, unique
+  for the life of the process (never reused, unlike OS thread ids), from a thread-local plus
+  an atomic counter.
+
+**Status.** Implementation.
+
+## 29. Rename base's ax_platform.h to ax_config.h
+
+**Amends** decision 2.
+
+**Decision.**
+- Base's platform and compiler detection header, with `AX_API` and the `extern "C"` guards, is
+  renamed from `ax_platform.h` to `ax_config.h`.
+- `ax_platform.h` becomes the umbrella header of the `platform/` module, the way `ax_base.h` is
+  base's.
+- The ABI is not frozen yet, so renaming now is cheap and avoids two different meanings of
+  "platform" later.
+
+**Status.** Approved by the owner.
+
+## 30. Platform module layout and Wayland build
+
+**Decision.**
+- **Headers:** the two tiers of decision 2.
+  - `platform/include/axion/` is the stable ABI: `ax_app.h`, `ax_window.h`, `ax_surface.h`,
+    `ax_event.h` and the umbrella `ax_platform.h`.
+  - `platform/include/axion/platform/` is the internal SDK:
+    - `ax_surface_native.h`, the native handles for gpu/;
+    - `ax_present.h`, the presenting thread's API;
+    - `ax_hit_regions.h`.
+  - The hit-region map is in the SDK, not the ABI, because the document makes regions a node
+    property (`AX_PROP_WINDOW_REGION`); core will call the primitive later. The
+    `ax_window_region` values themselves are stable, in `ax_window.h`.
+  - Cross-module includes use the full path (`<axion/ax_types.h>`).
+- **Structure:** `platform/src/common/` holds everything independent of the windowing system:
+  the event queue, the frame clock, hit-testing, the triple buffer, handle tables and
+  main-thread marshalling. It reaches the backend through an internal vtable, and
+  `platform/src/wayland/` is the only backend so far. The public API names no Wayland concept:
+  native handles go through `ax_surface_native` with a `kind` tag.
+- **Build:**
+  - The module is built on Linux only (`AX_BUILD_PLATFORM`, default on for Linux). Windows,
+    macOS and the web keep building base only until their backends exist.
+  - It needs libwayland-client 1.22 or newer, for `wl_surface.preferred_buffer_scale`
+    (`wl_compositor` v6).
+  - Protocol code is generated at build time by `wayland-scanner` from XML vendored unmodified
+    from wayland-protocols 1.50: xdg-shell, xdg-decoration-v1, presentation-time, viewporter,
+    fractional-scale-v1, cursor-shape-v1, and tablet-v2 (only because cursor-shape references
+    `zwp_tablet_tool_v2`).
+  - Provenance, licences (MIT) and checksums are in `platform/src/wayland/protocols/README.md`.
+  - The generated glue builds in its own object library without `-Werror`, and its headers are
+    included as system headers. AXION's code stays fully checked; scanner output is not
+    AXION's to fix.
+- **libdecor is not used.** The document has AXION draw its own decorations, and libdecor's
+  plugins carry LGPL code.
+
+**Status.** Approved (part of the approved plan).
+
+## 31. Event queue: SPSC ring and overflow policy
+
+**Context.** The document asks for lock-free single-producer rings for events. The main thread is
+the only producer and one thread consumes, and the main thread must never block or allocate
+inside the pump.
+
+**Decision.** `platform/src/common/event_queue.c`.
+- **The ring:** an SPSC ring of fixed capacity (`ax_app_desc.event_capacity`, rounded to a power
+  of two, default 256), built on base's atomics, with all memory reserved when the app is
+  created.
+- **Per-window state:** slots for `max_windows` windows (default 32) are reserved up front too.
+  A record names its window by slot and handle, and the consumer drops records of windows
+  closed since they were queued.
+- **Coalescing:**
+  - RESIZED and SCALE_CHANGED are coalesced per window. The newest geometry goes into a
+    per-window triple buffer. A marker flag allows at most one RESIZED and one SCALE_CHANGED
+    marker per window in the ring, and the consumer reads the newest geometry when it takes the
+    marker. These events therefore can never fill the ring.
+  - CLOSE_REQUESTED: at most one per window is pending, and repeats merge until it is
+    delivered.
+  - FOCUS and OCCLUSION are discrete records, delivered in order.
+- **Overflow (a full ring):**
+  - Nothing is dropped. The event is held in producer-only per-window state: a marker, or the
+    latest focus/occlusion value with its time.
+  - While anything is held back, new events are held back too, so order is kept.
+  - When the consumer frees space it wakes the producer (the main thread's wake fd), which
+    flushes in window order.
+  - Close and the latest focus are never lost. Only intermediate focus/occlusion changes that
+    arrive while the ring is full collapse to the latest state.
+- **Waiting consumer:** `ax_app_wait_event` sleeps on a mutex and condition variable, announced
+  with a flag (a Dekker handshake). The main thread takes that mutex only to signal a consumer
+  that is actually asleep, and only for the handoff.
+- TSan and a two-thread stress test (100 000 events, order checked) cover it.
+
+**Status.** Approved by the owner (the SPSC ring and the coalescing policy).
+
+## 32. Main-thread calls are marshalled; thread tags
+
+> Amended by decision 42: waiting calls fail instead of hanging when `ax_app_run` returns or the app is destroyed; the command stack is LIFO and must become a FIFO queue if calls ever become asynchronous.
+
+**Context.** The document puts window creation on the main thread (required on macOS, iOS and
+Android), but app code, the C# binding included, runs on the app thread.
+
+**Decision.**
+- **Marshalling instead of `AX_ERR_WRONG_THREAD`:** functions that must run on the main thread
+  are handed to it when called from another thread, and the caller waits for the result
+  (tagged "any->main").
+  - Commands go onto a lock-free stack.
+  - The main thread is woken through its wake fd and runs commands between dispatches.
+  - The caller blocks until its command completes.
+  - On the main thread itself the call runs directly.
+- **Why marshal:** with `AX_ERR_WRONG_THREAD`, the API could not be used from the app thread at
+  all.
+- **Requirement:** the main thread must be pumping (`ax_app_run` / `ax_app_pump`). There is no
+  deadlock risk, because the main thread never waits on the app thread.
+- **Thread tags:** until the IDL exists, every declaration carries a comment tag in a fixed
+  format, `thread: any | main | any->main | consumer | presenter`, defined in `ax_app.h`.
+  - Main-only functions (`ax_app_run`, `ax_app_pump`, `ax_app_destroy`) assert in debug builds
+    and return `AX_ERR_WRONG_THREAD` in release.
+  - The main thread is the one that called `ax_app_create`, identified with
+    `ax_thread_current_id()`.
+  - Consumer and presenter are documented as one thread at a time.
+
+**Status.** Approved (part of the approved plan).
+
+## 33. libwayland-cursor as cursor fallback
+
+**Decision.**
+- **Where it applies:** where the compositor lacks wp-cursor-shape-v1 (weston, GNOME before 46).
+- **What it adds:** the backend loads cursor images with libwayland-cursor (MIT, part of the
+  Wayland project itself), from the user's cursor theme (`XCURSOR_THEME` / `XCURSOR_SIZE`,
+  default size 24).
+- **Why:** without a cursor image, the cursor over AXION's surfaces would be undefined.
+- **New runtime dependency** of the platform module on Linux.
+
+**Status.** Approved by the owner. The owner adds it to the licence list in the architecture
+document.
+
+## 34. Configure handoff between main thread and presenter
+
+**Context.** Each configure must be acknowledged in the same commit that delivers a buffer of
+the new size, even when another thread makes that commit, so content is never stretched or
+lagging behind the window edge.
+
+**Decision.**
+- **Main thread:**
+  - `xdg_toplevel.configure`, decoration and scale events only record pending state.
+  - `xdg_surface.configure` turns it into an `ax_surface_config` (serial, logical size, scale,
+    pixel size, arrival time) and publishes it in a per-surface triple buffer.
+  - It queues RESIZED / FOCUS / OCCLUSION, and wakes the presenter.
+  - It never calls `ack_configure`. After the empty initial commit made when the window is
+    created, it never commits the surface.
+- **Presenter:**
+  - `ax_surface_begin_frame` latches the newest config. Acknowledging the latest serial also
+    covers earlier ones.
+  - `ax_surface_prepare_commit` issues, in order:
+    1. `ack_configure` for that serial, only if not already acknowledged;
+    2. the viewport destination or buffer scale;
+    3. the frame callback and presentation feedback.
+  - Then the caller attaches a buffer of exactly the latched pixel size and commits.
+  - The ack, the new size and the scale therefore always land in one commit made by one thread.
+- **Scale-only updates** republish the same serial with the new scale. The presenter
+  re-renders, and never acknowledges a serial twice (a protocol error).
+- **No main-thread wait during resize on Wayland.**
+  - The compositor keeps showing the last committed buffer until a new one arrives.
+  - The window edge is either our own buffer (client-side decorations) or a server frame the
+    compositor fits to our commit (server-side decorations).
+  - Content and edge therefore move together by construction, and nothing can stretch.
+  - The document's bounded wait exists for the modal live-resize loops of Windows and macOS. It
+    will be implemented in those backends, where the main thread has to answer the OS before
+    returning.
+- **No race with frame listeners.** Frame callbacks and presentation feedback objects are
+  created through proxy wrappers bound to a private per-surface event queue.
+  - The presenter dispatches that queue itself, in `ax_surface_wait_frame`, so a listener is
+    always set before its events can be dispatched.
+  - The main thread is still the only reader of the display fd. After each read it bumps a
+    counter and signals presenters waiting on a condition variable.
+  - `wait_frame` returns when:
+    - the frame callback fires;
+    - a new configure arrives (an occluded window gets no frame callbacks but must still answer
+      configures);
+    - the main thread requests a commit (decision 35);
+    - the timeout expires.
+
+**Status.** Approved (part of the approved plan).
+
+## 35. Commit requests from the main thread
+
+**Context.** `xdg_toplevel.set_min_size`, `set_max_size` and the rest of the double-buffered
+state the main thread sends only apply with the surface's next commit. Only the presenter
+commits (decision 34), and an idle presenter commits nothing.
+
+**Decision.**
+- Whenever the main thread sends commit-time state, it sets the surface's `commit_requested`
+  flag and wakes presenters (`ax__window_request_commit`). `ax_window_set_min_size` is the first
+  user.
+- `ax_surface_wait_frame` returns `AX_WAKE_COMMIT_REQUESTED`, and `ax_frame_target` reports
+  `commit_requested`, so even a presenter with nothing animating commits once.
+- `ax_surface_prepare_commit` clears the flag before preparing the commit. State the main thread
+  sent before raising the flag is already ahead on the wire, so that commit carries it.
+- Test: `wayland.present.commit_time_state_wakes_an_idle_presenter`.
+
+**Status.** Approved by the owner.
+
+## 36. Restore the floating size after maximize
+
+**Context.** A configure of 0x0 lets the client pick its size. Leaving the maximized state (and
+fullscreen and tiling) sends exactly that. The first implementation kept the current, maximized
+size, so unmaximizing did nothing; the presenter integration test against weston caught it.
+
+**Decision.**
+- The backend remembers the floating size: the last size configured while not maximized,
+  fullscreen or tiled, starting from `ax_window_desc`'s size.
+- A 0x0 configure uses the floating size, so leaving those states restores the size the window
+  had before.
+- Interactive resizes update the floating size, as they should.
+
+**Status.** Implementation.
+
+## 37. Frame targets never go backwards
+
+> The target rule is superseded by decision 40: targets are held, not pushed one refresh ahead per commit.
+
+**Context.** Before the first presentation report arrives, the frame clock can only guess the
+next present time (one refresh from now). The first real reports can put the next vblank
+earlier than that guess, and animations sampling the prediction would then step backwards.
+
+**Decision.**
+- `ax_surface_begin_frame` reports `ax_frame_clock_target`: the prediction, but never at or
+  before the previous committed frame's target. If it would be, the target is that target plus
+  one refresh.
+- This is also the correct model: frames reach the screen in order, at most one per refresh.
+- The chain only advances in `ax_surface_prepare_commit`. Calling `begin_frame` without
+  committing does not push targets ahead, and after an idle period the plain prediction is
+  ahead again and wins.
+- Trade-off: an early guess that was too far ahead keeps targets offset by at most one refresh
+  until the presenter misses a frame or idles, rather than ever moving backwards.
+- Unit test: `platform.frame_clock.targets_never_go_backwards_between_committed_frames`.
+- Weston 15 reports presentation times on `CLOCK_MONOTONIC_RAW`. They are converted to
+  `ax_time_monotonic_ns`'s clock with the clocks' offset at receipt.
+
+**Status.** Implementation.
+
+## 38. Notes: prepare_commit and the Vulkan WSI
+
+**Context.** Nothing is implemented yet. These are notes for the GPU step, recorded now because
+`ax_surface_prepare_commit` was designed around them. With Vulkan (Dawn on top of it), the
+commit is made by the driver's WSI inside `vkQueuePresentKHR`. Mesa's Wayland WSI attaches,
+damages and commits there, and depending on the Mesa version and the compositor it requests its
+own frame callbacks (FIFO throttling), or uses `wp_fifo_v1` plus `wp_commit_timing_v1` instead.
+
+**How it fits.**
+- Per frame, the renderer:
+  1. calls `ax_surface_begin_frame`;
+  2. makes sure the swapchain extent equals the frame's `pixel_width` x `pixel_height`. On
+     Wayland `currentExtent` is the special value 0xFFFFFFFF, so the swapchain decides, and it
+     must be recreated (with `oldSwapchain`) before drawing a frame that acknowledges a new
+     size;
+  3. renders;
+  4. calls `ax_surface_prepare_commit`;
+  5. calls `vkQueuePresentKHR`.
+- The ack, viewport, frame-callback and feedback requests are marshalled before Mesa's commit on
+  the same connection, so they ride that commit. Only the presenter commits (decision 34), so
+  nothing can slip in between.
+- Mesa never touches `wp_viewport` or the buffer scale. Our viewport destination maps its buffer
+  as it does the shm buffers.
+
+**Risks to resolve in that step.**
+1. **Double throttling.** With FIFO, Mesa may block in present (or acquire) on its own frame
+   callback while `ax_surface_wait_frame` waits on ours, adding a frame of latency or halving
+   the rate.
+   - Option (a): use MAILBOX/IMMEDIATE and pace with our frame callback and frame clock only, as
+     browsers do.
+   - Option (b): use FIFO and skip our wait when the driver throttles.
+   - Measure both with `examples/m0_window --stats`.
+2. **Who reads the socket.** Mesa dispatches its own queue and may read the display fd inside
+   present/acquire. That breaks "the main thread is the only reader". libwayland's
+   `prepare_read` protocol keeps it safe, but our presenter queue's events could then be read
+   by Mesa without the main thread bumping `wake_gen`. Since this only happens on the presenter
+   thread itself, the next `wait_frame` dispatches them before sleeping. Confirm, or make
+   `wait_frame` also poll the fd.
+3. **Swapchain recreation cost** during interactive resize (a new extent every configure).
+   Possible stalls; consider rate-limiting to one recreation per frame. That already falls out
+   of latching only the newest configure.
+4. **A failed present after an ack** (`VK_ERROR_OUT_OF_DATE_KHR`, `SUBOPTIMAL`).
+   - The ack then applies with the next successful commit.
+   - That is correct only if the next frame acknowledges the newest serial, with a buffer of
+     that size. The presenter must not mark the serial acknowledged when present fails; today
+     `prepare_commit` marks it on success, before the caller's commit.
+   - Revisit: possibly an `ax_surface_commit_failed()` that re-arms the ack.
+5. **Feedback ownership.** Mesa may create its own `wp_presentation_feedback` for
+   `VK_KHR_present_wait` / present ids. Two feedbacks per commit are fine, but ours must keep
+   being created through our wrapper.
+6. **`wp_commit_timing_v1`.** If the compositor supports it, the predicted present time could
+   become the commit's target time (later, with `VK_EXT_present_timing`).
+7. **Dawn.** Dawn's surface `Configure(width, height)` must be called with the latched pixel
+   size each time it changes. Check that Dawn applies it synchronously and does not commit on
+   its own.
+
+**Status.** Notes for the GPU step, requested by the owner.
+
+## 39. Hit-test move/resize and cursors (first version)
+
+**Decision.** The first version of hit-test driven move and resize (Windowing API), for windows
+without server decorations:
+- **Input handled:** only pointer position and the left button, on the main thread. The full
+  input model is M2.
+- **On press:** the main thread reads the window's newest published map (a triple buffer of at
+  most 64 regions, so it never waits for the publishing thread), and the last region containing
+  the point wins.
+  - `AX_REGION_CAPTION` starts `xdg_toplevel.move`.
+  - A resize edge or corner starts `xdg_toplevel.resize`, only for resizable windows.
+  - The `AX_EDGE_*` bits are chosen to match `xdg_toplevel.resize_edge`.
+- **Not acted on yet:**
+  - MINIMIZE, MAXIMIZE and CLOSE are accepted and behave as CLIENT.
+  - Double-click on the caption: Wayland exposes no user preference for it.
+- **When regions apply:** the map applies whatever the decoration mode, since a server-decorated
+  window may still draw a caption inside its content.
+- **Cursors:**
+  - The cursor follows the region under the pointer. It is set on every pointer enter, because
+    the cursor is undefined until a client sets it.
+  - wp-cursor-shape-v1 is used where available (KDE, GNOME 46+, recent weston).
+  - Otherwise images come from the cursor theme through libwayland-cursor (decision 33). Names
+    are tried newest spelling first ("n-resize", then "top_side"). Theme cursors are loaded at
+    scale 1 for now; HiDPI theme cursors come with the input work in M2.
+- **Seat listener timing:** the `wl_seat` listener is attached at bind time, so the capabilities
+  event, which arrives right after the bind, is never missed.
+- **Testing:** headless weston has no input devices, so tests cover publishing and reading maps
+  (concurrently, no torn or stale maps) and the lookup itself. The press path is validated on a
+  desktop with `examples/m0_window --decorations=none`.
+
+**Status.** Approved (part of the approved plan).
+
+## 40. Pace configures by frame callbacks; held targets
+
+**Supersedes** the target rule of decision 37.
+
+**Context.** Testing `examples/m0_window` on the owner's KDE desktop (260 Hz and 72 Hz monitors)
+showed that the animated bar ran faster while the window was being resized. Two causes:
+1. During an interactive resize KWin sends a configure per pointer motion. The presenter woke and
+   committed for each one without waiting for its frame callback: up to 712 commits per second
+   with 72 presented, the rest discarded by the compositor.
+2. Decision 37's targets advanced one refresh per commit, so those extra commits pushed the
+   animation clock up to ten refreshes ahead.
+
+**Decision.**
+- **Targets never decrease, but are not pushed ahead per commit.**
+  `ax_frame_clock_target = max(prediction, previous committed target)`. Two commits before one
+  refresh share its target: on screen the later one replaces the earlier. A guess that was too
+  far ahead now holds the target for at most a refresh, instead of moving it backwards. Unit
+  test: `extra_commits_do_not_run_the_clock_ahead`.
+- **Configure and commit-request wakes are paced by frame callbacks.**
+  - `ax_surface_wait_frame` returns `AX_WAKE_CONFIGURE` / `AX_WAKE_COMMIT_REQUESTED` at once only
+    when no frame is in flight.
+  - Otherwise it waits for the frame callback (`AX_WAKE_FRAME`). The frame drawn then latches the
+    newest configure, so content still follows the edge, at most one refresh later.
+  - If the callback is late by two refreshes (clamped to 8–100 ms), for example on a hidden
+    window that gets no callbacks, it wakes anyway, so configures are always acknowledged.
+  - Result on the owner's desktop at 260 Hz: no discarded frames during resize.
+- **Example drawing** (not platform/). The bar moves at a constant speed on a fixed-length track,
+  in logical units, so its position never depends on the window size. A first fix that wrapped
+  the bar by the window width made it jump on every resize. Buffer slots keep their
+  shared-memory pool across sizes, which cut the draw time during resize from 2.5 ms mean / 6.8
+  ms max to under 0.5 ms mean.
+- **Test limitation.** The weston integration test (`configure_bursts_do_not_outrun_frames`)
+  guards the behaviour but cannot reproduce KWin's burst: weston answers maximize toggles one
+  configure at a time. The burst is checked by hand on a desktop.
+
+**Status.** Implementation, prompted by the owner's report.
+
+## 41. Sanitizers must not abort inside death tests
+
+**Amends** decision 28.
+
+**Context.** A death test passes by aborting. Decision 28 noted the caveat that a sanitizer
+report also ends in `abort()` when the sanitizer is set to abort, which the test presets do for
+ASan and which sanitizers on macOS do by default. Inside a death test, a real memory error would
+then count as a pass.
+
+**Decision.**
+- **Environment for death tests:** CMake registers every death test with ctest's `ENVIRONMENT`
+  property:
+  - `ASAN_OPTIONS=abort_on_error=0:halt_on_error=1:strict_string_checks=1`
+  - `UBSAN_OPTIONS=abort_on_error=0:halt_on_error=1:print_stacktrace=1`
+  - `TSAN_OPTIONS=abort_on_error=0:halt_on_error=1`
+
+  A report then ends the process with the sanitizer's non-zero exit code, without `SIGABRT`, and
+  the test fails. TSan also halts on the first report, because the harness's `_Exit(0)` would
+  otherwise skip TSan's end-of-run report. These settings replace the test presets' sanitizer
+  options for death tests only.
+- **Harness self-tests** (`tests/unit/harness/test_death.c`, independent of the active
+  sanitizer):
+  - `sanitizers_are_told_not_to_abort` aborts, and so passes, only if the registration gave it
+    that environment.
+  - `exiting_without_abort_fails` exits with code 1, as a sanitizer report does; registered with
+    `WILL_FAIL`.
+  - `returning_fails` returns normally; registered with `WILL_FAIL`.
+
+  Together they pin the rule that only `abort()` passes a death test.
+- **Manual check** (not committed): a heap overflow inside a death test, under ASan.
+  - With the old options (`abort_on_error=1`) the test passed (exit 0).
+  - With the new environment it fails.
+
+**Status.** Approved by the owner.
+
+## 42. Marshalled calls when the main thread stops
+
+**Amends** decision 32.
+
+**Context.** A thread blocked in an any->main call when the main thread leaves `ax_app_run`
+waited forever. If the app was destroyed, the woken caller still touched the app's mutex after
+its memory was freed.
+
+**Decision.**
+- **Closing the stack:** the command stack has a closed state, a sentinel value in its head.
+  Swapping it in takes every queued command atomically, so a call can never end up queued on a
+  closed stack.
+- **When `ax_app_run` returns:** queued calls are completed with `AX_ERR_UNSUPPORTED` ("the
+  app's main thread is not pumping events (ax_app_run returned); the call did not run"), and new
+  calls are refused the same way until the next `ax_app_run` or `ax_app_pump` reopens the stack.
+- **Before the pump starts:** calls made before the pump first starts are accepted and wait for
+  it. That is the normal start-up race.
+- **On `ax_app_destroy`:**
+  - The stack is closed for good and waiting calls fail with `AX_ERR_UNSUPPORTED` ("the ax_app
+    was destroyed").
+  - A counter of threads inside marshalled calls lets destroy wait until every caller has left
+    before freeing the app.
+  - A call that starts on another thread while destroy runs remains a use after destroy, and is
+    documented as such.
+- **Tests:**
+  - `wayland.window.waiting_calls_fail_when_run_returns_and_new_ones_are_refused`
+  - `wayland.window.waiting_calls_fail_when_the_app_is_destroyed`
+
+  Both were repeated 50 times under ASan and TSan.
+- **Command order today:** the command stack is a LIFO Treiber stack. The main thread takes the
+  whole stack at once and reverses that batch, so commands run in submission order.
+  - Today every call blocks its thread, so a thread has at most one command in flight, and calls
+    from different threads have no order to keep.
+- **Command order if calls become asynchronous:** a thread could then queue several commands,
+  and their order would matter.
+  - Batch reversal happens to preserve a single thread's order, but it is an accident of the
+    implementation rather than a guarantee.
+  - The stack must then become a FIFO queue (multi-producer, single-consumer, bounded, with no
+    allocation), so ordering is a property of the structure.
+
+**Status.** Approved by the owner.

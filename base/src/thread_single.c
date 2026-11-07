@@ -8,8 +8,10 @@
  * There is exactly one thread, so:
  *   - ax_thread_create returns AX_ERR_UNSUPPORTED (a recoverable result, not a runtime crash);
  *   - a mutex is a flag, and debug builds assert on relocking (a deadlock in a threaded build);
- *   - nothing can ever signal a condition variable: ax_cond_wait_timeout returns false at once,
- *     and ax_cond_wait asserts in debug builds, since it would wait forever.
+ *   - nothing can ever signal a condition variable, so waiting on one is a usage error:
+ *     ax_cond_wait and ax_cond_wait_timeout assert in debug builds. Release builds return as a
+ *     spurious wakeup would (ax_cond_wait_timeout returns true), which keeps the guarantee that
+ *     false means the full timeout elapsed.
  */
 #define _POSIX_C_SOURCE 200809L
 
@@ -112,8 +114,10 @@ bool ax_cond_wait_timeout(ax_cond *cond, ax_mutex *mutex, uint64_t timeout_ns)
     (void)cond;
     (void)timeout_ns;
     AX_ASSERT_MSG(MUTEX(mutex)->locked, "ax_cond_wait_timeout: mutex must be held");
+    AX_ASSERT_MSG(0, "ax_cond_wait_timeout: no other thread exists to signal; waiting on a "
+                     "condition variable is a usage error without threads");
     (void)mutex;
-    return false;
+    return true; /* release builds: a spurious wakeup; false would claim the timeout elapsed */
 }
 
 void ax_cond_signal(ax_cond *cond)

@@ -24,13 +24,30 @@ include(AxionCompilerOptions)
 include(AxionLanguages)
 
 option(AX_BUILD_TESTS "Build AXION's unit tests" ${PROJECT_IS_TOP_LEVEL})
+option(AX_BUILD_EXAMPLES "Build the examples" ${PROJECT_IS_TOP_LEVEL})
 option(AX_WEB_THREADS "Emscripten only: build with -pthread (needs a cross-origin isolated page)" OFF)
+# The platform module needs a backend for the target. Only Wayland exists so far, so it is built
+# on Linux; Windows, macOS and the web build base only until their backends land.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(_ax_platform_default ON)
+else()
+    set(_ax_platform_default OFF)
+endif()
+option(AX_BUILD_PLATFORM "Build the platform module (Linux/Wayland only for now)"
+       ${_ax_platform_default})
 set(AX_SANITIZE "" CACHE STRING
     "Sanitizers for GCC and Clang builds, as a list: address;undefined")
 
 ax_enable_platform_languages()
 
 add_subdirectory(base)
+if(AX_BUILD_PLATFORM)
+    add_subdirectory(platform)
+endif()
+
+if(AX_BUILD_EXAMPLES)
+    add_subdirectory(examples)
+endif()
 
 if(AX_BUILD_TESTS)
     enable_testing()
