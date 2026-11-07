@@ -26,8 +26,10 @@ struct ax_gpu_surface {
     WGPUPresentMode present_mode;           /* asked for */
     WGPUPresentMode effective_present_mode; /* what the swapchain uses */
     bool present_mode_supported;
-    WGPUTextureFormat format;
-    WGPUTextureFormat view_format;
+    bool want_srgb_view;
+    WGPUTextureFormat format;           /* the swapchain's */
+    WGPUTextureFormat view_format;      /* frames' views: 8-bit unorm, sRGB-encoded content */
+    WGPUTextureFormat srgb_view_format; /* Undefined unless asked for */
     WGPUCompositeAlphaMode alpha_mode;
 
     bool configured;
@@ -51,9 +53,22 @@ static WGPUTextureFormat srgb_of(WGPUTextureFormat f)
     }
 }
 
-static bool is_srgb(WGPUTextureFormat f)
+static WGPUTextureFormat unorm_of(WGPUTextureFormat f)
 {
-    return f == WGPUTextureFormat_BGRA8UnormSrgb || f == WGPUTextureFormat_RGBA8UnormSrgb;
+    switch (f) {
+    case WGPUTextureFormat_BGRA8UnormSrgb:
+        return WGPUTextureFormat_BGRA8Unorm;
+    case WGPUTextureFormat_RGBA8UnormSrgb:
+        return WGPUTextureFormat_RGBA8Unorm;
+    default:
+        return f;
+    }
+}
+
+static bool is_8bit_rgba(WGPUTextureFormat f)
+{
+    return unorm_of(f) == WGPUTextureFormat_BGRA8Unorm ||
+           unorm_of(f) == WGPUTextureFormat_RGBA8Unorm;
 }
 
 /*
@@ -130,15 +145,35 @@ static ax_result create_wsurface(ax_gpu_surface *s)
                             "ax_gpu_surface: the adapter cannot present to this surface");
     }
 
-    /* sRGB: a format that is sRGB itself, else the first format viewed as sRGB. */
+    /* Frames hold sRGB-encoded, premultiplied colors and blend in sRGB space, like browsers
+     * (decision 53): they render through an 8-bit unorm view. A unorm swapchain format is
+     * preferred; an sRGB-only surface gets its unorm counterpart as a view format. The bytes are
+     * the same either way: compositors read 8-bit buffers as sRGB. */
     s->format = caps.formats[0];
     for (i = 0; i < caps.formatCount; ++i) {
-        if (is_srgb(caps.formats[i])) {
+        if (caps.formats[i] == WGPUTextureFormat_BGRA8Unorm ||
+            caps.formats[i] == WGPUTextureFormat_RGBA8Unorm) {
             s->format = caps.formats[i];
             break;
         }
     }
-    s->view_format = srgb_of(s->format);
+    if (!is_8bit_rgba(s->format)) {
+        for (i = 0; i < caps.formatCount; ++i) {
+            if (is_8bit_rgba(caps.formats[i])) {
+                s->format = caps.formats[i];
+                break;
+            }
+        }
+    }
+    if (!is_8bit_rgba(s->format)) {
+        wgpuSurfaceCapabilitiesFreeMembers(caps);
+        wgpuSurfaceRelease(s->wsurface);
+        s->wsurface = NULL;
+        return ax_set_error(AX_ERR_UNSUPPORTED,
+                            "ax_gpu_surface: the surface offers no 8-bit RGBA format");
+    }
+    s->view_format = unorm_of(s->format);
+    s->srgb_view_format = s->want_srgb_view ? srgb_of(s->format) : WGPUTextureFormat_Undefined;
 
     /* Opaque for now; transparency comes with the Windowing API. */
     s->alpha_mode = WGPUCompositeAlphaMode_Auto;
@@ -182,11 +217,22 @@ static void configure(ax_gpu_surface *s, uint32_t width, uint32_t height)
     config.usage = WGPUTextureUsage_RenderAttachment;
     config.width = width;
     config.height = height;
-    config.viewFormatCount = s->view_format != s->format ? 1 : 0;
-    config.viewFormats = &s->view_format;
     config.alphaMode = s->alpha_mode;
     config.presentMode = s->present_mode;
-    wgpuSurfaceConfigure(s->wsurface, &config);
+    {
+        WGPUTextureFormat views[2];
+        size_t n = 0;
+        if (s->view_format != s->format) {
+            views[n++] = s->view_format;
+        }
+        if (s->srgb_view_format != WGPUTextureFormat_Undefined &&
+            s->srgb_view_format != s->format) {
+            views[n++] = s->srgb_view_format;
+        }
+        config.viewFormatCount = n;
+        config.viewFormats = views;
+        wgpuSurfaceConfigure(s->wsurface, &config);
+    }
     dt = ax_time_monotonic_ns() - t0;
 
     s->configured = true;
@@ -234,6 +280,7 @@ ax_result ax_gpu_surface_create(ax_gpu *gpu, ax_surface surface, const ax_gpu_su
     }
 
     s->pacing = desc->pacing != AX_GPU_PACING_DEFAULT ? desc->pacing : default_pacing(gpu);
+    s->want_srgb_view = desc->srgb_view;
     s->present_mode = desc->present_mode;
     if (s->present_mode == WGPUPresentMode_Undefined) {
         s->present_mode =
@@ -296,6 +343,7 @@ ax_result ax_gpu_surface_begin_frame(ax_gpu_surface *s, ax_gpu_frame *frame)
     frame->view = NULL;
     frame->width = frame->height = 0;
     frame->resized = false;
+    frame->content_mismatch = false;
     memset(&frame->target, 0, sizeof frame->target);
     frame->target.struct_size = sizeof frame->target;
 
@@ -305,6 +353,14 @@ ax_result ax_gpu_surface_begin_frame(ax_gpu_surface *s, ax_gpu_frame *frame)
     }
     if (frame->only_if_required && !frame->target.acks_configure &&
         !frame->target.commit_requested) {
+        return AX_OK;
+    }
+    /* A configure is acknowledged only with content recorded for its logical size, so content
+     * is never stretched and the window edge follows it (decision 54). */
+    if (frame->target.acks_configure && frame->content_logical_width > 0.0f &&
+        (frame->content_logical_width != frame->target.logical_width ||
+         frame->content_logical_height != frame->target.logical_height)) {
+        frame->content_mismatch = true;
         return AX_OK;
     }
     if (s->gpu->lost) {
@@ -466,6 +522,7 @@ void ax_gpu_surface_get_info(ax_gpu_surface *s, ax_gpu_surface_info *out)
     out->effective_present_mode = s->effective_present_mode;
     out->format = s->format;
     out->view_format = s->view_format;
+    out->srgb_view_format = s->srgb_view_format;
     out->width = s->width;
     out->height = s->height;
 }

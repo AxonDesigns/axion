@@ -6,6 +6,7 @@
 set(_ax_gpu_unit_tests
     test_device.c
     test_device_lost.c
+    test_upload.c
     test_webgpu_link.c)
 
 foreach(_t IN LISTS _ax_gpu_unit_tests)

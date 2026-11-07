@@ -35,7 +35,7 @@ enum { MAX_RECTS = 8 };
 
 typedef struct rect_instance {
     float rect[4];  /* x0, y0, x1, y1 in pixels */
-    float color[4]; /* linear RGBA */
+    float color[4]; /* sRGB-encoded RGBA */
 } rect_instance;
 
 typedef struct pipeline {
@@ -52,18 +52,13 @@ static WGPUStringView view_of(const char *s)
     return v;
 }
 
-static float srgb_to_linear(uint32_t c8)
-{
-    float c = (float)c8 / 255.0f;
-    return c <= 0.04045f ? c / 12.92f : powf((c + 0.055f) / 1.055f, 2.4f);
-}
-
-/* XRGB8888 sRGB (as shm.c paints it) to linear, which the sRGB view encodes back on write. */
+/* XRGB8888 sRGB, as shm.c paints it. The frame's view is unorm and blending is in sRGB space
+ * (decision 53), so the encoded values are written as they are. */
 static void linear_color(uint32_t xrgb, float out[4])
 {
-    out[0] = srgb_to_linear((xrgb >> 16) & 0xFFu);
-    out[1] = srgb_to_linear((xrgb >> 8) & 0xFFu);
-    out[2] = srgb_to_linear(xrgb & 0xFFu);
+    out[0] = (float)((xrgb >> 16) & 0xFFu) / 255.0f;
+    out[1] = (float)((xrgb >> 8) & 0xFFu) / 255.0f;
+    out[2] = (float)(xrgb & 0xFFu) / 255.0f;
     out[3] = 1.0f;
 }
 
@@ -275,7 +270,8 @@ int m0_gpu_draw_thread(void *arg)
 {
     shared *s = (shared *)arg;
     ax_gpu_desc gdesc = {sizeof gdesc, NULL, AX_GPU_ADAPTER_DEFAULT};
-    ax_gpu_surface_desc sdesc = {sizeof sdesc, AX_GPU_PACING_DEFAULT, WGPUPresentMode_Undefined};
+    ax_gpu_surface_desc sdesc = {sizeof sdesc, AX_GPU_PACING_DEFAULT, WGPUPresentMode_Undefined,
+                                 false};
     ax_gpu *gpu = NULL;
     ax_gpu_surface *surface = NULL;
     ax_gpu_info info;

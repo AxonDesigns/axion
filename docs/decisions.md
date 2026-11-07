@@ -66,6 +66,8 @@ new entry that points back to the old one.
 | 50  | 2D math and color representation in base                 | Approved       |
 | 51  | Render IR format, compatibility and building             | Approved       |
 | 52  | Render IR publication (mailbox) and the TSan job         | Approved       |
+| 53  | sRGB-space blending through a unorm view; upload ring    | Approved       |
+| 54  | Acknowledge a configure only with content of its size    | Approved       |
 
 ---
 
@@ -1174,6 +1176,8 @@ acknowledged in that case. That premise is wrong:
 
 ## 48. GPU surfaces, swapchain resizes and the FIFO queue
 
+> The format choice is amended by decision 53: frames render through an 8-bit unorm view with sRGB-encoded colors, so blending happens in sRGB space.
+
 **Context.** Decision 38 listed the risks of presenting through a Vulkan swapchain (Dawn on Mesa's
 WSI, or NVIDIA's) instead of AXION's own commits. This entry records how ax_gpu presents and
 resolves risks 3, 5 and 7, and the part of risk 1 that is not measurement. Risk 2 and the measured
@@ -1520,3 +1524,70 @@ pending one (mailbox style) rather than queueing.
     misuse is still caught, by TSan. `AX_TEST_TSAN` in the test harness detects the build.
 
 **Status.** Approved (the preset and its CI job were approved by the owner).
+
+## 53. sRGB-space blending through a unorm view; upload ring
+
+> Amends decision 48's format choice.
+
+**Context.** The document says the UI blends in sRGB space by default, like browsers and design
+tools. Decision 48 configured the swapchain with an sRGB format and rendered through an sRGB view,
+where the GPU decodes, blends in linear light and encodes again. Antialiased edges and
+translucent colors then look different from browsers: thinner light-on-dark text and edges, and
+different mixes.
+
+**Decision.**
+- **Frames render through an 8-bit unorm view** with sRGB-encoded, premultiplied colors, so the
+  GPU blends the encoded values: sRGB-space blending.
+  - The swapchain format is BGRA8Unorm or RGBA8Unorm when the surface offers one (Vulkan and
+    Metal always do). A surface that offers only sRGB formats gets its unorm counterpart as a
+    view format.
+  - For the compositor nothing changes: Wayland compositors read 8-bit buffers as sRGB whatever
+    the Vulkan format.
+  - `ax_gpu_surface_info.view_format` is now the unorm format.
+  - Colors come from the Render IR in linear light (decision 50); the renderer encodes them per
+    instance.
+- **Linear blending is kept possible:** `ax_gpu_surface_desc.srgb_view` adds the sRGB counterpart
+  as a view format (`srgb_view_format`), so a pass can blend in linear light into the same
+  texture. Layers that opt into linear blending (`AX_IR_LAYER_LINEAR_BLEND`) will render that
+  way, or into an FP16 offscreen composited afterwards; M0 draws none.
+  - It is off by default, because a mutable-format swapchain can cost something on some drivers.
+  - Tested on lavapipe with Dawn (`gpu_wayland.gpu_present.an_srgb_view_can_be_requested`).
+- **Upload ring** (`gpu/include/axion/gpu/ax_gpu_upload.h`), the minimal per-frame data path the
+  document lists for `ax_gpu`:
+  - One buffer per ring, written with `wgpuQueueWriteBuffer`. The queue orders a write after the
+    work submitted before it, so each frame starts again at offset 0 and nothing waits for the
+    GPU.
+  - A frame that needs more gets a buffer twice as large; slices already handed out stay valid
+    (the old buffer is released at the next frame). After a device loss the buffer is recreated
+    on the new device.
+  - Tests (`tests/unit/gpu/test_upload.c`): aligned offsets, reuse, growth with earlier slices
+    intact, recreation after a loss.
+  - A mapped staging ring (no copy inside the implementation) comes with the render graph.
+
+**Status.** Approved (part of the approved plan).
+
+## 54. Acknowledge a configure only with content of its size
+
+**Context.** With a scene thread recording the Render IR ahead of the render thread, the newest
+snapshot can have been recorded for the previous window size when a configure arrives.
+Acknowledging the configure with it would either stretch it (forbidden) or show it at the old size
+inside the new buffer, with the window edge (client-side decorations) ahead of the content.
+
+**Decision.**
+- **`ax_gpu_frame.content_logical_width/height`:** the logical size the frame's content was
+  recorded for. When a frame would acknowledge a configure of another logical size,
+  `ax_gpu_surface_begin_frame` acquires nothing and sets `content_mismatch`. Nothing is
+  acknowledged or committed: the compositor keeps showing the last frame, consistent with the
+  last acknowledged size, as with the drain of decision 48. The caller asks the scene for the new
+  size and retries.
+- A scale-only change (same logical size) does not wait: the renderer applies the new scale to
+  the same snapshot.
+- The caller passes 0 to accept any content. That is the bounded wait's way out: when it expires,
+  the frame acknowledges and draws the newest snapshot unstretched (see the renderer's entry for
+  the bound and for hidden windows, which decision 40 requires to keep acknowledging).
+- Test: `gpu_wayland.gpu_present.configures_wait_for_content_of_their_size`, where content lags
+  three tries behind each new size. Every frame shown matches its content's size, and both resizes
+  complete.
+
+**Status.** Approved by the owner, with a total bound on the wait and a rule for hidden windows
+(implemented with the renderer, step 6).

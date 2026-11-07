@@ -27,12 +27,15 @@ typedef struct presenter {
     ax_surface surface;
     ax_gpu_pacing pacing;
     uint32_t lose_device_at; /* frame number, 0 = never */
+    uint32_t content_lag;    /* > 0: content follows a new size only after this many tries */
+    bool srgb_view;          /* ask for the swapchain's sRGB view too */
 
     ax_atomic_u32 stop;
     ax_atomic_u32 state; /* 0 starting, 1 running, 2 no adapter, 3 failed */
     ax_atomic_u32 frames;
     ax_atomic_u32 size_mismatches; /* texture size != the configure's pixel size */
     ax_atomic_u32 failures;
+    ax_atomic_u32 content_mismatches; /* frames that did not acknowledge for lack of content */
 
     /* final, read after join */
     ax_present_stats present;
@@ -75,10 +78,13 @@ static int presenter_main(void *arg)
 {
     presenter *p = (presenter *)arg;
     ax_gpu_desc gdesc = {sizeof gdesc, NULL, AX_GPU_ADAPTER_SOFTWARE};
-    ax_gpu_surface_desc sdesc = {sizeof sdesc, AX_GPU_PACING_DEFAULT, WGPUPresentMode_Undefined};
+    ax_gpu_surface_desc sdesc = {sizeof sdesc, AX_GPU_PACING_DEFAULT, WGPUPresentMode_Undefined,
+                                 false};
     ax_gpu *gpu = NULL;
     ax_gpu_surface *surface = NULL;
     uint32_t n = 0;
+    float content_w = 0.0f, content_h = 0.0f; /* the size "the scene" has recorded */
+    uint32_t tries = 0;
     ax_result r;
 
     axt_gpu_pin_drivers();
@@ -88,6 +94,7 @@ static int presenter_main(void *arg)
         return 0;
     }
     sdesc.pacing = p->pacing;
+    sdesc.srgb_view = p->srgb_view;
     if (ax_gpu_surface_create(gpu, p->surface, &sdesc, &surface) != AX_OK) {
         ax_gpu_destroy(gpu);
         ax_atomic_store_u32(&p->state, 3, AX_MO_RELEASE);
@@ -99,18 +106,58 @@ static int presenter_main(void *arg)
         ax_gpu_frame f;
         memset(&f, 0, sizeof f);
         f.struct_size = sizeof f;
+        f.content_logical_width = content_w;
+        f.content_logical_height = content_h;
         r = ax_gpu_surface_begin_frame(surface, &f);
         if (r != AX_OK && r != AX_ERR_DEVICE_LOST) {
             ax_atomic_fetch_add_u32(&p->failures, 1, AX_MO_RELAXED);
             break;
         }
+        if (f.content_mismatch) {
+            /* Like a scene thread that records the new size a little later: nothing is acquired
+             * or acknowledged meanwhile. Retry without waiting for a frame callback, since no
+             * commit asked for one. */
+            ax_atomic_fetch_add_u32(&p->content_mismatches, 1, AX_MO_RELAXED);
+            if (++tries >= p->content_lag) {
+                content_w = f.target.logical_width;
+                content_h = f.target.logical_height;
+                tries = 0;
+            }
+            continue;
+        }
         if (f.texture != NULL) {
+            if (p->content_lag != 0) {
+                if (content_w == 0.0f) {
+                    content_w = f.target.logical_width; /* the first frame records its size */
+                    content_h = f.target.logical_height;
+                }
+                if (f.target.logical_width != content_w || f.target.logical_height != content_h) {
+                    ax_atomic_fetch_add_u32(&p->size_mismatches, 1, AX_MO_RELAXED);
+                }
+            }
             if (f.width != f.target.pixel_width || f.height != f.target.pixel_height ||
                 wgpuTextureGetWidth(f.texture) != f.target.pixel_width ||
                 wgpuTextureGetHeight(f.texture) != f.target.pixel_height) {
                 ax_atomic_fetch_add_u32(&p->size_mismatches, 1, AX_MO_RELAXED);
             }
-            clear(gpu, f.view, n);
+            if (p->srgb_view) {
+                /* Render through the sRGB view, as a linear-light pass would. */
+                WGPUTextureViewDescriptor vd = WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
+                ax_gpu_surface_info si;
+                WGPUTextureView v;
+                memset(&si, 0, sizeof si);
+                si.struct_size = sizeof si;
+                ax_gpu_surface_get_info(surface, &si);
+                vd.format = si.srgb_view_format;
+                vd.dimension = WGPUTextureViewDimension_2D;
+                vd.mipLevelCount = 1;
+                vd.arrayLayerCount = 1;
+                v = wgpuTextureCreateView(f.texture, &vd);
+                clear(gpu, v, n);
+                wgpuTextureViewRelease(v);
+            } else {
+                clear(gpu, f.view, n);
+            }
             if (ax_gpu_surface_present(surface, &f) != AX_OK) {
                 ax_atomic_fetch_add_u32(&p->failures, 1, AX_MO_RELAXED);
             }
@@ -184,7 +231,8 @@ static bool pump_frames(fixture *f, uint32_t more)
 }
 
 /* 1: running; 0: no software adapter (skip); -1: failed (reported). */
-static int fixture_start(fixture *f, ax_gpu_pacing pacing, uint32_t lose_device_at)
+static int fixture_start(fixture *f, ax_gpu_pacing pacing, uint32_t lose_device_at,
+                         uint32_t content_lag, bool srgb_view)
 {
     ax_window_desc d = axt_window_desc(320, 240, AX_DECORATIONS_NONE);
     uint32_t state;
@@ -197,6 +245,9 @@ static int fixture_start(fixture *f, ax_gpu_pacing pacing, uint32_t lose_device_
     }
     f->p.pacing = pacing;
     f->p.lose_device_at = lose_device_at;
+    f->p.content_lag = content_lag;
+    f->p.srgb_view = srgb_view;
+    ax_atomic_init_u32(&f->p.content_mismatches, 0);
     ax_atomic_init_u32(&f->p.stop, 0);
     ax_atomic_init_u32(&f->p.state, 0);
     ax_atomic_init_u32(&f->p.frames, 0);
@@ -237,16 +288,20 @@ static size_t fixture_stop(fixture *f)
     return axt_app_destroy(&f->t);
 }
 
-static bool is_srgb_format(WGPUTextureFormat format)
+/* Frames render sRGB-encoded colors through an 8-bit unorm view (decision 53). */
+static bool is_unorm_format(WGPUTextureFormat format)
 {
-    return format == WGPUTextureFormat_BGRA8UnormSrgb || format == WGPUTextureFormat_RGBA8UnormSrgb;
+    return format == WGPUTextureFormat_BGRA8Unorm || format == WGPUTextureFormat_RGBA8Unorm;
 }
 
-#define START(f, pacing, lose_at)                                                        \
+#define START(f, pacing, lose_at)          START_EX(f, pacing, lose_at, 0, false)
+#define START_LAG(f, pacing, lose_at, lag) START_EX(f, pacing, lose_at, lag, false)
+
+#define START_EX(f, pacing, lose_at, lag, srgb)                                          \
     do {                                                                                 \
         int axt__s;                                                                      \
         AXT_REQUIRE_COMPOSITOR();                                                        \
-        axt__s = fixture_start((f), (pacing), (lose_at));                                \
+        axt__s = fixture_start((f), (pacing), (lose_at), (lag), (srgb));                 \
         if (axt__s == 0) {                                                               \
             AX_SKIP("no software Vulkan adapter (lavapipe) for the presentation tests"); \
         }                                                                                \
@@ -266,7 +321,10 @@ static void check_presented(fixture *f, uint32_t frames)
     AX_CHECK_EQ_U(p->present.lost_frames, 0);
     AX_CHECK_EQ_U(p->gpu.failed_presents, 0);
     AX_CHECK_EQ_U(p->uncaptured_errors, 0);
-    AX_CHECK(is_srgb_format(p->info.view_format));
+    AX_CHECK(is_unorm_format(p->info.view_format));
+    if (!p->srgb_view) {
+        AX_CHECK_EQ_U(p->info.srgb_view_format, WGPUTextureFormat_Undefined);
+    }
 }
 
 AX_TEST(frames_are_presented_with_compositor_pacing)
@@ -316,6 +374,27 @@ AX_TEST(resizes_reconfigure_the_swapchain_with_compositor_pacing)
     check_resizes(AX_GPU_PACING_COMPOSITOR);
 }
 
+/* A configure is acknowledged only by a frame whose content was recorded for its logical size
+ * (decision 54): until then begin_frame acquires nothing, and the compositor keeps showing the
+ * last frame, consistent with the last acknowledged size. */
+AX_TEST(configures_wait_for_content_of_their_size)
+{
+    fixture f;
+    START_LAG(&f, AX_GPU_PACING_COMPOSITOR, 0, 3);
+    AX_CHECK(pump_frames(&f, 10));
+    ax__wl_test_set_maximized(f.window, true);
+    AX_CHECK(pump_frames(&f, 20));
+    ax__wl_test_set_maximized(f.window, false);
+    AX_CHECK(pump_frames(&f, 20));
+    AX_CHECK_EQ_U(fixture_stop(&f), 0);
+
+    check_presented(&f, 50); /* includes: every frame shown matched its content's size */
+    AX_CHECK_EQ_U(f.p.gpu.resizes, 2);
+    /* Each of the two new sizes waited three tries for its content. */
+    AX_CHECK(ax_atomic_load_u32(&f.p.content_mismatches, AX_MO_RELAXED) >= 6);
+    AX_CHECK_EQ_U(f.p.info.width, 320);
+}
+
 /* With FIFO and wp_fifo_v1, Mesa's swapchain commits wait in the compositor's queue; weston 15
  * applies a configure acknowledgement on receipt and then rejects the older, queued commits
  * (decision 48, docs/upstream/weston-fifo-ack-configure.md). Without wp_fifo_v1 nothing queues and
@@ -350,4 +429,16 @@ AX_TEST(presentation_continues_after_a_device_loss)
     AX_CHECK_EQ_U(f.p.gpu.recreations, 1);
     AX_CHECK_EQ_U(f.p.frames_before_loss, 10);
     AX_CHECK(f.p.present.presented > f.p.presented_before_loss + 10);
+}
+
+/* Passes that blend in linear light can render through an sRGB view of the same texture. */
+AX_TEST(an_srgb_view_can_be_requested)
+{
+    fixture f;
+    START_EX(&f, AX_GPU_PACING_COMPOSITOR, 0, 0, true);
+    AX_CHECK(pump_frames(&f, 20));
+    AX_CHECK_EQ_U(fixture_stop(&f), 0);
+    check_presented(&f, 20);
+    AX_CHECK(f.p.info.srgb_view_format == WGPUTextureFormat_BGRA8UnormSrgb ||
+             f.p.info.srgb_view_format == WGPUTextureFormat_RGBA8UnormSrgb);
 }

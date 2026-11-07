@@ -14,7 +14,7 @@ else()
     set(_ax_webgpu_impl src/impl_wgpu_native.c)
 endif()
 
-add_library(ax_gpu STATIC src/gpu.c ${_ax_webgpu_impl})
+add_library(ax_gpu STATIC src/gpu.c src/upload.c ${_ax_webgpu_impl})
 add_library(axion::gpu ALIAS ax_gpu)
 target_include_directories(ax_gpu
     PUBLIC  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"

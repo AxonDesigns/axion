@@ -167,6 +167,84 @@ bool axt_gpu_clear_and_read_back(ax_gpu *gpu)
     return bad == 0;
 }
 
+/* ---- Reading buffers and textures back -------------------------------------------------- */
+
+static bool map_and_copy(ax_gpu *gpu, WGPUBuffer staging, uint64_t size, void *out, uint32_t rows,
+                         uint32_t row_bytes, uint32_t stride)
+{
+    WGPUBufferMapCallbackInfo map_cb = WGPU_BUFFER_MAP_CALLBACK_INFO_INIT;
+    map_result mapped = {false, WGPUMapAsyncStatus_Error};
+    const uint8_t *p;
+    uint32_t y;
+    map_cb.mode = WGPUCallbackMode_AllowProcessEvents;
+    map_cb.callback = on_mapped;
+    map_cb.userdata1 = &mapped;
+    if (!ax_gpu_wait(gpu, wgpuBufferMapAsync(staging, WGPUMapMode_Read, 0, (size_t)size, map_cb),
+                     &mapped.done, 10000000000ull) ||
+        mapped.status != WGPUMapAsyncStatus_Success) {
+        ax_test_fail(__FILE__, __LINE__, "mapping a read-back buffer failed");
+        return false;
+    }
+    p = wgpuBufferGetConstMappedRange(staging, 0, (size_t)size);
+    for (y = 0; p != NULL && y < rows; ++y) {
+        memcpy((uint8_t *)out + (size_t)y * row_bytes, p + (size_t)y * stride, row_bytes);
+    }
+    wgpuBufferUnmap(staging);
+    return p != NULL;
+}
+
+bool axt_gpu_read_buffer(ax_gpu *gpu, WGPUBuffer src, uint64_t offset, uint64_t size, void *out)
+{
+    WGPUBufferDescriptor bdesc = WGPU_BUFFER_DESCRIPTOR_INIT;
+    WGPUCommandEncoder encoder;
+    WGPUCommandBuffer commands;
+    WGPUBuffer staging;
+    bool ok;
+    bdesc.usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_MapRead;
+    bdesc.size = size;
+    staging = wgpuDeviceCreateBuffer(ax_gpu_device(gpu), &bdesc);
+    encoder = wgpuDeviceCreateCommandEncoder(ax_gpu_device(gpu), NULL);
+    wgpuCommandEncoderCopyBufferToBuffer(encoder, src, offset, staging, 0, size);
+    commands = wgpuCommandEncoderFinish(encoder, NULL);
+    wgpuQueueSubmit(ax_gpu_queue(gpu), 1, &commands);
+    wgpuCommandBufferRelease(commands);
+    wgpuCommandEncoderRelease(encoder);
+    ok = map_and_copy(gpu, staging, size, out, 1, (uint32_t)size, (uint32_t)size);
+    wgpuBufferRelease(staging);
+    return ok;
+}
+
+bool axt_gpu_read_texture(ax_gpu *gpu, WGPUTexture texture, uint32_t width, uint32_t height,
+                          uint8_t *out)
+{
+    const uint32_t row = width * 4u;
+    const uint32_t stride = (row + 255u) & ~255u; /* copy rows are 256-byte aligned */
+    WGPUBufferDescriptor bdesc = WGPU_BUFFER_DESCRIPTOR_INIT;
+    WGPUTexelCopyTextureInfo src = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
+    WGPUTexelCopyBufferInfo dst = WGPU_TEXEL_COPY_BUFFER_INFO_INIT;
+    WGPUExtent3D extent = {width, height, 1};
+    WGPUCommandEncoder encoder;
+    WGPUCommandBuffer commands;
+    WGPUBuffer staging;
+    bool ok;
+    bdesc.usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_MapRead;
+    bdesc.size = (uint64_t)stride * height;
+    staging = wgpuDeviceCreateBuffer(ax_gpu_device(gpu), &bdesc);
+    encoder = wgpuDeviceCreateCommandEncoder(ax_gpu_device(gpu), NULL);
+    src.texture = texture;
+    dst.buffer = staging;
+    dst.layout.bytesPerRow = stride;
+    dst.layout.rowsPerImage = height;
+    wgpuCommandEncoderCopyTextureToBuffer(encoder, &src, &dst, &extent);
+    commands = wgpuCommandEncoderFinish(encoder, NULL);
+    wgpuQueueSubmit(ax_gpu_queue(gpu), 1, &commands);
+    wgpuCommandBufferRelease(commands);
+    wgpuCommandEncoderRelease(encoder);
+    ok = map_and_copy(gpu, staging, bdesc.size, out, height, row, stride);
+    wgpuBufferRelease(staging);
+    return ok;
+}
+
 /* ---- Driver pinning ------------------------------------------------------------------------ */
 
 #if defined(__linux__)
