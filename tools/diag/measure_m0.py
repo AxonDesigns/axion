@@ -4,8 +4,9 @@
 """Measures examples/m0_window on a KDE Plasma (KWin) desktop across the whole matrix and prints a
 summary table (development only; decision 49).
 
-Matrix: renderer (shm, gpu with compositor pacing, gpu with driver pacing) x decorations (native,
-none) x output (every enabled monitor) x state (quiet, resize).
+Matrix: renderer (shm, ir with compositor pacing, ir with driver pacing) x decorations (native,
+none) x output (every enabled monitor) x state (quiet, resize). The ir renderer is the Render IR
+path: scene thread, mailbox, ax_render_wgpu (decisions 51-57).
 
 A KWin declarative script (kwin_place_m0.qml.in) moves the window onto the output and, for
 "resize" runs, resizes it about 120 times per second. With --manual-resize the script only places
@@ -14,7 +15,7 @@ the window and asks you to drag its corner, announcing each run that needs your 
     tools/diag/measure_m0.py --binary build/clang-release/examples/m0_window/m0_window
 
 Options: --seconds N (measured seconds per run, after a warm-up), --manual-resize,
---with-lavapipe (adds GPU rows on Mesa's software driver, Mesa's WSI on KWin),
+--with-lavapipe (adds ir rows on Mesa's software driver, Mesa's WSI on KWin),
 --only-renderer, --only-output, --log FILE (raw output of every run).
 """
 import argparse
@@ -37,7 +38,9 @@ STATS_RE = re.compile(
     r"(?: \| gpu: resizes (?P<resizes>\d+) \((?P<rs_mean>[\d.]+) ms mean, (?P<rs_max>[\d.]+) ms max\) "
     r"\| acquire (?P<acq_mean>[\d.]+) ms mean, (?P<acq_max>[\d.]+) ms max \| present (?P<pr_mean>[\d.]+) ms mean, "
     r"(?P<pr_max>[\d.]+) ms max \| deferred acks (?P<deferred>\d+) \(drain (?P<drain_max>[\d.]+) ms max\) "
-    r"\| failed (?P<failed>\d+))?")
+    r"\| failed (?P<failed>\d+))?"
+    r"(?:.*? \| ir: cleared (?P<cleared>\d+) \| scene late (?P<late>\d+) \| forced (?P<forced>\d+) "
+    r"\| hidden (?P<hidden>\d+) \| wait (?P<wait_max>[\d.]+) ms max)?")
 
 
 def run(cmd, **kw):
@@ -121,6 +124,9 @@ def summarize(samples):
         "acq_max": max(f("acq_max")) if f("acq_max") else None,
         "deferred": sum(f("deferred")) if f("deferred") else None,
         "failed": sum(f("failed")) if f("failed") else None,
+        "late": sum(f("late")) if f("late") else None,
+        "forced": sum(f("forced")) if f("forced") else None,
+        "wait_max": max(f("wait_max")) if f("wait_max") else None,
         "seconds": n,
     }
 
@@ -138,15 +144,15 @@ def main():
 
     configs = [
         {"name": "shm", "renderer": "shm"},
-        {"name": "gpu compositor", "renderer": "gpu", "args": ["--pacing=compositor"]},
-        {"name": "gpu driver", "renderer": "gpu", "args": ["--pacing=driver"]},
+        {"name": "ir compositor", "renderer": "ir", "args": ["--pacing=compositor"]},
+        {"name": "ir driver", "renderer": "ir", "args": ["--pacing=driver"]},
     ]
     if a.with_lavapipe:
         icd = next((p for p in LAVAPIPE_ICDS if os.path.exists(p)), None)
         if icd is None:
             sys.exit("--with-lavapipe: lavapipe's ICD file not found")
         for pacing in ("compositor", "driver"):
-            configs.append({"name": "lavapipe " + pacing, "renderer": "gpu",
+            configs.append({"name": "lavapipe " + pacing, "renderer": "ir",
                             "args": ["--pacing=" + pacing, "--adapter=software"],
                             "env": {"VK_DRIVER_FILES": icd}})
     if a.only_renderer:
@@ -185,13 +191,14 @@ def main():
                         print("  PROTOCOL ERROR: " + perr, flush=True)
 
     hdr = ("renderer", "decor", "output", "state", "Hz", "pres/s", "miss/s", "disc/s", "lost",
-           "cfg->pres ms", "resize/s", "resize ms", "acq max", "deferred", "err")
-    fmt = "%-16s %-6s %-13s %-6s %6s %7s %7s %7s %5s %13s %8s %11s %8s %8s %s"
+           "cfg->pres ms", "resize/s", "resize ms", "acq max", "deferred", "late", "forced",
+           "wait max", "err")
+    fmt = "%-16s %-6s %-13s %-6s %6s %7s %7s %7s %5s %13s %8s %11s %8s %8s %5s %6s %8s %s"
     print("\n" + fmt % hdr)
     for name, deco, out, state, s, perr, code in rows:
         if s is None:
             print(fmt % (name, deco, out, state, "-", "-", "-", "-", "-", "-", "-", "-", "-", "-",
-                         perr or ("exit %d, no stats" % code)))
+                         "-", "-", "-", perr or ("exit %d, no stats" % code)))
             continue
         print(fmt % (name, deco, out, state, "%.1f" % s["hz"], "%.1f" % s["presented"], "%.2f" % s["missed"],
                      "%.2f" % s["discarded"], "%d" % s["lost"],
@@ -200,6 +207,9 @@ def main():
                      ("%.2f / %.2f" % (s["rs_mean"], s["rs_max"])) if s["resizes"] else "-",
                      ("%.2f" % s["acq_max"]) if s["acq_max"] is not None else "-",
                      ("%d" % s["deferred"]) if s["deferred"] is not None else "-",
+                     ("%d" % s["late"]) if s["late"] is not None else "-",
+                     ("%d" % s["forced"]) if s["forced"] is not None else "-",
+                     ("%.2f" % s["wait_max"]) if s["wait_max"] is not None else "-",
                      perr or ""))
     if log:
         log.close()

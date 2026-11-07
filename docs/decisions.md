@@ -70,6 +70,7 @@ new entry that points back to the old one.
 | 54  | Acknowledge a configure only with content of its size    | Approved       |
 | 55  | ax_render_wgpu: vtbl, coverage and pipelines             | Deviation      |
 | 56  | Coverage tests against a provisional CPU reference       | Approved       |
+| 57  | Render-thread frame step: bounded size handshake         | Approved       |
 
 ---
 
@@ -1712,3 +1713,61 @@ tested against. It arrives in M1; M0's renderer needs a reference now.
 
 **Status.** Approved (part of the approved plan; the owner asked for the reference to be recorded
 as provisional).
+
+## 57. Render-thread frame step: bounded size handshake
+
+**Context.** Decision 54 holds a configure until a snapshot of its logical size exists. The owner
+asked for a total bound on that wait, like the document's bounded wait, and for decision 40's
+guarantee (a hidden window always acknowledges its configures) to survive a scene that stops
+recording for hidden windows.
+
+**Decision.**
+- **`ax_render_frame`** (`render/frame/`, needs the platform module) is one render-thread frame
+  for one surface. It is M0 scaffolding shared by `examples/m0_window` and the presentation tests;
+  the core's render thread takes it over in M1. Each step:
+  1. waits for the frame (`vtbl->wait_frame`);
+  2. renders the newest snapshot from the mailbox;
+  3. asks the scene, through a callback, to record the next frame: one refresh after this
+     frame's predicted present time, at this frame's logical size. The scene works on frame N+1
+     while the render thread presents frame N, as in the document.
+- **Size handshake.** When `render` reports a content mismatch, the step asks the scene for the
+  new size at once, waits for its next publication (`ax_ir_mailbox_wait`) and renders again.
+  - The wait has a **total bound per frame**. When it expires, the frame is acknowledged with the
+    newest snapshot as it is (`AX_FRAME_ACCEPT_ANY_SIZE`): drawn unstretched, anchored top-left,
+    the background filling the rest. It is counted as `forced_acks`, apart from `scene_late`
+    (configures that waited and got their snapshot in time).
+  - **Hidden windows:** the bound applies at once when the window is occluded
+    (`ax_window_info.occluded`), counted as `hidden_acks`. Decision 40's guarantee then holds
+    whatever the scene does for hidden windows. The alternative (the scene always recording for
+    hidden windows) would leave the guarantee to every future scene implementation.
+  - Default bound: half a refresh, within 2-8 ms (`ax_render_frame_default_max_wait`), so a late
+    scene costs at most the frame it delays. `m0_window --max-wait-ms` overrides it. The value
+    is to be confirmed with the measurements of M0's exit criterion.
+- **Example** (`examples/m0_window --renderer=ir`, replacing the minimal pipeline of `gpu.c`):
+  - main thread: pump;
+  - app thread: events and hit regions;
+  - scene thread (`scene.c`): records each request into the mailbox. It waits only for
+    requests, never for the render thread;
+  - render thread (`ir.c`): `ax_render_wgpu` and `ax_render_frame_step`.
+  - The scene draws rounded rects with radii per corner, a turning rounded rect and a turning
+    hairline fan, a rect moving at 7.3 units a second, rects 0.25-1.5 units thin (straight and
+    rotated) and the timed bar. With `--decorations=none` it also draws the title band, resize
+    borders and corners as rects over exactly the published hit-test regions, plus a one-unit
+    outline.
+  - `--stats` adds the frame step's counters after the `gpu:` part, read by
+    `tools/diag/measure_m0.py`, whose matrix now measures `ir` instead of `gpu`.
+- **Measured at start** (Dawn, Release, NVIDIA 615.78, KWin): first frame (cleared) 8-10 ms after
+  attaching the surface, first frame with content 25-31 ms, pipeline ready in 13-15 ms. On
+  lavapipe: 6 ms and 77 ms.
+- **Tests** (`tests/integration/gpu_wayland/test_ir_present.c`, headless weston, lavapipe). The
+  render thread wraps the renderer's vtbl and counts every acknowledgement made with a snapshot of
+  another size without `ACCEPT_ANY_SIZE`: always zero.
+  - snapshots are presented;
+  - a scene 5 ms late on new sizes is waited for (`scene_late`, no forced acknowledgement);
+  - a stalled scene is waited for only up to a 30 ms bound;
+  - a hidden window with a stalled scene and a 10 s bound acknowledges at once
+    (`ax__wl_test_set_occluded`, a new test hook that persists across configures);
+  - after a device loss, frames are cleared until the new pipeline is ready, and content resumes.
+
+**Status.** Approved (the bound and the rule for hidden windows were the owner's adjustments;
+the bound's value is pending the exit-criterion measurements).

@@ -205,7 +205,7 @@ static void xdg_surface_configure(void *data, struct xdg_surface *s, uint32_t se
     publish(w, size_changed, false);
 
     ax__window_set_focus(w, ww->pending_activated);
-    ax__window_set_occluded(w, ww->pending_suspended);
+    ax__window_set_occluded(w, ww->pending_suspended || ww->test_suspended);
 }
 
 static const struct xdg_surface_listener xdg_surface_listener = {xdg_surface_configure};
@@ -413,5 +413,14 @@ void ax__wl_test_set_maximized(ax_window window, bool maximized)
         xdg_toplevel_set_maximized(wl_window_of(w)->toplevel);
     } else {
         xdg_toplevel_unset_maximized(wl_window_of(w)->toplevel);
+    }
+}
+
+void ax__wl_test_set_occluded(ax_window window, bool occluded)
+{
+    ax_window_impl *w = ax__window_from_handle(window.h);
+    if (w != NULL) {
+        wl_window_of(w)->test_suspended = occluded;
+        ax__window_set_occluded(w, occluded);
     }
 }

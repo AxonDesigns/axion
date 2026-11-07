@@ -13,7 +13,7 @@ linked into an AXION library or example, or shipped.
 cmake -S . -B build/diag -G Ninja -DCMAKE_BUILD_TYPE=Release -DAX_BUILD_DIAG_TOOLS=ON
 cmake --build build/diag
 LD_PRELOAD=$PWD/build/diag/tools/diag/libax_wl_read_trace.so \
-    build/diag/examples/m0_window/m0_window --renderer=gpu --duration=3
+    build/diag/examples/m0_window/m0_window --renderer=ir --duration=3
 
 tools/diag/measure_m0.py --binary build/clang-release/examples/m0_window/m0_window --with-lavapipe
 ```

@@ -2,7 +2,7 @@
  * Copyright 2026 Axon Works
  * SPDX-License-Identifier: Apache-2.0
  *
- * m0_window: what the two renderers (shared memory, GPU) share.
+ * m0_window: what the two renderers (shared memory, Render IR) share.
  */
 #ifndef M0_WINDOW_H
 #define M0_WINDOW_H
@@ -14,7 +14,7 @@
 #include "axion/base/ax_atomic.h"
 #include "axion/platform/ax_present.h"
 
-typedef enum m0_renderer { M0_RENDERER_SHM, M0_RENDERER_GPU } m0_renderer;
+typedef enum m0_renderer { M0_RENDERER_SHM, M0_RENDERER_IR } m0_renderer;
 
 typedef struct options {
     uint32_t decorations;
@@ -22,9 +22,10 @@ typedef struct options {
     double duration; /* seconds; 0 = until closed */
     float width, height;
     m0_renderer renderer;
-    int present_mode; /* gpu: WGPUPresentMode, 0 = the pacing's own */
-    int pacing;       /* gpu: ax_gpu_pacing, 0 = default */
-    int adapter;      /* gpu: ax_gpu_adapter_kind */
+    int present_mode;     /* ir: WGPUPresentMode, 0 = the pacing's own */
+    int pacing;           /* ir: ax_gpu_pacing, 0 = default */
+    int adapter;          /* ir: ax_gpu_adapter_kind */
+    uint64_t max_wait_ns; /* ir: bound of the size handshake's wait, 0 = default */
 } options;
 
 typedef struct shared {
@@ -90,8 +91,8 @@ void m0_print_totals(void);
  */
 
 int m0_shm_draw_thread(void *arg);
-#if defined(M0_HAVE_GPU)
-int m0_gpu_draw_thread(void *arg);
+#if defined(M0_HAVE_IR)
+int m0_ir_draw_thread(void *arg); /* starts the scene thread too */
 #endif
 
 #endif

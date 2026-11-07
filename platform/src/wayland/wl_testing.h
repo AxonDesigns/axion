@@ -20,4 +20,8 @@ void ax__wl_test_inject_close(ax_window window);
  * a new size: the integration tests' way to trigger a compositor-driven resize. Main thread. */
 void ax__wl_test_set_maximized(ax_window window, bool maximized);
 
+/* Marks the window hidden or visible as the compositor's `suspended` state would (weston headless
+ * never suspends a window). It stays so across configures until changed again. Main thread. */
+void ax__wl_test_set_occluded(ax_window window, bool occluded);
+
 #endif /* AX_PLATFORM_WL_TESTING_H */
