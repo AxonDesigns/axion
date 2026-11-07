@@ -1332,7 +1332,7 @@ present or hit a protocol error.
     reached 13, during a 5.3 ms recreation.
   - Cause: every configure with a new size recreates the swapchain, 1.5 ms mean and 5.3 ms max on
     NVIDIA 615.78, out of a 3.85 ms frame. shm reuses its buffers.
-  - Accepted by the owner for this step. Tracked in a GitHub issue, to be reviewed when M0's exit
+  - Accepted by the owner for this step. Tracked in issue #2 (AxonDesigns/axion), to be reviewed when M0's exit
     criterion (smooth resize at the display's refresh rate) is measured.
 - **Future work: a swapchain reserved in sizes rounded up, cropped with the viewport's source.**
   - The swapchain would be allocated at the configure's pixel size rounded up to a bucket, for
