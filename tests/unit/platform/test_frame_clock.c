@@ -58,6 +58,54 @@ AX_TEST(counts_missed_vblanks_without_counter)
     AX_CHECK_EQ_U(c.missed_vblanks, 1);
 }
 
+/* Found measuring M0's exit criterion on KWin, which reports no vblank counter: a window moved
+ * from a 260 Hz output to a 72 Hz one counted 4 vblanks per frame and measured 288 Hz forever. */
+AX_TEST(moving_to_a_slower_output_without_counter_measures_again)
+{
+    const uint64_t hz260 = 3846154ull, hz72 = 13906000ull;
+    ax_frame_clock c;
+    uint64_t t = 1000 * MS;
+    int i;
+    ax_frame_clock_init(&c, 0);
+    for (i = 0; i < 100; ++i, t += hz260) {
+        ax_frame_clock_presented(&c, t, hz260, 0, false, 0);
+    }
+    AX_CHECK(ax_frame_clock_refresh(&c) > hz260 - 1000 &&
+             ax_frame_clock_refresh(&c) < hz260 + 1000);
+    t += hz72 - hz260;
+    for (i = 0; i < 3; ++i, t += hz72) {
+        ax_frame_clock_presented(&c, t, hz72, 0, false, 0);
+    }
+    ax_frame_clock_reset_stats(&c);
+    for (i = 0; i < 100; ++i, t += hz72) {
+        ax_frame_clock_presented(&c, t, hz72, 0, false, 0);
+    }
+    AX_CHECK(ax_frame_clock_refresh(&c) > hz72 - 1000 && ax_frame_clock_refresh(&c) < hz72 + 1000);
+    AX_CHECK_EQ_U(c.missed_vblanks, 0);
+    /* Predictions land on the 72 Hz boundaries, not on quarters of them. */
+    AX_CHECK(ax_frame_clock_predict(&c, t - hz72 + MS) > t - 1000);
+}
+
+/* With a counter, the new output's counter starts elsewhere: the jump is not a run of misses. */
+AX_TEST(moving_to_another_output_with_counter_ignores_the_old_counter)
+{
+    const uint64_t hz260 = 3846154ull, hz72 = 13906000ull;
+    ax_frame_clock c;
+    uint64_t t = 1000 * MS, msc = 1000000;
+    int i;
+    ax_frame_clock_init(&c, 0);
+    for (i = 0; i < 100; ++i, t += hz260, ++msc) {
+        ax_frame_clock_presented(&c, t, hz260, msc, true, 0);
+    }
+    t += hz72 - hz260;
+    msc = 5000000; /* the 72 Hz output's own counter */
+    for (i = 0; i < 100; ++i, t += hz72, ++msc) {
+        ax_frame_clock_presented(&c, t, hz72, msc, true, 0);
+    }
+    AX_CHECK(ax_frame_clock_refresh(&c) > hz72 - 1000 && ax_frame_clock_refresh(&c) < hz72 + 1000);
+    AX_CHECK_EQ_U(c.missed_vblanks, 0);
+}
+
 AX_TEST(predicts_next_boundary_after_now)
 {
     ax_frame_clock c;
