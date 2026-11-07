@@ -35,6 +35,10 @@ foreach(_t IN LISTS _ax_gpu_wayland_tests)
 endforeach()
 
 get_property(_tests DIRECTORY PROPERTY TESTS)
+# They time frames on a software renderer: under `ctest -j`, other tests competing for the CPU
+# make them miss deadlines (lost frames, late acknowledgements). Run each alone; `RESOURCE_LOCK`
+# would only keep them from overlapping one another.
+set_property(TEST ${_tests} PROPERTY RUN_SERIAL TRUE)
 if(_ax_lavapipe_icd)
     set_property(TEST ${_tests} APPEND PROPERTY ENVIRONMENT "VK_DRIVER_FILES=${_ax_lavapipe_icd}")
 endif()
