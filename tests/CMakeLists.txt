@@ -6,6 +6,14 @@ target_include_directories(ax_test_harness PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/h
 target_link_libraries(ax_test_harness PUBLIC ax_base)
 ax_target_defaults(ax_test_harness)
 
+# Assertions (and so death tests) exist in builds without NDEBUG: Debug with single-config
+# generators, which is all the presets use.
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set(AX_TESTS_HAVE_ASSERTS ON)
+else()
+    set(AX_TESTS_HAVE_ASSERTS OFF)
+endif()
+
 # ax_add_unit_test(<module> <source>)
 #   <source> is relative to the calling CMakeLists.txt.
 #   Builds one executable per test file and registers each AX_TEST(<case>) in it as the ctest
@@ -20,11 +28,15 @@ function(ax_add_unit_test module source)
 
     # Re-run the scan whenever the test file changes.
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_src}")
-    file(STRINGS "${_src}" _lines REGEX "^AX_TEST\\([A-Za-z0-9_]+\\)")
+    file(STRINGS "${_src}" _lines REGEX "^AX_(DEATH_)?TEST\\([A-Za-z0-9_]+\\)")
     set(_cases "")
+    set(_death_cases "")
     foreach(_line IN LISTS _lines)
-        string(REGEX REPLACE "^AX_TEST\\(([A-Za-z0-9_]+)\\).*" "\\1" _case "${_line}")
+        string(REGEX REPLACE "^AX_(DEATH_)?TEST\\(([A-Za-z0-9_]+)\\).*" "\\2" _case "${_line}")
         list(APPEND _cases "${_case}")
+        if(_line MATCHES "^AX_DEATH_TEST")
+            list(APPEND _death_cases "${_case}")
+        endif()
     endforeach()
     if(NOT _cases)
         message(FATAL_ERROR "${source}: no AX_TEST(...) cases found")
@@ -35,8 +47,13 @@ function(ax_add_unit_test module source)
     set(_decls "")
     set(_table "")
     foreach(_case IN LISTS _cases)
+        if(_case IN_LIST _death_cases)
+            set(_is_death 1)
+        else()
+            set(_is_death 0)
+        endif()
         string(APPEND _decls "void ax_test__${_case}(void);\n")
-        string(APPEND _table "    {\"${_case}\", ax_test__${_case}},\n")
+        string(APPEND _table "    {\"${_case}\", ax_test__${_case}, ${_is_death}},\n")
     endforeach()
     set(_main "${CMAKE_CURRENT_BINARY_DIR}/generated/${_exe}_main.c")
     file(CONFIGURE OUTPUT "${_main}" @ONLY CONTENT
@@ -59,8 +76,19 @@ int main(int argc, char **argv)
     ax_target_defaults(${_exe})
 
     foreach(_case IN LISTS _cases)
-        add_test(NAME "${_suite}.${_case}" COMMAND ${_exe} ${_case})
-        set_tests_properties("${_suite}.${_case}" PROPERTIES LABELS "${module}" TIMEOUT 60)
+        if(_case IN_LIST _death_cases)
+            # Death tests need the assertions they trigger: only in builds that keep them.
+            if(NOT AX_TESTS_HAVE_ASSERTS)
+                continue()
+            endif()
+            add_test(NAME "${_suite}.${_case}" COMMAND ${_exe} ${_case})
+            set_tests_properties("${_suite}.${_case}" PROPERTIES
+                LABELS "${module};death" TIMEOUT 60)
+        else()
+            add_test(NAME "${_suite}.${_case}" COMMAND ${_exe} ${_case})
+            set_tests_properties("${_suite}.${_case}" PROPERTIES
+                LABELS "${module}" TIMEOUT 60 SKIP_RETURN_CODE 77)
+        endif()
     endforeach()
 endfunction()
 

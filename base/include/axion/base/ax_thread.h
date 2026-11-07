@@ -70,6 +70,13 @@ AX_API int ax_thread_join(ax_thread *thread);
 /* Gives up the rest of the calling thread's time slice. */
 AX_API void ax_thread_yield(void);
 
+/*
+ * A nonzero id for the calling thread, unique for the life of the process (ids are never reused,
+ * unlike OS thread ids). Cheap after the first call on a thread. Used for thread-affinity checks.
+ * Thread: any.
+ */
+AX_API uint64_t ax_thread_current_id(void);
+
 /* ---- Mutexes --------------------------------------------------------------------------------- */
 
 AX_API void ax_mutex_init(ax_mutex *mutex);

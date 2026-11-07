@@ -252,3 +252,77 @@ AX_TEST(error_records_are_per_thread)
     AX_CHECK_RESULT(ax_last_error()->code, AX_ERR_WRONG_THREAD);
     ax_clear_error();
 }
+
+/* ---- thread ids -------------------------------------------------------------------------------
+ */
+
+static int report_thread_id(void *arg)
+{
+    uint64_t *out = (uint64_t *)arg;
+    out[0] = ax_thread_current_id();
+    out[1] = ax_thread_current_id();
+    return 0;
+}
+
+AX_TEST(thread_ids_are_stable_and_unique)
+{
+    uint64_t mine = ax_thread_current_id();
+    uint64_t a[2] = {0, 0};
+    uint64_t b[2] = {0, 0};
+    ax_thread ta;
+    ax_thread tb;
+
+    AX_CHECK(mine != 0);
+    AX_CHECK_EQ_U(ax_thread_current_id(), mine);
+    AX_REQUIRE(ax_thread_create(&ta, report_thread_id, a) == AX_OK);
+    AX_REQUIRE(ax_thread_create(&tb, report_thread_id, b) == AX_OK);
+    ax_thread_join(&ta);
+    ax_thread_join(&tb);
+    AX_CHECK(a[0] != 0 && a[0] == a[1]);
+    AX_CHECK(b[0] != 0 && b[0] == b[1]);
+    AX_CHECK(a[0] != mine && b[0] != mine && a[0] != b[0]);
+}
+
+/* ---- misuse aborts in debug builds (error-checking mutexes on POSIX, owner tracking on Win32) */
+
+AX_DEATH_TEST(mutex_relock_from_owner_aborts)
+{
+    static ax_mutex m;
+    ax_mutex_init(&m);
+    ax_mutex_lock(&m);
+    ax_mutex_lock(&m); /* would deadlock: debug builds abort instead */
+}
+
+static int unlock_foreign(void *arg)
+{
+    ax_mutex_unlock((ax_mutex *)arg);
+    return 0;
+}
+
+AX_DEATH_TEST(mutex_unlock_from_other_thread_aborts)
+{
+    static ax_mutex m;
+    ax_thread t;
+    ax_mutex_init(&m);
+    ax_mutex_lock(&m);
+    if (ax_thread_create(&t, unlock_foreign, &m) == AX_OK) {
+        ax_thread_join(&t); /* the worker's unlock aborts the process first */
+    }
+}
+
+AX_DEATH_TEST(mutex_unlock_when_unlocked_aborts)
+{
+    static ax_mutex m;
+    ax_mutex_init(&m);
+    ax_mutex_unlock(&m);
+}
+
+AX_TEST(try_lock_by_owner_fails_without_aborting)
+{
+    ax_mutex m;
+    ax_mutex_init(&m);
+    ax_mutex_lock(&m);
+    AX_CHECK(!ax_mutex_try_lock(&m));
+    ax_mutex_unlock(&m);
+    ax_mutex_deinit(&m);
+}

@@ -18,6 +18,17 @@
  *
  * Executables run all cases with no arguments, one case when given its name, and print the
  * case names with --list. Checks are active in every build type, independent of NDEBUG.
+ *
+ * Death tests check that misuse aborts (a debug assertion, an error-checking mutex):
+ *
+ *   AX_DEATH_TEST(relock_aborts) { ax_mutex_lock(&m); ax_mutex_lock(&m); }
+ *
+ * A death test passes when it aborts (SIGABRT becomes a successful exit) and fails if it returns.
+ * They are registered only in builds where assertions are enabled, and are never run by
+ * "run all"; ctest runs each one by name in its own process.
+ *
+ * A case that cannot run in the current environment calls AX_SKIP("why"); it exits with
+ * AX_TEST_SKIP_CODE (77), which ctest reports as skipped.
  */
 #ifndef AX_TEST_H
 #define AX_TEST_H
@@ -32,12 +43,27 @@ typedef void (*ax_test_fn)(void);
 typedef struct ax_test_case {
     const char *name;
     ax_test_fn fn;
+    int is_death_test; /* expected to abort; only run by name */
 } ax_test_case;
+
+#define AX_TEST_SKIP_CODE 77
 
 /* Defines a test case. The prototype keeps -Wmissing-prototypes quiet. */
 #define AX_TEST(name)           \
     void ax_test__##name(void); \
     void ax_test__##name(void)
+
+/* Defines a case that must abort. Same shape as AX_TEST; CMake registers it differently. */
+#define AX_DEATH_TEST(name) AX_TEST(name)
+
+/* Marks the running case as skipped and leaves it. */
+#define AX_SKIP(reason)       \
+    do {                      \
+        ax_test_skip(reason); \
+        return;               \
+    } while (0)
+
+void ax_test_skip(const char *reason);
 
 void ax_test_fail(const char *file, int line, const char *fmt, ...)
 #if defined(__GNUC__) || defined(__clang__)

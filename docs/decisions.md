@@ -40,6 +40,8 @@ new entry that points back to the old one.
 | 24  | `AX_MAX_ALIGN` instead of `max_align_t`                  | Deviation      |
 | 25  | No condition-variable waits without threads              | Approved       |
 | 26  | Pre-1.0 versions require an exact minor                  | Approved       |
+| 27  | Debug owner checks for Windows mutexes                   | Approved       |
+| 28  | Death tests, skipped tests and thread ids                | Implementation |
 
 ---
 
@@ -377,6 +379,8 @@ is no tree of empty folders.
 
 ## 22. Threading failures and debug checks
 
+> The Windows gap is closed by decision 27.
+
 **Decision.**
 - **No error paths after creation:** per decision 3, initialization, locking and waiting have no
   error path. A pthread or Win32 failure other than a documented result (`EBUSY`, `ETIMEDOUT`,
@@ -449,3 +453,47 @@ code built against 0.3.
   implementation, with tests.
 
 **Status.** Approved by the owner.
+
+## 27. Debug owner checks for Windows mutexes
+
+**Supersedes** the "known gap on Windows" in decision 22.
+
+**Decision.**
+- Debug builds on Windows record the owning thread (`GetCurrentThreadId()`) next to the SRW
+  lock inside `ax_mutex`'s storage. They read and write it with `Interlocked` operations, so
+  checking it from another thread is not a data race.
+- They abort with a message, matching POSIX error-checking mutexes:
+  - on relocking from the owner;
+  - on unlocking (or waiting on a condition variable) from a thread that does not hold the
+    mutex;
+  - on destroying a locked mutex.
+- A try-lock by the holder simply fails, as with an error-checking pthread mutex.
+- Condition waits clear the owner before sleeping and restore it after.
+- Release builds keep the plain SRW lock.
+- Death tests in `test_thread.c` cover these aborts on every platform; see decision 28.
+
+**Status.** Approved by the owner.
+
+## 28. Death tests, skipped tests and thread ids
+
+**Context.** Misuse checks that abort (decision 27, and the platform module's thread checks)
+need tests that expect the process to die. Wayland tests need to skip cleanly where no
+compositor is available. Thread-affinity checks need a cheap, comparable thread id.
+
+**Decision.**
+- **`AX_DEATH_TEST(name)`:** defines a case that must abort.
+  - CMake registers it only when `CMAKE_BUILD_TYPE` is Debug, where assertions exist.
+  - The harness turns `SIGABRT` into a successful exit (`_Exit(0)`) and fails the case if it
+    returns. ctest's `WILL_FAIL` cannot be used, because it does not cover deaths by signal.
+  - "Run all" skips death tests; ctest runs each one by name in its own process.
+  - Caveat: an ASan report also ends in `abort()`, so inside a death test it would count as a
+    pass.
+- **`AX_SKIP(reason)`:** exits a case with code 77, which ctest reports as skipped
+  (`SKIP_RETURN_CODE`).
+- **Windows:** the harness disables the CRT's abort dialog and Windows Error Reporting, so
+  aborts never hang unattended runs.
+- **`ax_thread_current_id()`:** a new base function. It returns a nonzero `uint64_t`, unique
+  for the life of the process (never reused, unlike OS thread ids), from a thread-local plus
+  an atomic counter.
+
+**Status.** Implementation.
