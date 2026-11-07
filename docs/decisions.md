@@ -59,6 +59,7 @@ new entry that points back to the old one.
 | 43  | Dawn and wgpu-native as pinned official binaries         | Approved       |
 | 44  | GPU driver leaks under LeakSanitizer                     | Implementation |
 | 45  | ax_gpu lifecycle, adapters and waiting                   | Approved       |
+| 46  | Device-lost detection and recovery                       | Approved       |
 
 ---
 
@@ -1081,3 +1082,35 @@ with an option that forces a software adapter for CI.
 
 **Status.** Approved (part of the approved plan); the software-adapter rule for Dawn is an
 implementation detail.
+
+## 46. Device-lost detection and recovery
+
+**Context.** The document asks ax_gpu to recover from a device loss by recreating every GPU
+resource from its descriptor; Android and iOS need this after backgrounding.
+
+**Decision.**
+- **Detection:** the device-lost callback runs on the owner thread (AllowProcessEvents) and marks
+  the ax_gpu lost.
+  - Reasons `Destroyed`, `CallbackCancelled` and `FailedCreation` come from AXION releasing or
+    failing to create a device, and are not losses.
+  - The callback carries the generation it was registered for, so a late callback from a replaced
+    device is ignored.
+- **Recovery,** in `ax_gpu_poll`:
+  - The old device and adapter are released, then a new adapter and device are requested: an
+    adapter that created a device cannot create another, and a real loss can take the adapter
+    with it.
+  - `ax_gpu_device_generation` advances. Resources from older generations are dead; their owners
+    recreate them from their descriptors when they see the change. Surfaces are reconfigured by
+    ax_gpu itself (decision 48).
+  - If recovery fails, `ax_gpu_poll` returns `AX_ERR_DEVICE_LOST` and tries again on the next
+    call.
+- **Forcing a loss in tests:**
+  - Dawn: `wgpuDeviceForceLoss`, a real loss through the callback
+    (`gpu.device_lost.a_forced_loss_is_detected_and_the_device_recreated`). wgpu-native has no
+    equivalent, so that test skips there.
+  - Any implementation: an internal hook marks the device lost as the callback would, so the
+    recovery path runs everywhere (`recovery_creates_a_working_device_each_time`, three
+    recoveries in a row, each followed by a clear and read-back).
+  - Hooks live in `gpu/src/gpu_testing.h`, which only tests include.
+
+**Status.** Approved (part of the approved plan).

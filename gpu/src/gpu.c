@@ -7,9 +7,11 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <axion/ax_error.h>
 #include <axion/base/ax_error_set.h>
 #include <axion/base/ax_memory.h>
 
+#include "gpu_testing.h"
 #include "webgpu_impl.h"
 
 /* ---- Helpers ------------------------------------------------------------------------------- */
@@ -285,6 +287,52 @@ static void release_device(ax_gpu *gpu)
     }
 }
 
+/*
+ * Device-lost recovery (the architecture document's device lifecycle): a new adapter and device,
+ * since an adapter that created a device cannot create another and a real loss may take the
+ * adapter with it. The generation advances, telling owners of resources to recreate them from
+ * their descriptors.
+ */
+static ax_result recover(ax_gpu *gpu)
+{
+    ax_result r;
+
+    release_device(gpu);
+    if (gpu->adapter != NULL) {
+        wgpuAdapterRelease(gpu->adapter);
+        gpu->adapter = NULL;
+    }
+    wgpuInstanceProcessEvents(gpu->instance);
+
+    r = pick_adapter(gpu);
+    if (r == AX_OK) {
+        r = create_device(gpu);
+    }
+    if (r != AX_OK) {
+        /* Still lost: the next ax_gpu_poll tries again. */
+        gpu->lost = true;
+        return ax_set_error(AX_ERR_DEVICE_LOST,
+                            "ax_gpu: the device was lost and recreating it "
+                            "failed: %s",
+                            ax_last_error()->message.ptr);
+    }
+    fprintf(stderr, "ax_gpu: device recreated (generation %u)\n", gpu->generation);
+    return AX_OK;
+}
+
+void ax__gpu_test_simulate_loss(ax_gpu *gpu)
+{
+    AX_GPU_ASSERT_THREAD(gpu);
+    gpu->lost = true;
+    gpu->lost_reason = WGPUDeviceLostReason_Unknown;
+}
+
+bool ax__gpu_test_force_loss(ax_gpu *gpu)
+{
+    AX_GPU_ASSERT_THREAD(gpu);
+    return ax__webgpu_force_device_loss(gpu->device, "forced by an AXION test");
+}
+
 /* ---- API ------------------------------------------------------------------------------------ */
 
 ax_result ax_gpu_create(const ax_gpu_desc *desc, ax_gpu **out_gpu)
@@ -410,8 +458,7 @@ ax_result ax_gpu_poll(ax_gpu *gpu)
     AX_GPU_ASSERT_THREAD(gpu);
     wgpuInstanceProcessEvents(gpu->instance);
     if (gpu->lost) {
-        return ax_set_error(AX_ERR_DEVICE_LOST, "ax_gpu: the device was lost (%s)",
-                            lost_reason_name(gpu->lost_reason));
+        return recover(gpu);
     }
     return AX_OK;
 }

@@ -51,119 +51,12 @@ AX_TEST(creates_a_device_and_reports_its_adapter)
     AX_CHECK_EQ_U(ax_tracking_allocator_deinit(&tracker), 0);
 }
 
-typedef struct map_result {
-    bool done;
-    WGPUMapAsyncStatus status;
-} map_result;
-
-static void on_mapped(WGPUMapAsyncStatus status, WGPUStringView message, void *userdata1,
-                      void *userdata2)
-{
-    map_result *r = userdata1;
-    (void)message;
-    (void)userdata2;
-    r->done = true;
-    r->status = status;
-}
-
-enum { CLEAR_SIZE = 64, CLEAR_ROW_BYTES = CLEAR_SIZE * 4 }; /* 256: copy rows need 256 alignment */
-
-static bool near(uint8_t got, unsigned expected)
-{
-    return got + 1u >= expected && got <= expected + 1u;
-}
-
 AX_TEST(clears_a_texture_and_reads_it_back)
 {
     ax_gpu *gpu = NULL;
-    WGPUDevice device;
-    WGPUTextureDescriptor tdesc = WGPU_TEXTURE_DESCRIPTOR_INIT;
-    WGPUBufferDescriptor bdesc = WGPU_BUFFER_DESCRIPTOR_INIT;
-    WGPURenderPassColorAttachment color = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
-    WGPURenderPassDescriptor pass_desc = WGPU_RENDER_PASS_DESCRIPTOR_INIT;
-    WGPUTexelCopyTextureInfo src = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
-    WGPUTexelCopyBufferInfo dst = WGPU_TEXEL_COPY_BUFFER_INFO_INIT;
-    WGPUExtent3D extent = {CLEAR_SIZE, CLEAR_SIZE, 1};
-    WGPUBufferMapCallbackInfo map_cb = WGPU_BUFFER_MAP_CALLBACK_INFO_INIT;
-    map_result mapped = {false, WGPUMapAsyncStatus_Error};
-    WGPUTexture texture;
-    WGPUTextureView view;
-    WGPUBuffer buffer;
-    WGPUCommandEncoder encoder;
-    WGPURenderPassEncoder pass;
-    WGPUCommandBuffer commands;
-    const uint8_t *pixels;
-    uint32_t bad = 0;
-    uint32_t x, y;
 
     AXT_GPU_CREATE(NULL, &gpu);
-    device = ax_gpu_device(gpu);
-
-    tdesc.usage = WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_CopySrc;
-    tdesc.size = extent;
-    tdesc.format = WGPUTextureFormat_RGBA8Unorm;
-    texture = wgpuDeviceCreateTexture(device, &tdesc);
-    AX_REQUIRE(texture != NULL);
-    view = wgpuTextureCreateView(texture, NULL);
-
-    bdesc.usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_MapRead;
-    bdesc.size = (uint64_t)CLEAR_ROW_BYTES * CLEAR_SIZE;
-    buffer = wgpuDeviceCreateBuffer(device, &bdesc);
-    AX_REQUIRE(buffer != NULL);
-
-    color.view = view;
-    color.loadOp = WGPULoadOp_Clear;
-    color.storeOp = WGPUStoreOp_Store;
-    color.clearValue.r = 0.25;
-    color.clearValue.g = 0.5;
-    color.clearValue.b = 0.75;
-    color.clearValue.a = 1.0;
-    pass_desc.colorAttachmentCount = 1;
-    pass_desc.colorAttachments = &color;
-
-    encoder = wgpuDeviceCreateCommandEncoder(device, NULL);
-    pass = wgpuCommandEncoderBeginRenderPass(encoder, &pass_desc);
-    wgpuRenderPassEncoderEnd(pass);
-    wgpuRenderPassEncoderRelease(pass);
-    src.texture = texture;
-    dst.buffer = buffer;
-    dst.layout.bytesPerRow = CLEAR_ROW_BYTES;
-    dst.layout.rowsPerImage = CLEAR_SIZE;
-    wgpuCommandEncoderCopyTextureToBuffer(encoder, &src, &dst, &extent);
-    commands = wgpuCommandEncoderFinish(encoder, NULL);
-    wgpuQueueSubmit(ax_gpu_queue(gpu), 1, &commands);
-    wgpuCommandBufferRelease(commands);
-    wgpuCommandEncoderRelease(encoder);
-
-    map_cb.mode = WGPUCallbackMode_AllowProcessEvents;
-    map_cb.callback = on_mapped;
-    map_cb.userdata1 = &mapped;
-    AX_REQUIRE(ax_gpu_wait(
-        gpu, wgpuBufferMapAsync(buffer, WGPUMapMode_Read, 0, (size_t)bdesc.size, map_cb),
-        &mapped.done, 5000000000ull));
-    AX_REQUIRE(mapped.done);
-    AX_REQUIRE(mapped.status == WGPUMapAsyncStatus_Success);
-
-    pixels = wgpuBufferGetConstMappedRange(buffer, 0, (size_t)bdesc.size);
-    AX_REQUIRE(pixels != NULL);
-    for (y = 0; y < CLEAR_SIZE; ++y) {
-        for (x = 0; x < CLEAR_SIZE; ++x) {
-            const uint8_t *p = pixels + (size_t)y * CLEAR_ROW_BYTES + (size_t)x * 4;
-            /* 0.25, 0.5, 0.75 in UNORM8: 63.75, 127.5, 191.25, rounded either way. */
-            if (!near(p[0], 64) || !near(p[1], 128) || !near(p[2], 191) || p[3] != 255) {
-                if (bad++ == 0) {
-                    ax_test_fail(__FILE__, __LINE__, "pixel (%u, %u) = %u %u %u %u", x, y, p[0],
-                                 p[1], p[2], p[3]);
-                }
-            }
-        }
-    }
-    AX_CHECK_EQ_U(bad, 0);
-    wgpuBufferUnmap(buffer);
-
-    wgpuBufferRelease(buffer);
-    wgpuTextureViewRelease(view);
-    wgpuTextureRelease(texture);
+    AX_CHECK(axt_gpu_clear_and_read_back(gpu));
     AX_CHECK_EQ_U(ax_gpu_uncaptured_error_count(gpu), 0);
     ax_gpu_destroy(gpu);
 }

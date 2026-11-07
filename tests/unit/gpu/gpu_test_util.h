@@ -5,6 +5,8 @@
 #ifndef AXT_GPU_TEST_UTIL_H
 #define AXT_GPU_TEST_UTIL_H
 
+#include <stdbool.h>
+
 #include "ax_test.h"
 #include "axion/gpu/ax_gpu.h"
 
@@ -37,5 +39,9 @@ int axt_gpu_create(const ax_allocator *allocator, ax_gpu **out_gpu);
             return;                                                            \
         }                                                                      \
     } while (0)
+
+/* Clears a 64x64 RGBA8 texture to (0.25, 0.5, 0.75, 1), copies it to a buffer and checks every
+ * pixel. Reports failures itself; returns true when the device rendered correctly. */
+bool axt_gpu_clear_and_read_back(ax_gpu *gpu);
 
 #endif
