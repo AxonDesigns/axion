@@ -143,7 +143,7 @@ AX_TEST(wait_timeout_expires)
     ax_mutex_unlock(&m);
 
     AX_CHECK(!woke);
-    AX_CHECK(elapsed >= timeout - 1000000u); /* allow 1 ms of clock granularity */
+    AX_CHECK(elapsed >= timeout); /* false guarantees the full timeout elapsed */
     ax_cond_deinit(&c);
     ax_mutex_deinit(&m);
 }

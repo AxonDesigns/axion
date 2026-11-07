@@ -187,8 +187,14 @@ part of M0's exit criterion. A timeout is not an error.
 - **`ax_cond_wait_timeout(cond, mutex, timeout_ns)` returns `bool`:** true if woken, false if the
   timeout expired.
   - A spurious wakeup returns true, as with `ax_cond_wait`.
-  - Timeouts are measured on a monotonic clock: `CLOCK_MONOTONIC` via `pthread_condattr_setclock`,
-    `pthread_cond_timedwait_relative_np` on Apple, and milliseconds rounded up on Windows.
+  - `false` guarantees that at least `timeout_ns` elapsed on the monotonic clock. Waits may
+    overshoot by the OS timer resolution, never undershoot.
+  - How each platform meets that:
+    - Linux and other POSIX: an absolute `CLOCK_MONOTONIC` deadline (`pthread_condattr_setclock`).
+    - Apple: `pthread_cond_timedwait_relative_np`, re-waiting until the deadline has passed.
+    - Windows: `SleepConditionVariableSRW` in milliseconds rounded up, re-waiting until the
+      deadline has passed, because it can report a timeout up to one timer tick early. The
+      first Windows CI run caught this.
 - **New `ax_time_monotonic_ns()`:** added because a deadline loop has to recompute the remaining
   time after each wake. It is a small addition beyond the requested API.
 

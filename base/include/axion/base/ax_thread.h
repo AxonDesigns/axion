@@ -83,11 +83,11 @@ AX_API void ax_cond_deinit(ax_cond *cond); /* no thread may be waiting */
 AX_API void ax_cond_wait(ax_cond *cond, ax_mutex *mutex);
 
 /*
- * Like ax_cond_wait, but waits at most timeout_ns nanoseconds (rounded up to the OS clock's
- * resolution, milliseconds on Windows). Returns true if woken (by a signal, or spuriously) and
- * false if the timeout expired; either way mutex is held again on return. A timeout is not an
- * error. Loops that wait for a condition with a deadline recompute the remaining time from
- * ax_time_monotonic_ns() after each wake.
+ * Like ax_cond_wait, but with a timeout. Returns true if woken (by a signal, or spuriously) and
+ * false once at least timeout_ns nanoseconds have elapsed on the monotonic clock; either way
+ * mutex is held again on return. A timeout is not an error. Waits may overshoot by the OS clock's
+ * resolution (milliseconds on Windows), never undershoot. Loops that wait for a condition with a
+ * deadline recompute the remaining time from ax_time_monotonic_ns() after each wake.
  * In the single-threaded build no other thread can signal, so it returns false immediately.
  */
 AX_API bool ax_cond_wait_timeout(ax_cond *cond, ax_mutex *mutex, uint64_t timeout_ns);

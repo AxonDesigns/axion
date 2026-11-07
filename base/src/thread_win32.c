@@ -144,18 +144,31 @@ void ax_cond_wait(ax_cond *cond, ax_mutex *mutex)
 
 bool ax_cond_wait_timeout(ax_cond *cond, ax_mutex *mutex, uint64_t timeout_ns)
 {
-    /* Round up to whole milliseconds, staying below INFINITE (0xFFFFFFFF). */
-    uint64_t ms = timeout_ns / 1000000u + (timeout_ns % 1000000u != 0 ? 1u : 0u);
-    if (ms > 0xFFFFFFFEu) {
-        ms = 0xFFFFFFFEu;
+    /* SleepConditionVariableSRW can report a timeout up to one timer tick early, so wait again
+     * until the deadline has really passed: false must mean timeout_ns elapsed. */
+    uint64_t start = ax_time_monotonic_ns();
+    uint64_t deadline = timeout_ns > UINT64_MAX - start ? UINT64_MAX : start + timeout_ns;
+
+    for (;;) {
+        uint64_t now = ax_time_monotonic_ns();
+        uint64_t remaining;
+        uint64_t ms;
+        if (now >= deadline) {
+            return false;
+        }
+        /* Round up to whole milliseconds, staying below INFINITE (0xFFFFFFFF). */
+        remaining = deadline - now;
+        ms = remaining / 1000000u + (remaining % 1000000u != 0 ? 1u : 0u);
+        if (ms > 0xFFFFFFFEu) {
+            ms = 0xFFFFFFFEu;
+        }
+        if (SleepConditionVariableSRW(COND(cond), MUTEX(mutex), (DWORD)ms, 0)) {
+            return true;
+        }
+        if (GetLastError() != ERROR_TIMEOUT) {
+            fatal("SleepConditionVariableSRW");
+        }
     }
-    if (SleepConditionVariableSRW(COND(cond), MUTEX(mutex), (DWORD)ms, 0)) {
-        return true;
-    }
-    if (GetLastError() == ERROR_TIMEOUT) {
-        return false;
-    }
-    fatal("SleepConditionVariableSRW");
 }
 
 void ax_cond_signal(ax_cond *cond)

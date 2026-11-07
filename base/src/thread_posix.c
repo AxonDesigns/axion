@@ -166,38 +166,55 @@ void ax_cond_wait(ax_cond *cond, ax_mutex *mutex)
 
 bool ax_cond_wait_timeout(ax_cond *cond, ax_mutex *mutex, uint64_t timeout_ns)
 {
+#if defined(__APPLE__)
+    /* Relative waits: loop on the monotonic clock so that false always means timeout_ns has
+     * elapsed, even if a wait reports a timeout slightly early. */
+    uint64_t start = ax_time_monotonic_ns();
+    uint64_t deadline = timeout_ns > UINT64_MAX - start ? UINT64_MAX : start + timeout_ns;
+
+    for (;;) {
+        uint64_t now = ax_time_monotonic_ns();
+        uint64_t remaining;
+        uint64_t sec;
+        struct timespec rel;
+        int rc;
+        if (now >= deadline) {
+            return false;
+        }
+        remaining = deadline - now;
+        sec = remaining / 1000000000u;
+        rel.tv_sec = (time_t)(sec > AX_MAX_WAIT_SECONDS ? AX_MAX_WAIT_SECONDS : sec);
+        rel.tv_nsec = (long)(remaining % 1000000000u);
+        rc = pthread_cond_timedwait_relative_np(COND(cond), MUTEX(mutex), &rel);
+        if (rc != ETIMEDOUT) {
+            check(rc, "pthread_cond_timedwait_relative_np");
+            return true;
+        }
+    }
+#else
+    /* An absolute deadline on CLOCK_MONOTONIC: ETIMEDOUT is only reported once it has passed. */
     uint64_t sec = timeout_ns / 1000000000u;
     long nsec = (long)(timeout_ns % 1000000000u);
+    struct timespec deadline;
     int rc;
 
     if (sec > AX_MAX_WAIT_SECONDS) {
         sec = AX_MAX_WAIT_SECONDS;
     }
-#if defined(__APPLE__)
-    {
-        struct timespec rel;
-        rel.tv_sec = (time_t)sec;
-        rel.tv_nsec = nsec;
-        rc = pthread_cond_timedwait_relative_np(COND(cond), MUTEX(mutex), &rel);
+    check(clock_gettime(CLOCK_MONOTONIC, &deadline) != 0 ? errno : 0, "clock_gettime");
+    deadline.tv_sec += (time_t)sec;
+    deadline.tv_nsec += nsec;
+    if (deadline.tv_nsec >= 1000000000L) {
+        deadline.tv_nsec -= 1000000000L;
+        deadline.tv_sec += 1;
     }
-#else
-    {
-        struct timespec deadline;
-        check(clock_gettime(CLOCK_MONOTONIC, &deadline) != 0 ? errno : 0, "clock_gettime");
-        deadline.tv_sec += (time_t)sec;
-        deadline.tv_nsec += nsec;
-        if (deadline.tv_nsec >= 1000000000L) {
-            deadline.tv_nsec -= 1000000000L;
-            deadline.tv_sec += 1;
-        }
-        rc = pthread_cond_timedwait(COND(cond), MUTEX(mutex), &deadline);
-    }
-#endif
+    rc = pthread_cond_timedwait(COND(cond), MUTEX(mutex), &deadline);
     if (rc == ETIMEDOUT) {
         return false;
     }
     check(rc, "pthread_cond_timedwait");
     return true;
+#endif
 }
 
 void ax_cond_signal(ax_cond *cond)
