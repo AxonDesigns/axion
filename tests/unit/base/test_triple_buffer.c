@@ -4,7 +4,7 @@
  */
 #include "ax_test.h"
 #include "axion/base/ax_thread.h"
-#include "common/triple_buffer.h"
+#include "axion/base/ax_triple_buffer.h"
 
 AX_TEST(reader_sees_latest_publish)
 {

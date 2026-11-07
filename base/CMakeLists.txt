@@ -1,7 +1,7 @@
 # Copyright 2026 Axon Works
 # SPDX-License-Identifier: Apache-2.0
 #
-# base: allocators, arenas, containers, handles, atomics and threads. Depends on no other AXION
+# base: allocators, arenas, containers, handles, atomics, threads and 2D math. Depends on no other AXION
 # module and no third-party library; only the C standard library and the OS thread primitives.
 #
 # Headers:
@@ -23,6 +23,7 @@ add_library(ax_base STATIC
     src/arena.c
     src/array.c
     src/error.c
+    src/math.c
     src/pool.c
     src/thread_common.c
     src/tracking_allocator.c
@@ -46,4 +47,9 @@ elseif(NOT WIN32)
     set(THREADS_PREFER_PTHREAD_FLAG ON)
     find_package(Threads REQUIRED)
     target_link_libraries(ax_base PUBLIC Threads::Threads)
+endif()
+
+# ax_math.c uses the C math library, which is separate from libc on Linux and the web.
+if(UNIX AND NOT APPLE)
+    target_link_libraries(ax_base PUBLIC m)
 endif()

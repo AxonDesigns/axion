@@ -12,7 +12,9 @@ set(_ax_base_tests
     test_error.c
     test_handle.c
     test_pool.c
+    test_math.c
     test_thread.c
+    test_triple_buffer.c
     test_types.c
     test_version.c)
 

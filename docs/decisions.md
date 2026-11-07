@@ -63,6 +63,7 @@ new entry that points back to the old one.
 | 47  | Failed commits after prepare_commit                      | Approved       |
 | 48  | GPU surfaces, swapchain resizes and the FIFO queue       | Approved       |
 | 49  | Pacing default and who reads the socket (measured)       | Approved       |
+| 50  | 2D math and color representation in base                 | Approved       |
 
 ---
 
@@ -1382,3 +1383,36 @@ present or hit a protocol error.
 
 **Status.** Approved (the owner set the method and the rule to choose from NVIDIA's numbers);
 pending validation with Mesa on AMD or Intel hardware.
+
+## 50. 2D math and color representation in base
+
+**Context.** The Render IR and the renderers need vectors, rectangles, 2D affine transforms and
+colors. The document puts math in base and asks for premultiplied colors, but leaves their
+encoding open, while later layers will blend in linear light and draw HDR content.
+
+**Decision.**
+- **Where:** `base/include/axion/base/ax_math.h`, in the internal SDK (decision 2), with only
+  what M0 needs: `ax_vec2`, `ax_rect` (x, y, w, h, like `ax_hit_region`), `ax_affine2` and
+  `ax_color`. Small operations are inline; the rest is in `base/src/math.c`, so base now links
+  the C math library on Linux and the web.
+- **Affine layout:** `x' = a·x + c·y + tx`, `y' = b·x + d·y + ty`, the order of CSS's
+  `matrix(a, b, c, d, tx, ty)`. `ax_affine2_mul(m, n)` applies n first. With y pointing down, a
+  positive rotation turns clockwise on screen.
+- **Color: linear-light, premultiplied, extended-range float RGBA** in the sRGB / Rec. 709
+  primaries. Components may be negative or above 1, as in scRGB or Apple's extended linear sRGB.
+  - Why linear: HDR and wide-gamut colors fit without a format change, and whether a layer
+    blends in sRGB or in linear light becomes a property of the layer, not of the color.
+  - Layers that blend in sRGB space (all of them in M0) convert per instance: unpremultiply,
+    encode, premultiply again (`ax_color_to_srgb_premultiplied`).
+  - The sRGB transfer functions keep the sign of negative values and follow the same curve
+    above 1, so out-of-range colors convert both ways.
+  - A color with alpha 0 (additive light) has its components converted directly, so it
+    survives the trip.
+  - Tests: every 8-bit sRGB value comes back to the same byte, opaque and translucent; the
+    premultiplied round trip covers alpha 0, negative components and components above 1.
+- **Triple buffer moved to base:** `platform/src/common/triple_buffer.h` became
+  `base/include/axion/base/ax_triple_buffer.h`, unchanged, so the Render IR's publication can use
+  it without depending on the platform module. Its tests moved to `tests/unit/base/`.
+
+**Status.** Approved by the owner (the color representation, with the sign-preserving
+conversion and the round-trip coverage).

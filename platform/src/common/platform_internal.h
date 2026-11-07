@@ -20,12 +20,12 @@
 #include "axion/base/ax_atomic.h"
 #include "axion/base/ax_error_set.h"
 #include "axion/base/ax_thread.h"
+#include "axion/base/ax_triple_buffer.h"
 #include "axion/platform/ax_hit_regions.h"
 #include "axion/platform/ax_present.h"
 #include "axion/platform/ax_surface_native.h"
 #include "event_queue.h"
 #include "frame_clock.h"
-#include "triple_buffer.h"
 
 typedef struct ax_app_impl ax_app_impl;
 typedef struct ax_window_impl ax_window_impl;
