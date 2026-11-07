@@ -85,6 +85,7 @@ new entry that points back to the old one.
 | 69  | The app thread's mirror                                  | Approved       |
 | 70  | Reference benchmarks: core and jobs                      | Approved       |
 | 71  | The IDL: `.axidl`, and the line between ABI and SDK      | Approved       |
+| 72  | Wayland layer-shell surfaces                             | Approved       |
 
 ---
 
@@ -2679,5 +2680,86 @@ thread. The owner asked, before fixing the transaction API, how it will be descr
   layout, kit's C components, headless) use directly, and may change in any release.
 - **Thread tags** in the C headers keep decision 32's comment form (`thread: app`) until the
   generator writes them from the IDL.
+
+**Status.** Approved by the owner.
+
+## 72. Wayland layer-shell surfaces
+
+**Context.** Desktop shells, panels, docks, launchers, notification daemons, lock screens,
+wallpapers and HUD overlays are apps AXION should be able to build. On Wayland they cannot be
+`xdg_toplevel` windows: xdg-shell lets the compositor place and stack windows as it likes, and
+gives the client no way to anchor to an edge, reserve space or stay above other windows. The
+"Always on top" row of "What each platform allows" says No for Wayland for the same reason.
+
+**Decision.**
+- **A new window kind, the layer surface** ("Windowing API"). On Wayland it is a
+  `zwlr_layer_shell_v1` surface. On every other platform it is unsupported and
+  `AX_CAP_WINDOW_LAYER_SHELL` (the next free bit, `1ull << 15`) is unset. It is not emulated with
+  ordinary windows: an emulation could not reserve space or stay above fullscreen windows, and
+  an app that checks the flag can fall back to a normal window itself.
+- **API shape:**
+  - `ax_window_layer_desc`, chained through `ax_window_desc.next`: `layer` (background, bottom,
+    top, overlay), `anchor` (edge flags), `margin` (four sides, logical units),
+    `exclusive_zone`, `keyboard` (none, exclusive, on-demand), `output` (a monitor, or none for
+    the compositor's choice) and `layer_namespace`.
+  - It is the first struct defined for any `next` chain, so it also fixes the chain header: a
+    type tag and `next`, as in WebGPU. The window desc's own fields that do not apply to a layer
+    surface (title, decorations, level, minimum size, `AX_WINDOW_RESIZABLE`) are ignored, as
+    unsupported fields already are.
+  - `ax_window_set_layer` changes the same fields after creation. They are double-buffered on
+    Wayland: the main thread sends them and calls `ax__window_request_commit`, and they apply
+    with the presenter's next commit (decision 35).
+  - On a platform without the capability, `ax_window_create` ignores the chained struct, as it
+    ignores other fields it cannot honour, and creates a normal window.
+- **Configure contract unchanged** (decisions 34 and 54).
+  `zwlr_layer_surface_v1.configure` publishes an `ax_surface_config`, as `xdg_surface.configure`
+  does, and the presenter acknowledges it in the same commit as a buffer of that size, with the
+  same wait for content of that size. A configured size of 0 on an axis lets the client pick it;
+  the backend uses the desc's size.
+- **Window behaviour on a layer surface:**
+  - Caption and resize hit regions do nothing; the compositor places the surface.
+  - No occlusion events: the protocol has no suspended state. `ax_window_info.occluded` stays
+    false.
+  - `zwlr_layer_surface_v1.closed` queues a close request. The compositor has already removed
+    the surface, so the request cannot be cancelled; the app destroys the window.
+- **Upstream protocol.** wayland-protocols has no layer-shell protocol in stable or staging as of
+  this entry; the `ext-layer-shell` proposal (wayland-protocols merge request 28) is still a draft
+  that renames the wlr protocol. AXION uses `wlr-layer-shell-unstable-v1`. When an `ext-` layer
+  shell lands upstream, the backend prefers it and keeps the wlr one as the fallback, behind the
+  same capability flag.
+- **Vendoring.** The protocol comes from
+  [wlr-protocols](https://gitlab.freedesktop.org/wlroots/wlr-protocols)
+  (`unstable/wlr-layer-shell-unstable-v1.xml`), not wayland-protocols, so it is vendored
+  separately. `protocols/README.md` records its repository, commit and SHA-256 next to the others.
+  Its copyright notice is the older MIT/X11 permission notice rather than the Expat text the
+  README names for the other files; it is compatible with Apache 2.0, and the README's licence
+  section is updated to say so.
+- **Binding.** `wl_app.c` binds `zwlr_layer_shell_v1` when the compositor offers it, at version
+  4 or newer (`ON_DEMAND` keyboard interactivity needs 4); it is never required. `xdg_wm_base`
+  stays required: normal windows need it, and so do popups from a layer surface.
+- **Dependencies, also in M3:** `wl_output` tracking (binding outputs and naming them) for the
+  `output` field, and `xdg_popup` for menus from a layer surface through
+  `zwlr_layer_surface_v1.get_popup`.
+- **Coupling to fix at implementation time.** The backend assumes the xdg-shell role in four
+  places:
+  - `wl_window.c` creates the `xdg_surface` and `xdg_toplevel` unconditionally and listens to
+    their configure and close events;
+  - `wl_present.c` calls `xdg_surface_ack_configure` directly in `prepare_commit`;
+  - `wl_pointer.c` calls `xdg_toplevel_move` and `xdg_toplevel_resize` from the hit-test map;
+  - `wl_app.c` binds the globals and requires `xdg_wm_base`.
+
+  Each becomes a per-role operation chosen when the window is created (toplevel or layer
+  surface; popups later).
+- **Testing.** Headless Weston (`tools/ci/with-weston.sh`) does not implement layer-shell. The
+  layer-surface integration tests run under a second headless compositor in CI, sway
+  (`WLR_BACKENDS=headless`) or labwc, started by a sibling script that sets a variable requiring
+  the global. Under Weston those tests skip instead of failing, even with
+  `AX_REQUIRE_WAYLAND_TESTS=1`.
+- **Schedule.** Documented now, implemented in M3 with the rest of the windowing API. The only
+  obligation before then: any M1 or M2 rework of `wl_present.c` routes the configure ack through
+  a per-role function, not a hard-coded `xdg_surface_ack_configure` call.
+- **Not covered:** a layer surface can draw a lock screen, but it does not lock the session. A
+  locker that must guarantee the session stays locked uses `ext-session-lock-v1`
+  (wayland-protocols staging), which is a separate decision.
 
 **Status.** Approved by the owner.
