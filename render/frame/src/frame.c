@@ -70,7 +70,7 @@ ax_result ax_render_frame_step(ax_render_frame *rf, bool animating, uint64_t tim
     ax_frame_result res;
     ax_frame_info info;
     ax_wake_reason reason = AX_WAKE_TIMEOUT;
-    uint64_t wait_start = 0, deadline = 0;
+    uint64_t wait_start = 0, wait_end = 0, deadline = 0;
     bool waited = false, accept_any = false;
     ax_result r;
 
@@ -87,6 +87,9 @@ ax_result ax_render_frame_step(ax_render_frame *rf, bool animating, uint64_t tim
         info.flags = accept_any ? AX_FRAME_ACCEPT_ANY_SIZE : 0u;
         info.flags |= (!animating && reason == AX_WAKE_TIMEOUT) ? AX_FRAME_ONLY_IF_REQUIRED : 0u;
         info.result = &res;
+        if (waited) {
+            wait_end = ax_time_monotonic_ns(); /* the wait ends where this attempt starts */
+        }
         r = vt->render(rf->desc.renderer, rf->desc.surface, ir, info);
         if (out_result != NULL) {
             *out_result = res;
@@ -124,7 +127,8 @@ ax_result ax_render_frame_step(ax_render_frame *rf, bool animating, uint64_t tim
     }
 
     if (waited) {
-        const uint64_t dt = ax_time_monotonic_ns() - wait_start;
+        /* Up to the start of the frame that acknowledged: not its own rendering and present. */
+        const uint64_t dt = wait_end - wait_start;
         rf->stats.wait_ns_total += dt;
         if (dt > rf->stats.wait_ns_max) {
             rf->stats.wait_ns_max = dt;

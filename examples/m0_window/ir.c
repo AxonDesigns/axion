@@ -112,13 +112,14 @@ static void extra_stats(ax_gpu_surface *surface, ax_render_frame *rf, char *buf,
 {
     ax_gpu_surface_stats st;
     ax_render_frame_stats fs;
-    uint64_t n;
+    uint64_t n, waits;
     int len;
     st.struct_size = sizeof st;
     ax_gpu_surface_get_stats(surface, &st, true);
     fs.struct_size = sizeof fs;
     ax_render_frame_get_stats(rf, &fs, true);
     n = st.frames + st.failed_presents;
+    waits = fs.scene_late + fs.forced_acks + fs.hidden_acks;
     len = snprintf(
         buf, cap,
         "gpu: resizes %llu (%.2f ms mean, %.2f ms max) | acquire %.2f ms mean, %.2f ms max | "
@@ -136,9 +137,10 @@ static void extra_stats(ax_gpu_surface *surface, ax_render_frame *rf, char *buf,
     if (len > 0 && (size_t)len < cap) {
         snprintf(buf + len, cap - (size_t)len,
                  " | ir: cleared %llu | scene late %llu | forced %llu | hidden %llu | wait %.2f ms "
-                 "max | instances %u | unknown %u",
+                 "mean, %.2f ms max | instances %u | unknown %u",
                  (unsigned long long)fs.cleared, (unsigned long long)fs.scene_late,
                  (unsigned long long)fs.forced_acks, (unsigned long long)fs.hidden_acks,
+                 waits != 0 ? (double)fs.wait_ns_total / (double)waits / 1e6 : 0.0,
                  (double)fs.wait_ns_max / 1e6,
                  fs.presented != 0 ? (unsigned)(fs.counts.instances / fs.presented) : 0u,
                  fs.counts.unknown_items);

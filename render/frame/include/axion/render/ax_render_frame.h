@@ -68,8 +68,11 @@ typedef struct ax_render_frame_stats {
     uint64_t scene_late;  /* configures that waited for the scene and got a snapshot in time */
     uint64_t forced_acks; /* configures acknowledged with another size after the bound expired */
     uint64_t hidden_acks; /* configures acknowledged at once with another size: window hidden */
-    uint64_t wait_ns_total, wait_ns_max; /* time spent waiting for the scene */
-    ax_render_counts counts;             /* summed over the frames */
+    /* Time spent waiting for the scene, per configure that waited: from the first mismatch to the
+     * start of the frame that acknowledged (its own rendering and present excluded). Waits are
+     * counted by scene_late + forced_acks + hidden_acks. */
+    uint64_t wait_ns_total, wait_ns_max;
+    ax_render_counts counts; /* summed over the frames */
 } ax_render_frame_stats;
 
 /* Visible so it can be embedded; the fields are private. */

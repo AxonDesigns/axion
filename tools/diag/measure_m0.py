@@ -40,7 +40,7 @@ STATS_RE = re.compile(
     r"(?P<pr_max>[\d.]+) ms max \| deferred acks (?P<deferred>\d+) \(drain (?P<drain_max>[\d.]+) ms max\) "
     r"\| failed (?P<failed>\d+))?"
     r"(?:.*? \| ir: cleared (?P<cleared>\d+) \| scene late (?P<late>\d+) \| forced (?P<forced>\d+) "
-    r"\| hidden (?P<hidden>\d+) \| wait (?P<wait_max>[\d.]+) ms max)?")
+    r"\| hidden (?P<hidden>\d+) \| wait (?:(?P<wait_mean>[\d.]+) ms mean, )?(?P<wait_max>[\d.]+) ms max)?")
 
 
 def run(cmd, **kw):
@@ -100,6 +100,13 @@ def measure(binary, cfg, decorations, output, resize, seconds, manual, log):
     return samples, (protocol_error.group(0) if protocol_error else None), proc.returncode
 
 
+def wait_mean(samples):
+    pairs = [(float(s["wait_mean"]), int(s["late"]) + int(s["forced"])) for s in samples
+             if s.get("wait_mean") is not None and s.get("late") is not None]
+    n = sum(w for _, w in pairs)
+    return sum(m * w for m, w in pairs) / n if n else None
+
+
 def summarize(samples):
     if not samples:
         return None
@@ -127,6 +134,8 @@ def summarize(samples):
         "late": sum(f("late")) if f("late") else None,
         "forced": sum(f("forced")) if f("forced") else None,
         "wait_max": max(f("wait_max")) if f("wait_max") else None,
+        # Weighted by the configures that waited each second (late + forced).
+        "wait_mean": wait_mean(samples),
         "seconds": n,
     }
 
@@ -192,8 +201,8 @@ def main():
 
     hdr = ("renderer", "decor", "output", "state", "Hz", "pres/s", "miss/s", "disc/s", "lost",
            "cfg->pres ms", "resize/s", "resize ms", "acq max", "deferred", "late", "forced",
-           "wait max", "err")
-    fmt = "%-16s %-6s %-13s %-6s %6s %7s %7s %7s %5s %13s %8s %11s %8s %8s %5s %6s %8s %s"
+           "wait ms", "err")
+    fmt = "%-16s %-6s %-13s %-6s %6s %7s %7s %7s %5s %13s %8s %11s %8s %8s %5s %6s %13s %s"
     print("\n" + fmt % hdr)
     for name, deco, out, state, s, perr, code in rows:
         if s is None:
@@ -209,7 +218,8 @@ def main():
                      ("%d" % s["deferred"]) if s["deferred"] is not None else "-",
                      ("%d" % s["late"]) if s["late"] is not None else "-",
                      ("%d" % s["forced"]) if s["forced"] is not None else "-",
-                     ("%.2f" % s["wait_max"]) if s["wait_max"] is not None else "-",
+                     (("%.2f / %.2f" % (s["wait_mean"] or 0.0, s["wait_max"]))
+                      if s["wait_max"] is not None else "-"),
                      perr or ""))
     if log:
         log.close()
