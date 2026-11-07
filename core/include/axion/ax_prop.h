@@ -47,8 +47,11 @@ enum {
     AX_PROP_CORNER_RADIUS = 0x0206, /* f32 */
 
     /* Composite. */
-    AX_PROP_OPACITY = 0x0301,  /* f32, 0..1 */
-    AX_PROP_TRANSFORM = 0x0302 /* transform2d, relative to the node's frame */
+    AX_PROP_OPACITY = 0x0301, /* f32, 0..1 */
+    /* transform2d, applied about the center of the node's frame (CSS's default transform
+     * origin): the frame is translated so its center is at the origin, transformed, and
+     * translated back. A TRANSFORM_ORIGIN property will move that point later. */
+    AX_PROP_TRANSFORM = 0x0302
 };
 
 #define AX_PROP_FIRST_IDL     0x00008000u

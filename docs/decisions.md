@@ -73,15 +73,15 @@ new entry that points back to the old one.
 | 57  | Render-thread frame step: bounded size handshake         | Approved       |
 | 58  | Roping of thin rotated lines with sRGB-space blending    | Approved       |
 | 59  | M0 exit criterion: measurements with the Render IR       | Approved       |
-| 60  | Job system: deques, waits and inline mode                | Implementation |
-| 61  | `AX_ERR_INVALID_ARGUMENT`; the Render IR uses it         | Implementation |
-| 62  | Node store: rows, slots, links and side components       | Implementation |
-| 63  | Property system: ids, types, registry and validation     | Implementation |
-| 64  | Dirty propagation and relayout boundaries                | Implementation |
+| 60  | Job system: deques, waits and inline mode                | Approved       |
+| 61  | `AX_ERR_INVALID_ARGUMENT`; the Render IR uses it         | Approved       |
+| 62  | Node store: rows, slots, links and side components       | Approved       |
+| 63  | Property system: ids, types, registry and validation     | Approved       |
+| 64  | Dirty propagation and relayout boundaries                | Approved       |
 | 65  | Transaction queue: a linked SPSC queue, not a ring       | Deviation      |
-| 66  | Handle reservation on the app thread                     | Implementation |
-| 67  | The world, the transaction API and its encoding          | Implementation |
-| 68  | Applying transactions atomically; rejection              | Implementation |
+| 66  | Handle reservation on the app thread                     | Approved       |
+| 67  | The world, the transaction API and its encoding          | Approved       |
+| 68  | Applying transactions atomically; rejection              | Approved       |
 
 ---
 
@@ -2038,9 +2038,8 @@ is not affected.
 **Measuring later.** `notify` broadcasts on every submit while anyone sleeps. It stays as is until
 the benchmarks of this milestone's seventh step measure it.
 
-**Status.** Implementation, pending the owner's approval (part of the approved plan; the bounded
-sleep was the owner's adjustment; the owner reviewed the commit and asked for the limitation and
-the web note above).
+**Status.** Approved by the owner (part of the approved plan; the bounded sleep was the owner's
+adjustment; the owner reviewed the commit and asked for the limitation and the web note above).
 
 ## 61. `AX_ERR_INVALID_ARGUMENT`; the Render IR uses it
 
@@ -2067,8 +2066,8 @@ build cannot do it", not as "this input is wrong".
 - Tests: `base.types` pins the value and the name; the Render IR's validation, corruption and
   truncation tests now expect the new code.
 
-**Status.** Implementation, pending the owner's approval (the owner asked for the code; the
-Render IR switch is recorded here as the owner asked).
+**Status.** Approved by the owner (the owner asked for the code; the Render IR switch is recorded
+here as the owner asked).
 
 ## 62. Node store: rows, slots, links and side components
 
@@ -2156,8 +2155,8 @@ is in its internal SDK, `core/include/axion/core/ax_node_store.h`; the stable AB
     store;
   - `core.abi_headers`: the stable umbrella pulls in no internal header.
 
-**Status.** Implementation, pending the owner's approval (part of the approved plan; the local
-transform, the scene-thread tag and the skipped generations were the owner's adjustments).
+**Status.** Approved by the owner (part of the approved plan; the local transform, the
+scene-thread tag and the skipped generations were the owner's adjustments).
 
 ## 63. Property system: ids, types, registry and validation
 
@@ -2198,8 +2197,11 @@ corners.
     setting the default to such a node allocates nothing. Names and ids must be unique; shorthands
     cannot be registered. Each registered property uses one of the store's 32 component types; if
     plugins need more, they will share a component (not needed yet).
-  - The registry belongs to one scene. A stable read-only query of property metadata comes with
-    the world (the transactions step), which owns the scene.
+  - The registry belongs to one scene.
+  - **Pending for M2: a stable metadata query (`ax_prop_info`).** Built-in properties could be
+    answered from the static table on any thread, but registered properties live on the scene
+    thread, so the query needs them published to the app thread first (as the mirror publishes
+    values). Until then, metadata is internal SDK only.
 - **Validation** (`ax_scene_check_value`, also run by `ax_scene_set`). `AX_ERR_INVALID_ARGUMENT`
   for:
   - an unknown property or a wrong type;
@@ -2216,6 +2218,11 @@ corners.
     ("the longhands differ; read each of them") when they differ. The app thread's mirror will
     follow the same rule;
   - `set_transition` on it expands to the four corners (implemented with the transactions).
+- **`TRANSFORM`'s origin** (the owner's addition after review): the transform applies about the
+  center of the node's frame, CSS's default transform origin. The frame is translated so its
+  center is at the origin, transformed, and translated back. A `TRANSFORM_ORIGIN` property will
+  move that point later. Documented in `ax_prop.h`; the renderer follows it once the scene records
+  the Render IR from the tree.
 - **Values by id** (`ax_scene_set` / `ax_scene_get`) read and write the node's own value.
   Inherited values are not resolved yet; that is the style pass, with layout.
 - **Tests** (`tests/unit/core/test_props.c`): the built-in table against the documented one (ids,
@@ -2223,7 +2230,7 @@ corners.
   rejection, with nothing changed and nothing marked; the shorthand's write and read rule;
   registered IDL and plugin properties, their defaults, ranges and rejections.
 
-**Status.** Implementation, pending the owner's approval.
+**Status.** Approved by the owner.
 
 ## 64. Dirty propagation and relayout boundaries
 
@@ -2278,7 +2285,7 @@ root list).
 
 What a rejected transaction leaves in these flags is decided and tested with the transactions.
 
-**Status.** Implementation, pending the owner's approval.
+**Status.** Approved by the owner.
 
 ## 65. Transaction queue: a linked SPSC queue, not a ring
 
@@ -2309,7 +2316,7 @@ objects themselves.
   `core.txn.the_queue_carries_transactions_between_two_threads` (20 000 transactions, each command
   derived from its sequence, one in ten rejected, under TSan, also pinned to one CPU).
 
-**Status.** Deviation from "rings carry transactions", chosen by the owner.
+**Status.** Deviation from "rings carry transactions", chosen and approved by the owner.
 
 ## 66. Handle reservation on the app thread
 
@@ -2338,7 +2345,7 @@ returns slots**.
 - Tests (`core.txn`): fresh handles, aborted creates coming back one generation later in LIFO order,
   recycled and retired handles, a rejected transaction's create recycled once the object returns.
 
-**Status.** Implementation, pending the owner's approval.
+**Status.** Approved by the owner.
 
 ## 67. The world, the transaction API and its encoding
 
@@ -2352,8 +2359,9 @@ returns slots**.
 - an injectable clock for commit times and apply deadlines.
 
 **Decision.**
-- **The world** (`ax_world.h`, stable): a handle, like `ax_app`, from a table of 16 worlds claimed
-  with compare-and-swap. It owns one scene (decision 64) and the queues between threads.
+- **The world** (`ax_world.h`, stable): a handle, like `ax_app`, from a table of 256 worlds
+  claimed with compare-and-swap (raised from 16 after review: the headless host will run many
+  instances per process for parallel tests). It owns one scene (decision 64) and the queues between threads.
   - `ax_world_desc`: `struct_size` and `next`, the allocator (called from the app and scene
     threads, so it must be thread-safe), and the clock (`ax_clock_fn` plus a user pointer;
     by default base's monotonic clock).
@@ -2413,7 +2421,7 @@ returns slots**.
   rejections reaching the app thread (and the 64-record limit), teardown with queued and open
   transactions, and the two-thread stress of decision 65.
 
-**Status.** Implementation, pending the owner's approval.
+**Status.** Approved by the owner.
 
 ## 68. Applying transactions atomically; rejection
 
@@ -2491,4 +2499,4 @@ SDK, on the scene thread.
   from the last poll call, so it miscounted when the error queue overflowed (seen on the macOS
   runner). Both stress tests now add every call's count.
 
-**Status.** Implementation, pending the owner's approval.
+**Status.** Approved by the owner.

@@ -21,7 +21,8 @@
 #include <axion/base/ax_error_set.h>
 #include <axion/base/ax_memory.h>
 
-#define AX_MAX_WORLDS 16u
+/* Many, because the headless host runs one world per instance and tests run in parallel. */
+#define AX_MAX_WORLDS 256u
 
 #define RECYCLED_CAPACITY 4096u
 #define RETURNED_CAPACITY 256u

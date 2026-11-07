@@ -93,8 +93,8 @@ typedef struct ax_node_paint {
     float corner_radius[4];
 } ax_node_paint;
 
-/* Composite properties. The transform is local, relative to the node's frame; the world
- * transform is computed when needed, never stored. */
+/* Composite properties. The transform is local, applied about the center of the node's frame
+ * (AX_PROP_TRANSFORM); the world transform is computed when needed, never stored. */
 typedef struct ax_node_composite {
     ax_affine2 transform;
     float opacity;

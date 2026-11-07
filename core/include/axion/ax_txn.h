@@ -9,10 +9,12 @@
  *
  *     ax_txn *t = ax_txn_begin(world);
  *     ax_node card = ax_txn_create(t, AX_NODE_VIEW);
+ *     ax_rgba background = ax_rgba_from_srgb8(0x20, 0x24, 0x30, 255);
  *     ax_txn_set_f32(t, card, AX_PROP_CORNER_RADIUS, 16.0f);
- *     ax_txn_set_color(t, card, AX_PROP_BACKGROUND_COLOR, ax_rgba_from_srgb8(0x20, 0x24, 0x30,
- * 255)); ax_txn_append_child(t, list, card); uint64_t seq; ax_txn_commit(t, &seq);   // queued;
- * applied at the next frame boundary
+ *     ax_txn_set_color(t, card, AX_PROP_BACKGROUND_COLOR, background);
+ *     ax_txn_append_child(t, list, card);
+ *     uint64_t seq;
+ *     ax_txn_commit(t, &seq);  // queued; applied at the next frame boundary
  *
  * Handles. ax_txn_create returns the new node's handle at once, without waiting for the scene:
  * it can be used in the same transaction and in later ones. If the transaction is aborted or
@@ -133,8 +135,8 @@ typedef struct ax_txn_error {
 
 /*
  * Takes the oldest rejection not read yet. False when there is none. At most
- * AX_TXN_ERROR_QUEUE rejections wait; older ones are dropped, and `dropped` (may be NULL) says
- * how many since the last call. thread: app
+ * AX_TXN_ERROR_QUEUE rejections wait: while the queue is full, newer ones are dropped (the oldest
+ * are kept), and `dropped` (may be NULL) says how many since the last call. thread: app
  */
 AX_API bool ax_world_poll_txn_error(ax_world world, ax_txn_error *out, uint32_t *dropped);
 
