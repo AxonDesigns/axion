@@ -93,12 +93,23 @@ int main(int argc, char **argv)
 endfunction()
 
 add_subdirectory(unit/base)
+if(AX_BUILD_PLATFORM)
+    add_subdirectory(unit/platform)
+endif()
 
 # Every header must compile on its own (includes what it uses). One generated translation unit
 # per header, built with the same strict settings; failure breaks the build.
-file(GLOB _ax_headers RELATIVE "${PROJECT_SOURCE_DIR}/base/include"
-     CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/base/include/axion/*.h"
-                       "${PROJECT_SOURCE_DIR}/base/include/axion/base/*.h")
+set(_ax_header_modules base)
+if(AX_BUILD_PLATFORM)
+    list(APPEND _ax_header_modules platform)
+endif()
+set(_ax_headers "")
+foreach(_m IN LISTS _ax_header_modules)
+    file(GLOB _m_headers RELATIVE "${PROJECT_SOURCE_DIR}/${_m}/include"
+         CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/${_m}/include/axion/*.h"
+                           "${PROJECT_SOURCE_DIR}/${_m}/include/axion/${_m}/*.h")
+    list(APPEND _ax_headers ${_m_headers})
+endforeach()
 set(_ax_header_tus "")
 foreach(_h IN LISTS _ax_headers)
     string(MAKE_C_IDENTIFIER "${_h}" _id)
@@ -108,4 +119,7 @@ foreach(_h IN LISTS _ax_headers)
 endforeach()
 add_library(ax_header_check OBJECT ${_ax_header_tus})
 target_link_libraries(ax_header_check PRIVATE ax_base)
+if(AX_BUILD_PLATFORM)
+    target_link_libraries(ax_header_check PRIVATE ax_platform)
+endif()
 ax_target_defaults(ax_header_check)

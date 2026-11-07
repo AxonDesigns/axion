@@ -50,6 +50,14 @@ jobs:
       - name: CMake and Ninja
         uses: lukka/get-cmake@latest
 
+      # The platform module (Linux only for now) needs libwayland and wayland-scanner; weston
+      # runs headless for the Wayland integration tests.
+      - name: Wayland development packages
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libwayland-dev libwayland-bin weston
+
       - name: Configure
         run: cmake --preset ${{ matrix.preset }}
 

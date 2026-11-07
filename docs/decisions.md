@@ -43,6 +43,10 @@ new entry that points back to the old one.
 | 27  | Debug owner checks for Windows mutexes                   | Approved       |
 | 28  | Death tests, skipped tests and thread ids                | Implementation |
 | 29  | Rename base's ax_platform.h to ax_config.h               | Approved       |
+| 30  | Platform module layout and Wayland build                 | Approved       |
+| 31  | Event queue: SPSC ring and overflow policy               | Approved       |
+| 32  | Main-thread calls are marshalled; thread tags            | Approved       |
+| 33  | libwayland-cursor as cursor fallback                     | Approved       |
 
 ---
 
@@ -512,3 +516,116 @@ compositor is available. Thread-affinity checks need a cheap, comparable thread 
   "platform" later.
 
 **Status.** Approved by the owner.
+
+## 30. Platform module layout and Wayland build
+
+**Decision.**
+- **Headers:** the two tiers of decision 2.
+  - `platform/include/axion/` is the stable ABI: `ax_app.h`, `ax_window.h`, `ax_surface.h`,
+    `ax_event.h` and the umbrella `ax_platform.h`.
+  - `platform/include/axion/platform/` is the internal SDK:
+    - `ax_surface_native.h`, the native handles for gpu/;
+    - `ax_present.h`, the presenting thread's API;
+    - `ax_hit_regions.h`.
+  - The hit-region map is in the SDK, not the ABI, because the document makes regions a node
+    property (`AX_PROP_WINDOW_REGION`); core will call the primitive later. The
+    `ax_window_region` values themselves are stable, in `ax_window.h`.
+  - Cross-module includes use the full path (`<axion/ax_types.h>`).
+- **Structure:** `platform/src/common/` holds everything independent of the windowing system:
+  the event queue, the frame clock, hit-testing, the triple buffer, handle tables and
+  main-thread marshalling. It reaches the backend through an internal vtable, and
+  `platform/src/wayland/` is the only backend so far. The public API names no Wayland concept:
+  native handles go through `ax_surface_native` with a `kind` tag.
+- **Build:**
+  - The module is built on Linux only (`AX_BUILD_PLATFORM`, default on for Linux). Windows,
+    macOS and the web keep building base only until their backends exist.
+  - It needs libwayland-client 1.22 or newer, for `wl_surface.preferred_buffer_scale`
+    (`wl_compositor` v6).
+  - Protocol code is generated at build time by `wayland-scanner` from XML vendored unmodified
+    from wayland-protocols 1.50: xdg-shell, xdg-decoration-v1, presentation-time, viewporter,
+    fractional-scale-v1, cursor-shape-v1, and tablet-v2 (only because cursor-shape references
+    `zwp_tablet_tool_v2`).
+  - Provenance, licences (MIT) and checksums are in `platform/src/wayland/protocols/README.md`.
+  - The generated glue builds in its own object library without `-Werror`, and its headers are
+    included as system headers. AXION's code stays fully checked; scanner output is not
+    AXION's to fix.
+- **libdecor is not used.** The document has AXION draw its own decorations, and libdecor's
+  plugins carry LGPL code.
+
+**Status.** Approved (part of the approved plan).
+
+## 31. Event queue: SPSC ring and overflow policy
+
+**Context.** The document asks for lock-free single-producer rings for events. The main thread is
+the only producer and one thread consumes, and the main thread must never block or allocate
+inside the pump.
+
+**Decision.** `platform/src/common/event_queue.c`.
+- **The ring:** an SPSC ring of fixed capacity (`ax_app_desc.event_capacity`, rounded to a power
+  of two, default 256), built on base's atomics, with all memory reserved when the app is
+  created.
+- **Per-window state:** slots for `max_windows` windows (default 32) are reserved up front too.
+  A record names its window by slot and handle, and the consumer drops records of windows
+  closed since they were queued.
+- **Coalescing:**
+  - RESIZED and SCALE_CHANGED are coalesced per window. The newest geometry goes into a
+    per-window triple buffer. A marker flag allows at most one RESIZED and one SCALE_CHANGED
+    marker per window in the ring, and the consumer reads the newest geometry when it takes the
+    marker. These events therefore can never fill the ring.
+  - CLOSE_REQUESTED: at most one per window is pending, and repeats merge until it is
+    delivered.
+  - FOCUS and OCCLUSION are discrete records, delivered in order.
+- **Overflow (a full ring):**
+  - Nothing is dropped. The event is held in producer-only per-window state: a marker, or the
+    latest focus/occlusion value with its time.
+  - While anything is held back, new events are held back too, so order is kept.
+  - When the consumer frees space it wakes the producer (the main thread's wake fd), which
+    flushes in window order.
+  - Close and the latest focus are never lost. Only intermediate focus/occlusion changes that
+    arrive while the ring is full collapse to the latest state.
+- **Waiting consumer:** `ax_app_wait_event` sleeps on a mutex and condition variable, announced
+  with a flag (a Dekker handshake). The main thread takes that mutex only to signal a consumer
+  that is actually asleep, and only for the handoff.
+- TSan and a two-thread stress test (100 000 events, order checked) cover it.
+
+**Status.** Approved by the owner (the SPSC ring and the coalescing policy).
+
+## 32. Main-thread calls are marshalled; thread tags
+
+**Context.** The document puts window creation on the main thread (required on macOS, iOS and
+Android), but app code, the C# binding included, runs on the app thread.
+
+**Decision.**
+- **Marshalling instead of `AX_ERR_WRONG_THREAD`:** functions that must run on the main thread
+  are handed to it when called from another thread, and the caller waits for the result
+  (tagged "any->main").
+  - Commands go onto a lock-free stack.
+  - The main thread is woken through its wake fd and runs commands between dispatches.
+  - The caller blocks until its command completes.
+  - On the main thread itself the call runs directly.
+- **Why marshal:** with `AX_ERR_WRONG_THREAD`, the API could not be used from the app thread at
+  all.
+- **Requirement:** the main thread must be pumping (`ax_app_run` / `ax_app_pump`). There is no
+  deadlock risk, because the main thread never waits on the app thread.
+- **Thread tags:** until the IDL exists, every declaration carries a comment tag in a fixed
+  format, `thread: any | main | any->main | consumer | presenter`, defined in `ax_app.h`.
+  - Main-only functions (`ax_app_run`, `ax_app_pump`, `ax_app_destroy`) assert in debug builds
+    and return `AX_ERR_WRONG_THREAD` in release.
+  - The main thread is the one that called `ax_app_create`, identified with
+    `ax_thread_current_id()`.
+  - Consumer and presenter are documented as one thread at a time.
+
+**Status.** Approved (part of the approved plan).
+
+## 33. libwayland-cursor as cursor fallback
+
+**Decision.**
+- **Where it applies:** where the compositor lacks wp-cursor-shape-v1 (weston, GNOME before 46).
+- **What it adds:** the backend loads cursor images with libwayland-cursor (MIT, part of the
+  Wayland project itself), from the user's cursor theme (`XCURSOR_THEME` / `XCURSOR_SIZE`,
+  default size 24).
+- **Why:** without a cursor image, the cursor over AXION's surfaces would be undefined.
+- **New runtime dependency** of the platform module on Linux.
+
+**Status.** Approved by the owner. The owner adds it to the licence list in the architecture
+document.
