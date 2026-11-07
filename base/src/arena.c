@@ -10,14 +10,14 @@
 #include "axion/base/ax_compiler.h"
 #include "axion/base/ax_memory.h"
 
-/* Block header; the payload starts at the next max_align_t boundary after it. */
+/* Block header; the payload starts at the next AX_MAX_ALIGN boundary after it. */
 struct ax_arena_block {
     ax_arena_block *next;
     size_t capacity;   /* payload bytes */
     size_t alloc_size; /* bytes requested from the parent, needed to free the block */
 };
 
-#define AX_ARENA_PAYLOAD_ALIGN AX_ALIGNOF(max_align_t)
+#define AX_ARENA_PAYLOAD_ALIGN AX_MAX_ALIGN
 #define AX_ARENA_HEADER_SIZE \
     ((sizeof(ax_arena_block) + AX_ARENA_PAYLOAD_ALIGN - 1) & ~(size_t)(AX_ARENA_PAYLOAD_ALIGN - 1))
 
@@ -45,7 +45,7 @@ static ax_arena_block *new_block(ax_arena *arena, size_t size, size_t align)
     size_t total;
     ax_arena_block *b;
 
-    /* Room for size bytes even in the worst case of alignment padding beyond max_align_t. */
+    /* Room for size bytes even in the worst case of alignment padding beyond AX_MAX_ALIGN. */
     if (!ax_size_add(size, align > AX_ARENA_PAYLOAD_ALIGN ? align - 1 : 0, &needed)) {
         return NULL;
     }

@@ -37,6 +37,7 @@ new entry that points back to the old one.
 | 21  | Arena behaviour details                                  | Implementation |
 | 22  | Threading failures and debug checks                      | Implementation |
 | 23  | Emscripten CI toolchain                                  | Implementation |
+| 24  | `AX_MAX_ALIGN` instead of `max_align_t`                  | Deviation      |
 
 ---
 
@@ -386,3 +387,14 @@ is no tree of empty folders.
 - **What the job builds:** only the libraries (`ax_base`), with tests off, as requested for M0.
 
 **Status.** Implementation.
+
+## 24. `AX_MAX_ALIGN` instead of `max_align_t`
+
+**Context.** C11 defines `max_align_t` in `<stddef.h>`, but MSVC's headers do not provide it in
+C mode. This showed up in the first Windows CI run.
+
+**Decision.** `ax_memory.h` defines `AX_MAX_ALIGN` as the alignment of a union of the most
+demanding scalar types (`long long`, `long double`, `double`, object and function pointers). Base
+code uses it wherever it would have used `_Alignof(max_align_t)`.
+
+**Status.** Deviation, forced by MSVC's C11 support.

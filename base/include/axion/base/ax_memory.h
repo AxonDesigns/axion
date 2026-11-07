@@ -19,6 +19,21 @@
 #include "ax_assert.h"
 #include "ax_compiler.h"
 
+/*
+ * The strictest fundamental alignment: what malloc guarantees, and the alignment an arena or pool
+ * gives by default. C11's max_align_t would do, but MSVC's <stddef.h> does not define it in C mode,
+ * so it is spelled out as the alignment of a union of the most demanding scalar types.
+ */
+typedef union ax_max_align {
+    long long ll;
+    long double ld;
+    double d;
+    void *p;
+    void (*fp)(void);
+} ax_max_align;
+
+#define AX_MAX_ALIGN AX_ALIGNOF(ax_max_align)
+
 static inline bool ax_is_pow2(size_t x)
 {
     return x != 0 && (x & (x - 1)) == 0;

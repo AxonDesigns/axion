@@ -52,8 +52,9 @@ jobs:
       - name: Configure
         run: cmake --preset ${{ matrix.preset }}
 
+      # -k 0: keep going after a failure, so one run reports every compile error.
       - name: Build
-        run: cmake --build --preset ${{ matrix.preset }}
+        run: cmake --build --preset ${{ matrix.preset }} -- -k 0
 
       - name: Test
         run: ctest --preset ${{ matrix.preset }}
@@ -84,4 +85,4 @@ jobs:
         run: cmake --preset emscripten
 
       - name: Build
-        run: cmake --build --preset emscripten
+        run: cmake --build --preset emscripten -- -k 0
