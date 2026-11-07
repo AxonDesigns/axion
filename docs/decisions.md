@@ -73,9 +73,11 @@ new entry that points back to the old one.
 | 57  | Render-thread frame step: bounded size handshake         | Approved       |
 | 58  | Roping of thin rotated lines with sRGB-space blending    | Approved       |
 | 59  | M0 exit criterion: measurements with the Render IR       | Approved       |
-| 60  | Job system: deques, waits and inline mode                | Approved       |
-| 61  | `AX_ERR_INVALID_ARGUMENT`; the Render IR uses it         | Approved       |
-| 62  | Node store: rows, slots, links and side components       | Approved       |
+| 60  | Job system: deques, waits and inline mode                | Implementation |
+| 61  | `AX_ERR_INVALID_ARGUMENT`; the Render IR uses it         | Implementation |
+| 62  | Node store: rows, slots, links and side components       | Implementation |
+| 63  | Property system: ids, types, registry and validation     | Implementation |
+| 64  | Dirty propagation and relayout boundaries                | Implementation |
 
 ---
 
@@ -2032,8 +2034,9 @@ is not affected.
 **Measuring later.** `notify` broadcasts on every submit while anyone sleeps. It stays as is until
 the benchmarks of this milestone's seventh step measure it.
 
-**Status.** Approved (part of the approved plan; the bounded sleep was the owner's adjustment;
-the owner reviewed the commit and asked for the limitation and the web note above).
+**Status.** Implementation, pending the owner's approval (part of the approved plan; the bounded
+sleep was the owner's adjustment; the owner reviewed the commit and asked for the limitation and
+the web note above).
 
 ## 61. `AX_ERR_INVALID_ARGUMENT`; the Render IR uses it
 
@@ -2060,8 +2063,8 @@ build cannot do it", not as "this input is wrong".
 - Tests: `base.types` pins the value and the name; the Render IR's validation, corruption and
   truncation tests now expect the new code.
 
-**Status.** Approved by the owner (the code); the Render IR switch is recorded here as the owner
-asked.
+**Status.** Implementation, pending the owner's approval (the owner asked for the code; the
+Render IR switch is recorded here as the owner asked).
 
 ## 62. Node store: rows, slots, links and side components
 
@@ -2100,8 +2103,17 @@ is in its internal SDK, `core/include/axion/core/ax_node_store.h`; the stable AB
     scene-side node);
   - external: `ax_node_store_create_at` creates a node at a handle reserved elsewhere, so the app
     thread can hand out handles without waiting for the scene (designed with the transactions).
-    A slot the store has not seen starts at generation 1, and the store reports through
-    `on_slot_freed` the handle each destroyed node's slot must use next, keeping no free list.
+    The store reports through `on_slot_freed` the handle each destroyed node's slot can use next
+    (generation + 1), keeping no free list.
+  - **Skipped generations** (the owner's change after review): `create_at` accepts any generation
+    at least the one the slot records (any from 1 for a slot it has not seen) and adopts it.
+    Handles of an aborted transaction, or of a create that never runs because an earlier command
+    failed, never pass through `destroy`, so the app thread must be able to skip generations
+    without telling the scene; reusing the same generation instead would be an ABA for the app's
+    old copies of the handle. A lower generation, a live slot or a retired one is
+    `AX_ERR_INVALID_HANDLE`.
+  - The party that hands out handles (the app thread) retires a slot when its generation reaches
+    `UINT32_MAX`, as the store does, so no generation is ever handed out twice.
 - **Hierarchy:** `append_child`, `insert_before` (a null anchor appends) and `detach`. A node that
   already has a parent is moved, so reparenting and reordering children are the same operation.
   A cycle (the parent is the child or inside its subtree) or an anchor that is not a child of the
@@ -2112,7 +2124,7 @@ is in its internal SDK, `core/include/axion/core/ax_node_store.h`; the stable AB
   components do not change. It uses one scratch buffer and leaves the store unchanged on
   `AX_ERR_OUT_OF_MEMORY`. When to compact (for example after many removals) is for the frame
   pipeline to decide.
-- **Side components:** up to 32 types registered at run time with a size, an alignment and an
+- **Side components:** up to 32 types (a 33rd is `AX_ERR_UNSUPPORTED`) registered at run time with a size, an alignment and an
   optional `on_remove` callback. Each type is stored dense with swap-remove, with an owner slot per
   element and a paged sparse index from slot to element (pages of 256, allocated on demand). A
   node's mask records its components, which are removed with the node. Element pointers are valid
@@ -2130,7 +2142,9 @@ is in its internal SDK, `core/include/axion/core/ax_node_store.h`; the stable AB
     change;
   - destroying a subtree;
   - compaction into pre-order with stable handles and data, over two trees with holes;
-  - external slots: reserved handles, gaps, wrong generations, reported next handles;
+  - external slots: reserved handles, gaps, reported next handles; skipped generations adopted,
+    earlier ones refused, the last generation retiring the slot unreported;
+  - registering a 33rd component type;
   - side components across sparse pages, removal with their nodes, `on_remove` counts;
   - out of memory at every allocation of create, add-component and compact, with the store
     consistent and no leak;
@@ -2138,5 +2152,126 @@ is in its internal SDK, `core/include/axion/core/ax_node_store.h`; the stable AB
     store;
   - `core.abi_headers`: the stable umbrella pulls in no internal header.
 
-**Status.** Approved (part of the approved plan; the local transform and the scene-thread tag were
-the owner's adjustments).
+**Status.** Implementation, pending the owner's approval (part of the approved plan; the local
+transform, the scene-thread tag and the skipped generations were the owner's adjustments).
+
+## 63. Property system: ids, types, registry and validation
+
+**Context.** "Property system" gives every property an id, a value type, an inherited flag, an
+animatable flag and an effect class. The owner asked for an extensible registry with ids stable
+for the ABI (plugins and the IDL will add properties), for the properties a rect needs now (size,
+position, background, a radius per corner, opacity, transform), for room for flex and text, and
+for the `CORNER_RADIUS` shorthand with a defined read and a `set_transition` that expands to the
+corners.
+
+**Decision.**
+- **Stable ABI** (`core/include/axion/ax_prop.h`):
+  - `ax_prop` is a `uint32_t`. Ranges, fixed forever: `0x0001-0x7FFF` core properties declared in
+    the header and only appended; `0x8000-0xFFFF` properties generated from the IDL (kit);
+    `0x10000` and above, properties registered at run time by name (plugins).
+  - Core ids grouped by area in the high byte, with no meaning at run time: layout `0x01xx`
+    (`WIDTH`, `HEIGHT`, `LEFT`, `TOP`; flex will start at `0x0110`), paint `0x02xx`
+    (`BACKGROUND_COLOR`, the four `CORNER_RADIUS_*` corners, the `CORNER_RADIUS` shorthand),
+    composite `0x03xx` (`OPACITY`, `TRANSFORM`), text from `0x0400`.
+  - Value types: `F32`, `DIMENSION`, `VEC2`, `COLOR`, `TRANSFORM2D`, `U32`, `BOOL`; 8 is reserved
+    for strings (class names, text content).
+  - Value structs: `ax_dimension` (decision 62), `ax_vec2f`, `ax_rgba` (decision 50's color:
+    linear light, premultiplied, extended range) and `ax_transform2d` (CSS `matrix()` order).
+    They mirror base's internal `ax_vec2`, `ax_color` and `ax_affine2` byte for byte (checked
+    with `_Static_assert`), so values cross without conversion. A conversion from sRGB comes with
+    the transaction API.
+  - Effect classes `LAYOUT`, `PAINT`, `COMPOSITE`; flags `INHERITED`, `ANIMATABLE`, `SHORTHAND`.
+- **The registry** (internal SDK, `ax_prop_registry.h`). Each descriptor holds the id, a unique
+  name (`"background-color"`), the type, flags, effect class, where the value lives, the default,
+  and an accepted range for `F32` values and `DIMENSION` values in points.
+  - **Built-in properties** are a static table sorted by id, found by binary search, needing no
+    memory. Their values live in the node store's hot columns (`style`, `paint`, `composite`) at a
+    fixed offset. Flex and text are added the same way: rows in the table, fields in `style` (flex)
+    or a text side component (text), and `INHERITED` for text properties such as font size.
+  - **Registered properties** (`ax_prop_registry_register`): an IDL property brings its fixed id,
+    a plugin property gets the next id from `0x10000`. Each one keeps its values in a side component
+    of its own holding one `ax_value`. A node that never set the property reads the default, and
+    setting the default to such a node allocates nothing. Names and ids must be unique; shorthands
+    cannot be registered. Each registered property uses one of the store's 32 component types; if
+    plugins need more, they will share a component (not needed yet).
+  - The registry belongs to one scene. A stable read-only query of property metadata comes with
+    the world (the transactions step), which owns the scene.
+- **Validation** (`ax_scene_check_value`, also run by `ax_scene_set`). `AX_ERR_INVALID_ARGUMENT`
+  for:
+  - an unknown property or a wrong type;
+  - a value that is not finite (colors may be outside 0-1, decision 50);
+  - a value outside the property's range: `WIDTH`, `HEIGHT` and the radii at least 0, `OPACITY`
+    in 0-1. `LEFT` and `TOP` may be negative;
+  - an unknown unit.
+
+  A percentage is `AX_ERR_UNSUPPORTED` until layout exists; `AUTO` resets a dimension. Errors
+  record `ax_last_error` with the property's name.
+- **`CORNER_RADIUS` shorthand:**
+  - setting it sets the four corners (each marks dirty as itself);
+  - reading it returns the corners' value when the four are equal, and `AX_ERR_INVALID_ARGUMENT`
+    ("the longhands differ; read each of them") when they differ. The app thread's mirror will
+    follow the same rule;
+  - `set_transition` on it expands to the four corners (implemented with the transactions).
+- **Values by id** (`ax_scene_set` / `ax_scene_get`) read and write the node's own value.
+  Inherited values are not resolved yet; that is the style pass, with layout.
+- **Tests** (`tests/unit/core/test_props.c`): the built-in table against the documented one (ids,
+  names, types, effects, flags, lookup by name); set and read every built-in property; every
+  rejection, with nothing changed and nothing marked; the shorthand's write and read rule;
+  registered IDL and plugin properties, their defaults, ranges and rejections.
+
+**Status.** Implementation, pending the owner's approval.
+
+## 64. Dirty propagation and relayout boundaries
+
+**Context.** "Dirty propagation" marks layout dirty up to the nearest relayout boundary (a node
+whose size does not depend on its children, such as a fixed-size box or a scroll viewport). The
+owner asked for marking by effect class, with relayout boundaries, implemented and tested before
+layout exists.
+
+**Decision.** The scene (`ax_scene.h`, internal SDK) wraps the node store, the registry and a
+dirty set. The flags are bits in the store's `dirty` column:
+`STYLE`, `LAYOUT`, `LAYOUT_CHILD`, `PAINT`, `COMPOSITE`, and `LAYOUT_ROOT` (the node is in the
+root list).
+- **Relayout boundary:** a root (no parent), or a node with `WIDTH` and `HEIGHT` both in points.
+  Scroll viewports join when scrolling exists.
+- **By effect class:**
+  - **Layout:** the node gets `LAYOUT`. Its size or position may change, so its parent and the
+    ancestors above get `LAYOUT_CHILD` up to the nearest boundary at or above the parent, which
+    is added to the list of **layout roots**. A boundary's own size change therefore makes its
+    parent's boundary the root: the boundary stops changes inside it, not changes to itself. A
+    node without parent is its own root.
+  - **Paint:** `PAINT` on the node only. **Composite:** `COMPOSITE` on the node only. The store
+    keeps the local transform (decision 62), so a transform change never touches the subtree.
+  - **Inherited properties:** `STYLE` plus the property's effect on the node and every
+    descendant.
+- **Structure:** children added, removed or reordered mark the parent `LAYOUT`. If the parent is
+  a boundary it becomes the root (its size does not depend on its children); otherwise marking
+  climbs from its parent. A moved node gets `LAYOUT` and both parents are marked. A detached node
+  becomes a root. A new node gets `STYLE | LAYOUT | PAINT | COMPOSITE` and is a root. Inserting a
+  node where it already is marks nothing.
+- **Unchanged values mark nothing:** a set that writes the same bytes is not a change.
+- **Climbing stops early** at a node already marked `LAYOUT_CHILD`: its chain is marked up to its
+  root, which is in the list. That holds because flags are only cleared all together.
+- **The root list** holds handles. Layout will run from each root over its dirty subtree, and
+  independent roots become parallel jobs (the job system, decision 60). Entries can become stale
+  within a frame (a root that gains a parent, or is destroyed); layout skips or reconciles them.
+  Marking never fails: if the list cannot grow, `roots_overflowed` tells layout to treat every root
+  as dirty.
+- **Clearing:** `ax_scene_clear_dirty` resets every flag and the list. The frame that consumes
+  them calls it, once layout and recording exist.
+- **Tests** (`tests/unit/core/test_dirty.c`, over a window / fixed panel / list / item / label
+  and a sidebar):
+  - new nodes are fully dirty roots;
+  - which nodes are boundaries (width alone is not enough);
+  - paint, composite and transform changes mark only the node;
+  - a layout change inside the fixed panel stops at the panel, a second change adds no root, the
+    panel's own size makes the window a root, and a change outside climbs to the window;
+  - setting the same value marks nothing;
+  - moving a node marks both sides, inserting into a fixed node stops there, reinserting in
+    place marks nothing, destroying marks the parent, detaching makes a root;
+  - an inherited property (a test stand-in for font size) marks its subtree and nothing else;
+  - the shorthand marks like its longhands.
+
+What a rejected transaction leaves in these flags is decided and tested with the transactions.
+
+**Status.** Implementation, pending the owner's approval.

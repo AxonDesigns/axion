@@ -445,10 +445,6 @@ AX_TEST(external_slots_create_at_reserved_handles_and_report_freed_slots)
     AX_CHECK_RESULT(ax_node_store_create_at(&s, b, AX_NODE_VIEW), AX_OK);
     AX_CHECK_RESULT(ax_node_store_create_at(&s, c, AX_NODE_VIEW), AX_OK);
     AX_CHECK_RESULT(ax_node_store_create_at(&s, a, AX_NODE_VIEW), AX_ERR_INVALID_HANDLE); /* live */
-    again.h = ax_handle_make(3, 2); /* unseen slots start at generation 1 */
-    AX_CHECK_RESULT(ax_node_store_create_at(&s, again, AX_NODE_VIEW), AX_ERR_INVALID_HANDLE);
-    again.h = ax_handle_make(40, 2);
-    AX_CHECK_RESULT(ax_node_store_create_at(&s, again, AX_NODE_VIEW), AX_ERR_INVALID_HANDLE);
     again.h = 0;
     AX_CHECK_RESULT(ax_node_store_create_at(&s, again, AX_NODE_VIEW), AX_ERR_INVALID_HANDLE);
 
@@ -468,6 +464,52 @@ AX_TEST(external_slots_create_at_reserved_handles_and_report_freed_slots)
     AX_CHECK(!ax_node_store_is_live(&s, b));
     ax_node_store_deinit(&s);
     AX_CHECK_EQ_U(log.count, 2); /* deinit reports nothing */
+}
+
+AX_TEST(external_slots_adopt_skipped_generations)
+{
+    ax_node_store s;
+    ax_node_store_desc desc;
+    freed_log log;
+    ax_node n;
+    ax_node skipped;
+    ax_node old;
+    memset(&log, 0, sizeof log);
+    memset(&desc, 0, sizeof desc);
+    desc.on_slot_freed = on_freed;
+    desc.user = &log;
+    ax_node_store_init(&s, &desc);
+
+    /* An unseen slot accepts any generation from 1: the app skipped 1-3 (aborted creates). */
+    n.h = ax_handle_make(7, 4);
+    AX_CHECK_RESULT(ax_node_store_create_at(&s, n, AX_NODE_VIEW), AX_OK);
+    old.h = ax_handle_make(7, 3);
+    AX_CHECK(!ax_node_store_is_live(&s, old));
+    AX_CHECK_RESULT(ax_node_store_destroy(&s, n), AX_OK);
+    AX_REQUIRE(log.count == 1);
+    AX_CHECK_EQ_U(log.handles[0].h, ax_handle_make(7, 5));
+
+    /* A freed slot accepts its reported generation or any later one, never an earlier one. */
+    old.h = ax_handle_make(7, 4);
+    AX_CHECK_RESULT(ax_node_store_create_at(&s, old, AX_NODE_VIEW), AX_ERR_INVALID_HANDLE);
+    skipped.h = ax_handle_make(7, 9);
+    AX_CHECK_RESULT(ax_node_store_create_at(&s, skipped, AX_NODE_VIEW), AX_OK);
+    AX_CHECK(ax_node_store_is_live(&s, skipped));
+    old.h = ax_handle_make(7, 5); /* the reported handle, skipped by the app: stale */
+    AX_CHECK(!ax_node_store_is_live(&s, old));
+    AX_CHECK_RESULT(ax_node_store_destroy(&s, skipped), AX_OK);
+    AX_REQUIRE(log.count == 2);
+    AX_CHECK_EQ_U(log.handles[1].h, ax_handle_make(7, 10));
+    AX_CHECK_RESULT(ax_node_store_create_at(&s, skipped, AX_NODE_VIEW), AX_ERR_INVALID_HANDLE);
+
+    /* The last generation: destroying it retires the slot, unreported, and nothing reuses it. */
+    n.h = ax_handle_make(7, UINT32_MAX);
+    AX_CHECK_RESULT(ax_node_store_create_at(&s, n, AX_NODE_VIEW), AX_OK);
+    AX_CHECK_RESULT(ax_node_store_destroy(&s, n), AX_OK);
+    AX_CHECK_EQ_U(log.count, 2);
+    AX_CHECK_RESULT(ax_node_store_create_at(&s, n, AX_NODE_VIEW), AX_ERR_INVALID_HANDLE);
+    AX_CHECK(!ax_node_store_is_live(&s, n));
+    ax_node_store_deinit(&s);
 }
 
 /* ---- Side components ------------------------------------------------------------------------- */
@@ -510,6 +552,7 @@ AX_TEST(side_components_follow_their_nodes)
         AX_CHECK_RESULT(ax_node_store_register_component(&f.store, &desc, &bad),
                         AX_ERR_INVALID_ARGUMENT);
     }
+    desc.align = AX_ALIGNOF(test_component);
 
     /* Slots above 256 too, so more than one sparse page is used. */
     for (i = 0; i < 300; ++i) {
@@ -577,6 +620,24 @@ AX_TEST(side_components_follow_their_nodes)
         }
         AX_CHECK_EQ_U(total, 40);
     }
+}
+
+AX_TEST(registering_more_component_types_than_the_limit_is_unsupported)
+{
+    ax_node_store s;
+    ax_component_desc desc;
+    ax_component_type t;
+    uint32_t i;
+    ax_node_store_init(&s, NULL);
+    memset(&desc, 0, sizeof desc);
+    desc.size = 4;
+    desc.align = 4;
+    for (i = 0; i < AX_NODE_MAX_COMPONENT_TYPES; ++i) {
+        AX_REQUIRE(ax_node_store_register_component(&s, &desc, &t) == AX_OK);
+        AX_CHECK_EQ_U(t, i);
+    }
+    AX_CHECK_RESULT(ax_node_store_register_component(&s, &desc, &t), AX_ERR_UNSUPPORTED);
+    ax_node_store_deinit(&s);
 }
 
 /* ---- Out of memory --------------------------------------------------------------------------- */

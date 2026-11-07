@@ -276,16 +276,17 @@ ax_result ax_node_store_create_at(ax_node_store *s, ax_node node, ax_node_kind k
     }
     if (slot < s->slot_count) {
         const ax_node_slot *sl = &s->slots[slot];
-        if (sl->row != AX_NODE_NONE || sl->generation != gen) {
-            return AX_ERR_INVALID_HANDLE; /* live, retired, or not the slot's next generation */
+        if (sl->row != AX_NODE_NONE || gen < sl->generation) {
+            return AX_ERR_INVALID_HANDLE; /* live, retired, or a generation already used */
         }
-    } else if (gen != 1) {
-        return AX_ERR_INVALID_HANDLE; /* a slot never seen starts at generation 1 */
     }
+    /* A slot never seen accepts any generation from 1; a free slot any generation from the one
+     * it records. Generations the app skipped (aborted or rejected creates) are never reused. */
     if (!reserve_rows(s, s->row_count + 1u) || !reserve_slots(s, slot + 1u)) {
         return AX_ERR_OUT_OF_MEMORY;
     }
     open_slots(s, slot + 1u);
+    s->slots[slot].generation = gen;
     init_row(s, slot, kind);
     return AX_OK;
 }
@@ -632,7 +633,7 @@ ax_result ax_node_store_register_component(ax_node_store *s, const ax_component_
         return AX_ERR_INVALID_ARGUMENT;
     }
     if (s->component_type_count >= AX_NODE_MAX_COMPONENT_TYPES) {
-        return AX_ERR_OUT_OF_MEMORY;
+        return AX_ERR_UNSUPPORTED;
     }
     cs = &s->components[s->component_type_count];
     memset(cs, 0, sizeof *cs);

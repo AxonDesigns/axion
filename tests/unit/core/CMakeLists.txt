@@ -5,7 +5,9 @@
 
 set(_ax_core_tests
     test_abi_headers.c
-    test_node_store.c)
+    test_dirty.c
+    test_node_store.c
+    test_props.c)
 
 foreach(_t IN LISTS _ax_core_tests)
     ax_add_unit_test(core "${_t}")

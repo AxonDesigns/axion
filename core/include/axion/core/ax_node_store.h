@@ -22,9 +22,13 @@
  *   - Internal (on_slot_freed is NULL): the store hands out slots itself (ax_node_store_create),
  *     recycling freed ones LIFO.
  *   - External (on_slot_freed set): another party hands out handles (the app thread reserves them
- *     without waiting, decision 64) and the store creates nodes at them (ax_node_store_create_at).
- *     A slot the store has not seen yet starts at generation 1. When a node is destroyed, the store
- *     reports the handle its slot's next occupant must use, and keeps no free list.
+ *     without waiting) and the store creates nodes at them (ax_node_store_create_at).
+ *     create_at accepts any generation at least the slot's recorded one (any from 1 for a slot
+ *     it has not seen) and adopts it: the other party may skip generations without telling the
+ *     store, for handles that never reached it (an aborted transaction, a create after a failed
+ *     command). When a node is destroyed, the store reports the slot's next handle (generation
+ *     + 1) and keeps no free list. Whoever hands out handles retires a slot whose generation
+ *     reaches UINT32_MAX, as the store does, so a generation is never reused.
  *
  * Side components: optional per-node data (text, image, scroll... arrive with their features),
  * registered at run time. Each type is stored dense with swap-remove, indexed by slot through a
@@ -185,9 +189,9 @@ AX_API bool ax_node_store_on_owner_thread(const ax_node_store *s);
  * failure. Errors: AX_ERR_OUT_OF_MEMORY (also when every slot is used). */
 AX_API ax_result ax_node_store_create(ax_node_store *s, ax_node_kind kind, ax_node *out);
 
-/* External slots mode: creates a node at a handle reserved elsewhere. Errors:
- * AX_ERR_INVALID_HANDLE (null, slot live or retired, generation not the slot's next),
- * AX_ERR_OUT_OF_MEMORY. */
+/* External slots mode: creates a node at a handle reserved elsewhere, adopting its generation.
+ * Errors: AX_ERR_INVALID_HANDLE (null, slot live or retired, generation lower than the slot's
+ * recorded one), AX_ERR_OUT_OF_MEMORY. */
 AX_API ax_result ax_node_store_create_at(ax_node_store *s, ax_node node, ax_node_kind kind);
 
 /* Destroys the node and its whole subtree, detaching it from its parent first. */
@@ -270,8 +274,8 @@ AX_API ax_result ax_node_store_compact(ax_node_store *s);
 
 /* ---- Side components ------------------------------------------------------------------------- */
 
-/* Errors: AX_ERR_INVALID_ARGUMENT (bad size or align), AX_ERR_OUT_OF_MEMORY when
- * AX_NODE_MAX_COMPONENT_TYPES are registered. */
+/* Errors: AX_ERR_INVALID_ARGUMENT (bad size or align), AX_ERR_UNSUPPORTED when
+ * AX_NODE_MAX_COMPONENT_TYPES are already registered. */
 AX_API ax_result ax_node_store_register_component(ax_node_store *s, const ax_component_desc *desc,
                                                   ax_component_type *out_type);
 

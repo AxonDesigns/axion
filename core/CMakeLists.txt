@@ -9,7 +9,9 @@
 #   include/axion/core/   internal SDK (node store, ...), never part of the ABI
 
 add_library(ax_core STATIC
-    src/node_store.c)
+    src/node_store.c
+    src/prop_registry.c
+    src/scene.c)
 add_library(axion::core ALIAS ax_core)
 
 target_include_directories(ax_core
