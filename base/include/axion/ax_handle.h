@@ -23,7 +23,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "ax_platform.h"
+#include "ax_config.h"
 
 #define AX_DECLARE_HANDLE(name) \
     typedef struct name {       \

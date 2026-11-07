@@ -42,6 +42,7 @@ new entry that points back to the old one.
 | 26  | Pre-1.0 versions require an exact minor                  | Approved       |
 | 27  | Debug owner checks for Windows mutexes                   | Approved       |
 | 28  | Death tests, skipped tests and thread ids                | Implementation |
+| 29  | Rename base's ax_platform.h to ax_config.h               | Approved       |
 
 ---
 
@@ -65,9 +66,9 @@ embeddable building blocks (arenas, pools, mutexes) that cannot be opaque withou
 an error path per object.
 
 **Decision.**
-- `base/include/axion/`: the stable C ABI. `ax_platform.h`, `ax_types.h`, `ax_error.h` (reading
-  the error only), `ax_allocator.h` (the type and `ax_default_allocator()` only), `ax_handle.h`,
-  `ax_version.h` and the umbrella `ax_base.h`.
+- `base/include/axion/`: the stable C ABI. `ax_config.h` (named `ax_platform.h` until decision
+  29), `ax_types.h`, `ax_error.h` (reading the error only), `ax_allocator.h` (the type and
+  `ax_default_allocator()` only), `ax_handle.h`, `ax_version.h` and the umbrella `ax_base.h`.
 - `base/include/axion/base/`: the internal SDK shared between AXION modules. `ax_assert.h`,
   `ax_atomic.h`, `ax_thread.h`, `ax_arena.h`, `ax_pool.h`, `ax_array.h`,
   `ax_tracking_allocator.h`, `ax_error_set.h` (`ax_set_error()`, `ax_clear_error()`), plus
@@ -497,3 +498,17 @@ compositor is available. Thread-affinity checks need a cheap, comparable thread 
   an atomic counter.
 
 **Status.** Implementation.
+
+## 29. Rename base's ax_platform.h to ax_config.h
+
+**Amends** decision 2.
+
+**Decision.**
+- Base's platform and compiler detection header, with `AX_API` and the `extern "C"` guards, is
+  renamed from `ax_platform.h` to `ax_config.h`.
+- `ax_platform.h` becomes the umbrella header of the `platform/` module, the way `ax_base.h` is
+  base's.
+- The ABI is not frozen yet, so renaming now is cheap and avoids two different meanings of
+  "platform" later.
+
+**Status.** Approved by the owner.

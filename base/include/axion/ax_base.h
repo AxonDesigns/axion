@@ -11,9 +11,9 @@
 #define AX_BASE_H
 
 #include "ax_allocator.h"
+#include "ax_config.h"
 #include "ax_error.h"
 #include "ax_handle.h"
-#include "ax_platform.h"
 #include "ax_types.h"
 #include "ax_version.h"
 

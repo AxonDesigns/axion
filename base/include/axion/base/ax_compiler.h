@@ -8,7 +8,7 @@
 #ifndef AX_BASE_COMPILER_H
 #define AX_BASE_COMPILER_H
 
-#include "../ax_platform.h"
+#include "../ax_config.h"
 
 /* Thread-local storage duration. MSVC's C mode does not accept _Thread_local. */
 #if AX_COMPILER_MSVC

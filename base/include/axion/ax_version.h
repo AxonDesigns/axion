@@ -24,7 +24,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "ax_platform.h"
+#include "ax_config.h"
 
 #define AX_VERSION_MAJOR 0
 #define AX_VERSION_MINOR 1

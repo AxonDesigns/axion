@@ -35,7 +35,7 @@
 
 #include <stddef.h>
 
-#include "ax_platform.h"
+#include "ax_config.h"
 
 AX_EXTERN_C_BEGIN
 
