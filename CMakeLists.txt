@@ -24,6 +24,7 @@ include(AxionCompilerOptions)
 include(AxionLanguages)
 
 option(AX_BUILD_TESTS "Build AXION's unit tests" ${PROJECT_IS_TOP_LEVEL})
+option(AX_BUILD_EXAMPLES "Build the examples" ${PROJECT_IS_TOP_LEVEL})
 option(AX_WEB_THREADS "Emscripten only: build with -pthread (needs a cross-origin isolated page)" OFF)
 # The platform module needs a backend for the target. Only Wayland exists so far, so it is built
 # on Linux; Windows, macOS and the web build base only until their backends land.
@@ -42,6 +43,10 @@ ax_enable_platform_languages()
 add_subdirectory(base)
 if(AX_BUILD_PLATFORM)
     add_subdirectory(platform)
+endif()
+
+if(AX_BUILD_EXAMPLES)
+    add_subdirectory(examples)
 endif()
 
 if(AX_BUILD_TESTS)
