@@ -368,4 +368,6 @@ const ax_backend_ops ax_wayland_backend = {
     ax_wl_surface_dispatch,
     ax_wl_surface_frame_due,
     ax_wl_surface_frame_pending,
+    ax_wl_surface_commit_failed,
+    ax_wl_surface_drop_frame,
 };

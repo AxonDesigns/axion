@@ -60,6 +60,7 @@ new entry that points back to the old one.
 | 44  | GPU driver leaks under LeakSanitizer                     | Implementation |
 | 45  | ax_gpu lifecycle, adapters and waiting                   | Approved       |
 | 46  | Device-lost detection and recovery                       | Approved       |
+| 47  | Failed commits after prepare_commit                      | Approved       |
 
 ---
 
@@ -754,6 +755,8 @@ earlier than that guess, and animations sampling the prediction would then step 
 
 ## 38. Notes: prepare_commit and the Vulkan WSI
 
+> Each risk below is resolved by a later entry; risk 4's premise is corrected by decision 47 (the acknowledgement must not be sent twice).
+
 **Context.** Nothing is implemented yet. These are notes for the GPU step, recorded now because
 `ax_surface_prepare_commit` was designed around them. With Vulkan (Dawn on top of it), the
 commit is made by the driver's WSI inside `vkQueuePresentKHR`. Mesa's Wayland WSI attaches,
@@ -1114,3 +1117,52 @@ resource from its descriptor; Android and iOS need this after backgrounding.
   - Hooks live in `gpu/src/gpu_testing.h`, which only tests include.
 
 **Status.** Approved (part of the approved plan).
+
+## 47. Failed commits after prepare_commit
+
+**Amends** decision 38 (risk 4).
+
+**Context.** With a GPU swapchain, the commit is made inside the present call. A present can fail
+after `ax_surface_prepare_commit` has already queued the configure acknowledgement, the viewport,
+the frame callback and the presentation feedback. Decision 38 proposed not marking the serial
+acknowledged in that case. That premise is wrong:
+- The `ack_configure` request has already been sent. The compositor applies it with the next
+  commit the client makes.
+- Acknowledging the same serial again is a protocol error. Checked: re-arming the acknowledgement
+  in the new test makes weston close the connection with "Wrong configure serial".
+
+**Decision.**
+- **New `ax_surface_commit_failed(surface)`** (internal SDK, `thread: presenter`), called when the
+  commit prepared last was not made. It undoes what would otherwise be wrong:
+  - It destroys the frame callback and feedback proxies that `prepare_commit` created, but only
+    those, not ones from earlier commits. Their requests sit in the surface's pending state and
+    the next commit makes its own.
+  - It restores the frame clock's target to its value before that commit.
+  - It raises the commit request again if that commit was answering one.
+  - It counts a lost frame.
+- **The acknowledgement stays marked.** The next frame latches the newest configure, so it
+  delivers that serial's size (or acknowledges a newer serial) without repeating the ack.
+- **Errors:** `AX_ERR_UNSUPPORTED` when no prepared commit is outstanding (a second call, or a
+  call after `wait_frame`).
+- **Lost-frame bound in `ax_surface_wait_frame`.** Dawn hides one failure:
+  `wgpuSurfacePresent` treats `VK_ERROR_OUT_OF_DATE_KHR` as success after recreating the
+  swapchain, so a commit can be lost without an error.
+  - If the outstanding frame callback has not come after eight refreshes (clamped to 50-250 ms),
+    the frame is given up: proxies dropped, a lost frame counted, `AX_WAKE_FRAME` returned.
+  - Cost: a hidden window that gets no callbacks but keeps animating draws at that slow rate
+    instead of not at all. An idle presenter does not wake for it.
+  - With Mesa, Vulkan's present returns `OUT_OF_DATE` only for a retired swapchain. ax_gpu
+    recreates the swapchain before acquiring (decision 48), so the presented one is never retired,
+    and this is a safety net.
+- **Statistics:** `ax_present_stats.lost_frames` counts both cases.
+- **Tests** (`tests/integration/wayland/test_commit_failed.c`, weston with shared-memory
+  buffers):
+  - `a_failed_commit_is_undone_without_acknowledging_twice`: a frame acknowledging a new
+    configure and answering a commit request is prepared and not committed. The test checks that
+    the target is restored, the callback forgotten and the request raised again, and that the
+    presenter wakes at once. The next frame does not acknowledge again, has the same size, and is
+    shown, with the connection still healthy.
+  - `a_frame_callback_that_never_comes_is_given_up`: the same failure without reporting it; the
+    presenter wakes after the bound instead of the 2 s timeout.
+
+**Status.** Approved (the correction to risk 4 was approved with the plan).

@@ -60,6 +60,20 @@ AX_API ax_result ax_surface_begin_frame(ax_surface surface, ax_frame_target *fra
  */
 AX_API ax_result ax_surface_prepare_commit(ax_surface surface, const ax_frame_target *frame);
 
+/*
+ * Reports that the commit the last ax_surface_prepare_commit prepared was not made (the
+ * swapchain's present failed). Call it before the next ax_surface_wait_frame. It forgets the frame
+ * callback and presentation feedback that commit asked for, puts the frame clock's target back,
+ * and raises the commit request again if that commit was answering one, so the next frame
+ * commits anyway.
+ * The configure acknowledgement is not sent again: it is already on its way and applies with the
+ * next commit made, and acknowledging the same configure twice is a protocol error. The next
+ * frame must therefore deliver that configure's size, which it does, since begin_frame latches
+ * the newest configure.
+ * Errors: AX_ERR_UNSUPPORTED if no prepared commit is outstanding. thread: presenter
+ */
+AX_API ax_result ax_surface_commit_failed(ax_surface surface);
+
 typedef enum ax_wake_reason {
     AX_WAKE_FRAME = 1,            /* the system is ready for the next frame */
     AX_WAKE_CONFIGURE = 2,        /* a new configure (size or scale) is waiting */
@@ -75,7 +89,10 @@ typedef enum ax_wake_reason {
  *   AX_WAKE_TIMEOUT           nothing is due.
  * While a frame is in flight, configures and commit requests wait for its callback, so commits
  * never outpace the display; if the callback is late by two refreshes (a hidden window gets none),
- * they wake the presenter anyway, so configures are always acknowledged. thread: presenter
+ * they wake the presenter anyway, so configures are always acknowledged.
+ * A frame callback that has not come after eight refreshes (50-250 ms) is given up: the frame is
+ * counted lost and AX_WAKE_FRAME is returned, so a commit lost without an error cannot stall the
+ * presenter. thread: presenter
  */
 AX_API ax_result ax_surface_wait_frame(ax_surface surface, uint64_t timeout_ns,
                                        ax_wake_reason *out_reason);
@@ -90,6 +107,7 @@ typedef struct ax_present_stats {
     uint64_t latency_samples;     /* presented frames that acknowledged a configure */
     uint64_t mean_latency_ns;     /* configure received -> that size on screen */
     uint64_t max_latency_ns;
+    uint64_t lost_frames; /* commits reported failed, plus frame callbacks that never came */
 } ax_present_stats;
 
 /* Statistics since the last reset. thread: presenter */

@@ -71,6 +71,9 @@ uint64_t ax_frame_clock_target(const ax_frame_clock *clock, uint64_t now_ns);
 /* Records that a frame with this target was committed. */
 void ax_frame_clock_committed(ax_frame_clock *clock, uint64_t target_ns);
 
+/* Puts back the target that held before a commit that was then not made. */
+void ax_frame_clock_restore_target(ax_frame_clock *clock, uint64_t target_ns);
+
 void ax_frame_clock_reset_stats(ax_frame_clock *clock);
 
 #endif /* AX_PLATFORM_FRAME_CLOCK_H */

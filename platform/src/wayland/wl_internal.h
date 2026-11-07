@@ -87,7 +87,10 @@ typedef struct wl_window {
     struct wl_surface *surface_wrapper;
     struct wp_presentation *presentation_wrapper;
     struct wl_callback *frame_callback; /* pending frame callback, presenter-owned */
-    bool frame_done;                    /* presenter-owned */
+    /* presenter-owned: what the last prepare_commit created (NULL if it created nothing) */
+    struct wl_callback *prepared_callback;
+    wl_frame_record *prepared_record;
+    bool frame_done; /* presenter-owned */
     wl_frame_record frames[AX_WL_MAX_FRAMES_IN_FLIGHT];
     int applied_buffer_scale; /* presenter-owned: last wl_surface.set_buffer_scale */
 
@@ -132,6 +135,8 @@ ax_result ax_wl_surface_prepare_commit(ax_window_impl *w, const ax_frame_target 
 void ax_wl_surface_dispatch(ax_window_impl *w);
 bool ax_wl_surface_frame_due(ax_window_impl *w);
 bool ax_wl_surface_frame_pending(ax_window_impl *w);
+void ax_wl_surface_commit_failed(ax_window_impl *w);
+void ax_wl_surface_drop_frame(ax_window_impl *w);
 void ax_wl_present_window_destroyed(ax_window_impl *w);
 
 /* wl_pointer.c */

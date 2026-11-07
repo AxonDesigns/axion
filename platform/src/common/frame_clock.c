@@ -107,6 +107,11 @@ void ax_frame_clock_committed(ax_frame_clock *clock, uint64_t target_ns)
     }
 }
 
+void ax_frame_clock_restore_target(ax_frame_clock *clock, uint64_t target_ns)
+{
+    clock->last_target_ns = target_ns;
+}
+
 void ax_frame_clock_reset_stats(ax_frame_clock *clock)
 {
     clock->presented = 0;

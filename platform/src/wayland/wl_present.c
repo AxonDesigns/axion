@@ -107,6 +107,9 @@ ax_result ax_wl_surface_prepare_commit(ax_window_impl *w, const ax_frame_target 
     wl_window *ww = wl_window_of(w);
     int i;
 
+    ww->prepared_callback = NULL;
+    ww->prepared_record = NULL;
+
     /* 1. Acknowledge the configure this frame was drawn for. It applies with the caller's next
      *    commit, together with the buffer of the configured size. */
     if (frame->acks_configure) {
@@ -134,6 +137,7 @@ ax_result ax_wl_surface_prepare_commit(ax_window_impl *w, const ax_frame_target 
     if (ww->frame_callback == NULL) {
         ww->frame_callback = wl_surface_frame(ww->surface_wrapper);
         wl_callback_add_listener(ww->frame_callback, &frame_listener, w);
+        ww->prepared_callback = ww->frame_callback;
     }
 
     /* 4. Ask when this frame reaches the screen. */
@@ -146,6 +150,7 @@ ax_result ax_wl_surface_prepare_commit(ax_window_impl *w, const ax_frame_target 
                 rec->configure_ns = frame->acks_configure ? frame->configure_time_ns : 0;
                 rec->feedback = wp_presentation_feedback(ww->presentation_wrapper, ww->surface);
                 wp_presentation_feedback_add_listener(rec->feedback, &feedback_listener, rec);
+                ww->prepared_record = rec;
                 break;
             }
         }
@@ -173,6 +178,44 @@ bool ax_wl_surface_frame_due(ax_window_impl *w)
 bool ax_wl_surface_frame_pending(ax_window_impl *w)
 {
     return wl_window_of(w)->frame_callback != NULL;
+}
+
+/*
+ * The caller's commit did not happen (decision 47). The requests prepare_commit queued (frame
+ * callback, feedback) sit in the surface's pending state and would only take effect with the next
+ * commit, which requests its own; their proxies are destroyed so nothing waits for them. Events
+ * the compositor may still send to them are dropped by libwayland. The configure acknowledgement
+ * is not undone: it already applies with the next commit.
+ */
+void ax_wl_surface_commit_failed(ax_window_impl *w)
+{
+    wl_window *ww = wl_window_of(w);
+    if (ww->prepared_callback != NULL && ww->prepared_callback == ww->frame_callback) {
+        wl_callback_destroy(ww->frame_callback);
+        ww->frame_callback = NULL;
+    }
+    if (ww->prepared_record != NULL && ww->prepared_record->in_use) {
+        release_record(ww->prepared_record);
+    }
+    ww->prepared_callback = NULL;
+    ww->prepared_record = NULL;
+}
+
+void ax_wl_surface_drop_frame(ax_window_impl *w)
+{
+    wl_window *ww = wl_window_of(w);
+    int i;
+    if (ww->frame_callback != NULL) {
+        wl_callback_destroy(ww->frame_callback);
+        ww->frame_callback = NULL;
+    }
+    for (i = 0; i < AX_WL_MAX_FRAMES_IN_FLIGHT; ++i) {
+        if (ww->frames[i].in_use) {
+            release_record(&ww->frames[i]);
+        }
+    }
+    ww->prepared_callback = NULL;
+    ww->prepared_record = NULL;
 }
 
 void ax_wl_present_window_destroyed(ax_window_impl *w)
