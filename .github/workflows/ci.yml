@@ -112,12 +112,29 @@ jobs:
       # archlinux:base-20261018.0.612668
       image: archlinux@sha256:52dfbd5afb23a220d5ee92dafcb4c788d96c026ed04179890c23adef4c897fa0
     steps:
+      # The snapshot never changes, so its packages are cached; archive.archlinux.org is slow at
+      # times, so downloads are retried.
+      - name: Cache pacman packages
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/pacman/pkg
+          key: pacman-archive-2026-10-18-v1
+
       - name: Packages from the 2026-10-18 snapshot
         run: |
           echo 'Server = https://archive.archlinux.org/repos/2026/10/18/$repo/os/$arch' \
             > /etc/pacman.d/mirrorlist
-          pacman -Syyuu --noconfirm --needed base-devel git cmake ninja wayland weston \
-            vulkan-icd-loader vulkan-swrast
+          for attempt in 1 2 3 4; do
+            if pacman -Syyuu --noconfirm --needed --disable-download-timeout base-devel git \
+                 cmake ninja wayland weston vulkan-icd-loader vulkan-swrast; then
+              break
+            fi
+            if [ "$attempt" = 4 ]; then
+              exit 1
+            fi
+            echo "pacman failed (attempt $attempt); retrying in 30 s"
+            sleep 30
+          done
           weston --version
 
       - uses: actions/checkout@v4
