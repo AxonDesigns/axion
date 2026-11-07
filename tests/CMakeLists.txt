@@ -83,7 +83,7 @@ int main(int argc, char **argv)
             endif()
             add_test(NAME "${_suite}.${_case}" COMMAND ${_exe} ${_case})
             set_tests_properties("${_suite}.${_case}" PROPERTIES
-                LABELS "${module};death" TIMEOUT 60)
+                LABELS "${module};death" TIMEOUT 60 SKIP_RETURN_CODE 77)
         else()
             add_test(NAME "${_suite}.${_case}" COMMAND ${_exe} ${_case})
             set_tests_properties("${_suite}.${_case}" PROPERTIES
@@ -95,6 +95,7 @@ endfunction()
 add_subdirectory(unit/base)
 if(AX_BUILD_PLATFORM)
     add_subdirectory(unit/platform)
+    add_subdirectory(integration/wayland)
 endif()
 
 # Every header must compile on its own (includes what it uses). One generated translation unit

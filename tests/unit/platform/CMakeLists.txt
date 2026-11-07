@@ -5,6 +5,7 @@
 # platform/src/ as well as the public headers.
 
 set(_ax_platform_unit_tests
+    test_abi_headers.c
     test_event_queue.c
     test_frame_clock.c
     test_hit_test.c

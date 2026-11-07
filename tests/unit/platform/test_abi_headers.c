@@ -22,12 +22,16 @@
 #    error "a stable platform header includes Wayland headers"
 #endif
 
+#include <string.h>
+
 #include "ax_test.h"
 
 AX_TEST(umbrella_exposes_the_stable_api)
 {
-    ax_window_desc desc = {sizeof desc};
+    ax_window_desc desc;
     ax_app app = AX_HANDLE_NULL_INIT;
+    memset(&desc, 0, sizeof desc);
+    desc.struct_size = sizeof desc;
     AX_CHECK_EQ_U(desc.struct_size, sizeof(ax_window_desc));
     AX_CHECK_EQ_U(ax_app_caps(app), 0); /* invalid handle */
     AX_CHECK_EQ_I(ax_app_backend(app), AX_BACKEND_NONE);

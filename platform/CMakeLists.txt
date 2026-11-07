@@ -12,11 +12,19 @@
 # windowing system and talks to the backend through an internal vtable.
 
 set(_ax_platform_common
+    src/common/app.c
     src/common/event_queue.c
     src/common/frame_clock.c
-    src/common/hit_test.c)
+    src/common/hit_test.c
+    src/common/window.c)
 
-add_library(ax_platform STATIC ${_ax_platform_common})
+set(_ax_platform_wayland
+    src/wayland/wl_app.c
+    src/wayland/wl_pointer.c
+    src/wayland/wl_present.c
+    src/wayland/wl_window.c)
+
+add_library(ax_platform STATIC ${_ax_platform_common} ${_ax_platform_wayland})
 add_library(axion::platform ALIAS ax_platform)
 
 target_include_directories(ax_platform
@@ -79,4 +87,4 @@ target_include_directories(ax_platform SYSTEM PRIVATE "${_ax_proto_dir}")
 add_dependencies(ax_platform ax_wayland_protocols)
 target_link_libraries(ax_platform
     PUBLIC  PkgConfig::AX_WAYLAND_CLIENT
-    PRIVATE PkgConfig::AX_WAYLAND_CURSOR)
+    PRIVATE PkgConfig::AX_WAYLAND_CURSOR m)

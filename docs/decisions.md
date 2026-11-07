@@ -47,6 +47,7 @@ new entry that points back to the old one.
 | 31  | Event queue: SPSC ring and overflow policy               | Approved       |
 | 32  | Main-thread calls are marshalled; thread tags            | Approved       |
 | 33  | libwayland-cursor as cursor fallback                     | Approved       |
+| 34  | Configure handoff between main thread and presenter      | Approved       |
 
 ---
 
@@ -629,3 +630,51 @@ Android), but app code, the C# binding included, runs on the app thread.
 
 **Status.** Approved by the owner. The owner adds it to the licence list in the architecture
 document.
+
+## 34. Configure handoff between main thread and presenter
+
+**Context.** Each configure must be acknowledged in the same commit that delivers a buffer of
+the new size, even when another thread makes that commit, so content is never stretched or
+lagging behind the window edge.
+
+**Decision.**
+- **Main thread:**
+  - `xdg_toplevel.configure`, decoration and scale events only record pending state.
+  - `xdg_surface.configure` turns it into an `ax_surface_config` (serial, logical size, scale,
+    pixel size, arrival time) and publishes it in a per-surface triple buffer.
+  - It queues RESIZED / FOCUS / OCCLUSION, and wakes the presenter.
+  - It never calls `ack_configure`. After the empty initial commit made when the window is
+    created, it never commits the surface.
+- **Presenter:**
+  - `ax_surface_begin_frame` latches the newest config. Acknowledging the latest serial also
+    covers earlier ones.
+  - `ax_surface_prepare_commit` issues, in order:
+    1. `ack_configure` for that serial, only if not already acknowledged;
+    2. the viewport destination or buffer scale;
+    3. the frame callback and presentation feedback.
+  - Then the caller attaches a buffer of exactly the latched pixel size and commits.
+  - The ack, the new size and the scale therefore always land in one commit made by one thread.
+- **Scale-only updates** republish the same serial with the new scale. The presenter
+  re-renders, and never acknowledges a serial twice (a protocol error).
+- **No main-thread wait during resize on Wayland.**
+  - The compositor keeps showing the last committed buffer until a new one arrives.
+  - The window edge is either our own buffer (client-side decorations) or a server frame the
+    compositor fits to our commit (server-side decorations).
+  - Content and edge therefore move together by construction, and nothing can stretch.
+  - The document's bounded wait exists for the modal live-resize loops of Windows and macOS. It
+    will be implemented in those backends, where the main thread has to answer the OS before
+    returning.
+- **No race with frame listeners.** Frame callbacks and presentation feedback objects are
+  created through proxy wrappers bound to a private per-surface event queue.
+  - The presenter dispatches that queue itself, in `ax_surface_wait_frame`, so a listener is
+    always set before its events can be dispatched.
+  - The main thread is still the only reader of the display fd. After each read it bumps a
+    counter and signals presenters waiting on a condition variable.
+  - `wait_frame` returns when:
+    - the frame callback fires;
+    - a new configure arrives (an occluded window gets no frame callbacks but must still answer
+      configures);
+    - the main thread requests a commit (decision 35);
+    - the timeout expires.
+
+**Status.** Approved (part of the approved plan).
