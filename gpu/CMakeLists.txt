@@ -21,3 +21,10 @@ target_include_directories(ax_gpu
     PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(ax_gpu PUBLIC ax_base ax_webgpu)
 ax_target_defaults(ax_gpu)
+
+# Window surfaces need the platform module (Linux only for now). Without it gpu/ still renders
+# offscreen, which is what the macOS build tests.
+if(AX_BUILD_PLATFORM)
+    target_sources(ax_gpu PRIVATE src/surface.c)
+    target_link_libraries(ax_gpu PUBLIC ax_platform)
+endif()

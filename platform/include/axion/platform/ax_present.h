@@ -74,6 +74,19 @@ AX_API ax_result ax_surface_prepare_commit(ax_surface surface, const ax_frame_ta
  */
 AX_API ax_result ax_surface_commit_failed(ax_surface surface);
 
+/*
+ * Waits until the compositor has reported the fate (presented or discarded) of every commit made
+ * so far, and two refreshes have passed since the last presentation (a swapchain may add commits
+ * of its own that wait one refresh behind ours), dispatching the surface's queue meanwhile;
+ * *out_applied tells whether that happened within the timeout.
+ * For swapchains whose commits can wait in a compositor-side queue (FIFO with wp_fifo_v1): a
+ * configure must not be acknowledged while older commits are still queued, because some
+ * compositors apply the acknowledgement on receipt and then check the older, queued commits
+ * against it, a protocol error (decision 48). thread: presenter
+ */
+AX_API ax_result ax_surface_wait_commits_applied(ax_surface surface, uint64_t timeout_ns,
+                                                 bool *out_applied);
+
 typedef enum ax_wake_reason {
     AX_WAKE_FRAME = 1,            /* the system is ready for the next frame */
     AX_WAKE_CONFIGURE = 2,        /* a new configure (size or scale) is waiting */
@@ -90,9 +103,9 @@ typedef enum ax_wake_reason {
  * While a frame is in flight, configures and commit requests wait for its callback, so commits
  * never outpace the display; if the callback is late by two refreshes (a hidden window gets none),
  * they wake the presenter anyway, so configures are always acknowledged.
- * A frame callback that has not come after eight refreshes (50-250 ms) is given up: the frame is
- * counted lost and AX_WAKE_FRAME is returned, so a commit lost without an error cannot stall the
- * presenter. thread: presenter
+ * A frame callback that has not come after eight refreshes (50-250 ms) is given up while waiting
+ * (timeout_ns > 0): the frame is counted lost and AX_WAKE_FRAME is returned, so a commit lost
+ * without an error cannot stall the presenter. thread: presenter
  */
 AX_API ax_result ax_surface_wait_frame(ax_surface surface, uint64_t timeout_ns,
                                        ax_wake_reason *out_reason);

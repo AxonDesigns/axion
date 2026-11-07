@@ -57,6 +57,10 @@ bool axt_pump_until(ax_app app, bool (*cond)(void *ctx), void *ctx, uint64_t tim
 bool axt_wait_event(ax_app app, uint32_t type, ax_window window, ax_event *out,
                     uint64_t timeout_ns);
 
+/* Whether the test compositor (AX_TEST_WAYLAND_DISPLAY) announces a global with this interface
+ * name. Uses its own connection. */
+bool axt_compositor_has_global(const char *interface);
+
 #define AXT_SECONDS(s) ((uint64_t)(s) * 1000000000u)
 
 /* ---- shared-memory buffers, for presenting without a GPU (tests only; never in platform/) ---- */

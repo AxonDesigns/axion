@@ -137,6 +137,68 @@ ax_result ax_surface_commit_failed(ax_surface surface)
     return AX_OK;
 }
 
+ax_result ax_surface_wait_commits_applied(ax_surface surface, uint64_t timeout_ns,
+                                          bool *out_applied)
+{
+    ax_window_impl *w = presenter_window(surface, "ax_surface_wait_commits_applied");
+    ax_app_impl *app;
+    uint64_t deadline;
+    bool applied = false;
+
+    if (w == NULL) {
+        return AX_ERR_INVALID_HANDLE;
+    }
+    app = w->app;
+    deadline = timeout_ns > UINT64_MAX - ax_time_monotonic_ns()
+                   ? UINT64_MAX
+                   : ax_time_monotonic_ns() + timeout_ns;
+    for (;;) {
+        uint64_t gen = ax_atomic_load_u64(&app->wake_gen, AX_MO_SEQ_CST);
+        uint64_t now;
+
+        app->ops->surface_dispatch(w);
+        now = ax_time_monotonic_ns();
+        if (app->ops->surface_commits_in_flight(w) == 0) {
+            /* Every commit with our feedback is done. A swapchain may follow each of them with a
+             * commit of its own that waits on the barrier the previous one set (Mesa's FIFO path
+             * with commit-timing); it is applied at the refresh after that one is shown, so allow
+             * two refreshes after the last presentation. */
+            uint64_t settled = w->clock.have_last ? w->clock.last_present_ns +
+                                                        2 * ax_frame_clock_refresh(&w->clock)
+                                                  : 0;
+            if (now >= settled) {
+                applied = true;
+                break;
+            }
+            if (settled < deadline) {
+                /* nothing else will wake us: sleep exactly until then */
+                if (now >= deadline) {
+                    break;
+                }
+                ax_mutex_lock(&app->wake_lock);
+                ax_cond_wait_timeout(&app->wake_cond, &app->wake_lock, settled - now);
+                ax_mutex_unlock(&app->wake_lock);
+                continue;
+            }
+        }
+        if (now >= deadline) {
+            break;
+        }
+        /* Same handshake as ax_surface_wait_frame: sleep until the main thread reads events. */
+        ax_mutex_lock(&app->wake_lock);
+        ax_atomic_fetch_add_u32(&app->presenters_waiting, 1, AX_MO_SEQ_CST);
+        if (ax_atomic_load_u64(&app->wake_gen, AX_MO_SEQ_CST) == gen) {
+            ax_cond_wait_timeout(&app->wake_cond, &app->wake_lock, deadline - now);
+        }
+        ax_atomic_fetch_add_u32(&app->presenters_waiting, (uint32_t)-1, AX_MO_SEQ_CST);
+        ax_mutex_unlock(&app->wake_lock);
+    }
+    if (out_applied != NULL) {
+        *out_applied = applied;
+    }
+    return AX_OK;
+}
+
 /* How long an outstanding frame callback may take before the frame is presumed lost: long enough
  * for any compositor to answer a visible window, short enough that a commit lost without an error
  * (decision 47) only stalls the presenter briefly. */
@@ -176,7 +238,10 @@ ax_result ax_surface_wait_frame(ax_surface surface, uint64_t timeout_ns, ax_wake
             reason = AX_WAKE_FRAME; /* the frame drawn now also picks up any pending configure */
             break;
         }
-        if (app->ops->surface_frame_pending(w) && w->presenter_frame_requested_ns != 0) {
+        /* Only a presenter that waits relies on the callback; one polling with a zero timeout
+         * (a GPU swapchain that paces itself) is not stalled by a late one. */
+        if (timeout_ns != 0 && app->ops->surface_frame_pending(w) &&
+            w->presenter_frame_requested_ns != 0) {
             uint64_t lost_at = w->presenter_frame_requested_ns + frame_lost_bound(&w->clock);
             if (now >= lost_at) {
                 /* No callback: the commit never happened, or the window gets no callbacks

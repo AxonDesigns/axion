@@ -232,3 +232,19 @@ void ax_wl_present_window_destroyed(ax_window_impl *w)
         }
     }
 }
+
+uint32_t ax_wl_surface_commits_in_flight(ax_window_impl *w)
+{
+    wl_window *ww = wl_window_of(w);
+    uint32_t n = 0;
+    int i;
+    if (ww->presentation_wrapper == NULL) {
+        return ww->frame_callback != NULL ? 1u : 0u;
+    }
+    /* Every commit gets a record while fewer than AX_WL_MAX_FRAMES_IN_FLIGHT are outstanding,
+     * far more than any swapchain queues. */
+    for (i = 0; i < AX_WL_MAX_FRAMES_IN_FLIGHT; ++i) {
+        n += ww->frames[i].in_use ? 1u : 0u;
+    }
+    return n;
+}

@@ -137,6 +137,7 @@ bool ax_wl_surface_frame_due(ax_window_impl *w);
 bool ax_wl_surface_frame_pending(ax_window_impl *w);
 void ax_wl_surface_commit_failed(ax_window_impl *w);
 void ax_wl_surface_drop_frame(ax_window_impl *w);
+uint32_t ax_wl_surface_commits_in_flight(ax_window_impl *w);
 void ax_wl_present_window_destroyed(ax_window_impl *w);
 
 /* wl_pointer.c */

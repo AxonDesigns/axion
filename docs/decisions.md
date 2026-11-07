@@ -61,6 +61,7 @@ new entry that points back to the old one.
 | 45  | ax_gpu lifecycle, adapters and waiting                   | Approved       |
 | 46  | Device-lost detection and recovery                       | Approved       |
 | 47  | Failed commits after prepare_commit                      | Approved       |
+| 48  | GPU surfaces, swapchain resizes and the FIFO queue       | Approved       |
 
 ---
 
@@ -1166,3 +1167,94 @@ acknowledged in that case. That premise is wrong:
     presenter wakes after the bound instead of the 2 s timeout.
 
 **Status.** Approved (the correction to risk 4 was approved with the plan).
+
+## 48. GPU surfaces, swapchain resizes and the FIFO queue
+
+**Context.** Decision 38 listed the risks of presenting through a Vulkan swapchain (Dawn on Mesa's
+WSI, or NVIDIA's) instead of AXION's own commits. This entry records how ax_gpu presents and
+resolves risks 3, 5 and 7, and the part of risk 1 that is not measurement. Risk 2 and the measured
+choice of risk 1 are in decision 49, risk 4 in decision 47; risk 6 stays open.
+
+**Decision.**
+- **API:** `ax_gpu_surface` (`gpu/include/axion/gpu/ax_gpu_surface.h`), one per `ax_surface`, on
+  the ax_gpu's thread, which is the surface's presenter.
+  - Each frame: `ax_gpu_surface_begin_frame` (latch the configure, resize the swapchain, acquire),
+    render, `ax_gpu_surface_present` (`ax_surface_prepare_commit`, then `wgpuSurfacePresent`), and
+    `ax_gpu_surface_wait`.
+  - Format: sRGB, preferring a format that is sRGB itself, otherwise the first format with an sRGB
+    view format. Alpha is opaque when offered.
+  - Present mode: configurable. ax_gpu applies Dawn's fallback order to the surface's capabilities
+    to know the mode actually in use (`effective_present_mode`), because Dawn falls back silently.
+- **Pacing (risk 1), both options implemented:** `AX_GPU_PACING_COMPOSITOR` (MAILBOX, paced by
+  frame callbacks and the frame clock) and `AX_GPU_PACING_DRIVER` (FIFO; `ax_gpu_surface_wait`
+  does not wait while animating). Which is the default is measured and chosen in decision 49.
+- **Swapchain resizes (risk 3):** `wgpuSurfaceConfigure` runs in `begin_frame`, before the
+  acquire, with the exact pixel size of the configure the frame acknowledges.
+  - That is at most one resize per frame, since `begin_frame` latches only the newest configure.
+  - Its cost is measured (`resizes`, `resize_ns_*`).
+  - Mesa recreates its swapchain with `oldSwapchain` and does one roundtrip on its own queue.
+- **One commit carries the acknowledgement and the new size.** Checked with `WAYLAND_DEBUG` on
+  lavapipe and weston 15:
+  - MAILBOX: one commit per frame. The acknowledgement, viewport, frame callback and our feedback
+    precede the attach of the new-size buffer and its commit.
+  - FIFO with wp_fifo_v1 and commit-timing: Mesa makes two commits per present, a timestamped one
+    with the buffer and an empty one with `wait_barrier`. Our requests always precede the first.
+    The resize frame is a single commit with the acknowledgement and the 1280x688 buffer.
+- **Dawn (risk 7):** checked in Dawn's source at the pinned commit:
+  - `wgpuSurfaceConfigure` creates the VkSwapchain synchronously, passing `oldSwapchain`.
+  - Dawn commits only inside `wgpuSurfacePresent`, through `vkQueuePresentKHR`.
+  - Mesa's WSI commits only in present.
+  - A size outside the surface's extent limits would make Dawn blit (scale). Wayland reports
+    `currentExtent = 0xFFFFFFFF` with wide limits, so it never applies; the presentation tests check
+    that every texture matches the configure's pixel size.
+- **Feedback (risk 5):** Mesa binds its own `wp_presentation` and creates its own feedback per
+  present (seen in the trace). Ours keeps going through our wrapper and queue, and arrives for
+  every GPU commit; the tests check `presented`.
+- **The FIFO queue and acknowledgements (found here):**
+  - Weston 15 queues content updates behind wp_fifo_v1 barriers, but applies
+    `xdg_surface.ack_configure` on receipt. When it later applies the older, smaller updates still
+    queued, it checks them against the acknowledged state and disconnects the client: "xdg_surface
+    geometry (320 x 240) does not match the configured maximized state (1280 x 688)".
+  - Reproduced without Mesa by a 200-line client. A report for weston's tracker is drafted in
+    `docs/upstream/weston-fifo-ack-configure/` (not filed; the owner decides).
+  - Rule: a configure is never acknowledged while commits of ours may still be queued in the
+    compositor.
+    - `commits_may_queue()` in `gpu/src/surface.c` is the single condition. Today it is true for
+      FIFO and FIFO-relaxed; adopting commit-timing (risk 6) adds a case there.
+    - Before such a frame, `begin_frame` calls the new `ax_surface_wait_commits_applied`. It
+      returns once every earlier commit's presentation feedback has arrived and two refreshes
+      have passed since the last presentation.
+      - The second condition covers commits the swapchain makes without our feedback. With
+        commit-timing, Mesa follows each frame with an empty commit that waits on the previous
+        barrier, and it is applied one refresh after that frame is shown.
+      - The feedback alone was not enough: in one run of ten, the acknowledgement left 2 ms after
+        the last feedback, and the trailing empty commit was applied after it.
+    - The wait lasts a short slice, four refreshes clamped to 20-50 ms. If the queue has not
+      drained, the frame is skipped: no acknowledgement, no commit, so the queue can only shrink.
+      It is counted (`deferred_acks`) and retried on the next frame.
+    - The presenter never blocks long, even for a hidden window whose queue does not move.
+  - Waiting for one frame callback is not enough (several commits are queued), and acknowledging
+    after a timeout reproduces the error.
+    - Without the drain, the test fails every time.
+    - With it, it passed 10 of 10 runs each on the GCC ASan and Clang Release builds, with 10-18
+      acknowledgements deferred per run, at most 50 ms each.
+- **Tests** (`tests/integration/gpu_wayland/test_gpu_present.c`, headless weston, always on lavapipe
+  through `VK_DRIVER_FILES`):
+  - frames presented in both pacings;
+  - resizes in both pacings: two swapchain resizes, acknowledged frames shown, every texture the
+    configured size;
+  - presentation continuing across a device loss, with the surface recreated.
+  - The FIFO resize test skips when the compositor does not announce `wp_fifo_manager_v1`, because
+    it would test nothing. `AX_REQUIRE_WP_FIFO=1` turns that into a failure.
+- **CI:**
+  - The Ubuntu jobs have weston 13 (no wp_fifo), so that test skips there.
+  - A new job runs the Wayland and GPU presentation suites in an Arch Linux container pinned by
+    digest (`archlinux:base-20261018.0.612668`), with pacman pinned to the Arch Linux Archive
+    snapshot of the same day: weston 15.0.1, Mesa 26.2.5. It sets `AX_REQUIRE_WP_FIFO=1`.
+- **An environment quirk, not ours:** FIFO on weston 15 headless runs at about 6 fps with Mesa.
+  vkcube is just as slow (120 frames in 19 s with FIFO, 148 ms with MAILBOX). The FIFO tests check
+  correctness, never rates.
+- **Still to confirm (step 7):** whether KWin applies acknowledgements the same way, with NVIDIA's
+  WSI and with lavapipe on the owner's desktop. The result will be recorded here.
+
+**Status.** Approved (the drain and its rules were approved by the owner).

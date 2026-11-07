@@ -132,6 +132,9 @@ typedef struct ax_backend_ops {
     void (*surface_commit_failed)(ax_window_impl *w);
     /* Give up on the outstanding frame callback and feedback (they will never arrive). */
     void (*surface_drop_frame)(ax_window_impl *w);
+    /* Commits made whose fate the compositor has not reported yet (presentation feedback
+     * outstanding). Without presentation feedback, an outstanding frame callback counts. */
+    uint32_t (*surface_commits_in_flight)(ax_window_impl *w);
 } ax_backend_ops;
 
 struct ax_app_impl {
