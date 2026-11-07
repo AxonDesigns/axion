@@ -20,6 +20,11 @@
       "cacheVariables": { "AX_SANITIZE": "address;undefined" }
     },
     {
+      "name": "sanitize-thread",
+      "hidden": true,
+      "cacheVariables": { "AX_SANITIZE": "thread" }
+    },
+    {
       "name": "msvc",
       "hidden": true,
       "inherits": "base",
@@ -48,6 +53,7 @@
     { "name": "clang-debug",   "displayName": "Clang Debug",           "inherits": ["clang", "debug"] },
     { "name": "clang-release", "displayName": "Clang Release",         "inherits": ["clang", "release"] },
     { "name": "clang-asan",    "displayName": "Clang Debug ASan+UBSan", "inherits": ["clang", "debug", "sanitize"] },
+    { "name": "clang-tsan",    "displayName": "Clang Debug TSan",      "inherits": ["clang", "debug", "sanitize-thread"] },
     { "name": "gcc-debug",     "displayName": "GCC Debug",             "inherits": ["gcc", "debug"] },
     { "name": "gcc-release",   "displayName": "GCC Release",           "inherits": ["gcc", "release"] },
     { "name": "gcc-asan",      "displayName": "GCC Debug ASan+UBSan",  "inherits": ["gcc", "debug", "sanitize"] },
@@ -66,6 +72,7 @@
     { "name": "clang-debug",   "configurePreset": "clang-debug" },
     { "name": "clang-release", "configurePreset": "clang-release" },
     { "name": "clang-asan",    "configurePreset": "clang-asan" },
+    { "name": "clang-tsan",    "configurePreset": "clang-tsan" },
     { "name": "gcc-debug",     "configurePreset": "gcc-debug" },
     { "name": "gcc-release",   "configurePreset": "gcc-release" },
     { "name": "gcc-asan",      "configurePreset": "gcc-asan" },
@@ -87,11 +94,18 @@
         "UBSAN_OPTIONS": "print_stacktrace=1:halt_on_error=1"
       }
     },
+    {
+      "name": "test-tsan",
+      "hidden": true,
+      "inherits": "test-base",
+      "environment": { "TSAN_OPTIONS": "halt_on_error=1:second_deadlock_stack=1" }
+    },
     { "name": "msvc-debug",    "configurePreset": "msvc-debug",    "inherits": "test-base" },
     { "name": "msvc-release",  "configurePreset": "msvc-release",  "inherits": "test-base" },
     { "name": "clang-debug",   "configurePreset": "clang-debug",   "inherits": "test-base" },
     { "name": "clang-release", "configurePreset": "clang-release", "inherits": "test-base" },
     { "name": "clang-asan",    "configurePreset": "clang-asan",    "inherits": "test-sanitize" },
+    { "name": "clang-tsan",    "configurePreset": "clang-tsan",    "inherits": "test-tsan" },
     { "name": "gcc-debug",     "configurePreset": "gcc-debug",     "inherits": "test-base" },
     { "name": "gcc-release",   "configurePreset": "gcc-release",   "inherits": "test-base" },
     { "name": "gcc-asan",      "configurePreset": "gcc-asan",      "inherits": "test-sanitize" }

@@ -6,7 +6,7 @@
 #
 # Headers: internal SDK for now (include/axion/render/), designed as the future contract.
 
-add_library(ax_render_ir STATIC src/ir.c src/serialize.c src/dump.c)
+add_library(ax_render_ir STATIC src/ir.c src/serialize.c src/dump.c src/mailbox.c)
 add_library(axion::render_ir ALIAS ax_render_ir)
 target_include_directories(ax_render_ir
     PUBLIC  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"

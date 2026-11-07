@@ -303,6 +303,9 @@ AX_DEATH_TEST(mutex_unlock_from_other_thread_aborts)
 {
     static ax_mutex m;
     ax_thread t;
+#if AX_TEST_TSAN
+    AX_SKIP("ThreadSanitizer reports this misuse itself, before AXION's check runs");
+#endif
     ax_mutex_init(&m);
     ax_mutex_lock(&m);
     if (ax_thread_create(&t, unlock_foreign, &m) == AX_OK) {
@@ -313,6 +316,9 @@ AX_DEATH_TEST(mutex_unlock_from_other_thread_aborts)
 AX_DEATH_TEST(mutex_unlock_when_unlocked_aborts)
 {
     static ax_mutex m;
+#if AX_TEST_TSAN
+    AX_SKIP("ThreadSanitizer reports this misuse itself, before AXION's check runs");
+#endif
     ax_mutex_init(&m);
     ax_mutex_unlock(&m);
 }

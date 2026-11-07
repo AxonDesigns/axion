@@ -5,6 +5,7 @@
 
 set(_ax_render_ir_tests
     test_builder.c
+    test_mailbox.c
     test_serialize.c)
 
 foreach(_t IN LISTS _ax_render_ir_tests)

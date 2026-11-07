@@ -43,6 +43,14 @@ jobs:
             preset: gcc-asan
             configure_args: "-DAX_WEBGPU=wgpu-native"
             test_args: "-L ^gpu$"
+          # ThreadSanitizer over the code with cross-thread handoffs: base's primitives, the
+          # platform module's queues and triple buffers, and the Render IR's mailbox. gpu/ is not
+          # built: its suites run under ASan, and Dawn is not instrumented (decision 44).
+          - name: "Linux / Clang / TSan (base, platform, render IR)"
+            os: ubuntu-latest
+            preset: clang-tsan
+            configure_args: "-DAX_BUILD_GPU=OFF"
+            test_args: "-L \"^(base|platform|render_ir)$\""
     steps:
       - uses: actions/checkout@v4
 
@@ -76,6 +84,12 @@ jobs:
         with:
           path: .deps
           key: webgpu-${{ runner.os }}-${{ runner.arch }}-${{ contains(matrix.configure_args, 'wgpu-native') && 'wgpu-native' || 'dawn' }}-${{ hashFiles('gpu/third_party/webgpu_deps.cmake') }}
+
+      # The runners' 32-bit mmap randomization breaks ThreadSanitizer's memory layout
+      # ("unexpected memory mapping"); 28 bits is what it supports.
+      - name: ASLR entropy for ThreadSanitizer
+        if: contains(matrix.preset, 'tsan')
+        run: sudo sysctl vm.mmap_rnd_bits=28
 
       - name: Configure
         run: cmake --preset ${{ matrix.preset }} ${{ matrix.configure_args }}

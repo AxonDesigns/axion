@@ -65,6 +65,7 @@ new entry that points back to the old one.
 | 49  | Pacing default and who reads the socket (measured)       | Approved       |
 | 50  | 2D math and color representation in base                 | Approved       |
 | 51  | Render IR format, compatibility and building             | Approved       |
+| 52  | Render IR publication (mailbox) and the TSan job         | Approved       |
 
 ---
 
@@ -1477,3 +1478,45 @@ clips, opacity and blend modes later without breaking its version.
   layout, a newer minor, every truncated prefix and 4000 random corruptions (run under ASan).
 
 **Status.** Approved (part of the approved plan).
+
+## 52. Render IR publication (mailbox) and the TSan job
+
+**Context.** Step 6 of the document's frame pipeline publishes each snapshot "to a triple buffer
+with an atomic index swap"; the render thread takes the newest, and the scene overwrites a
+pending one (mailbox style) rather than queueing.
+
+**Decision.**
+- **`ax_ir_mailbox`** (`render/ir/include/axion/render/ax_ir_mailbox.h`): three builders, each with
+  its own arena (decision 51), behind base's triple buffer (decision 50).
+  - Writer (scene thread): `ax_ir_mailbox_begin` returns the free slot's builder, already begun;
+    `ax_ir_mailbox_publish` ends it, numbers it (sequence from 1) and swaps it in. It never waits
+    for the reader. A snapshot the reader has not taken is replaced by the newer one.
+  - Reader (render thread): `ax_ir_mailbox_acquire` returns the newest snapshot, or the one it
+    already holds; the writer never touches a held snapshot.
+  - A snapshot that fails to record is not published, and the slot stays the writer's.
+- **Waking the reader:** `ax_ir_mailbox_wait(after_sequence, timeout)` sleeps until something
+  newer is published. It is a Dekker handshake like the event queue's (decision 31): the writer
+  takes the mutex only when the reader is actually waiting, and only to signal. The render
+  thread uses it for the bounded waits of the resize handshake (step 6 of this milestone).
+  Without threads it only checks (decision 25).
+- **Tests** (`tests/unit/render_ir/test_mailbox.c`):
+  - the newest snapshot wins;
+  - a held snapshot stays intact while the writer publishes 1500 more;
+  - a failed snapshot is not published;
+  - waits time out and are woken;
+  - no allocations in a steady state;
+  - a two-thread stress: 100 000 snapshots, each checked whole (every value derived from its
+    number) with increasing sequences. The reader took about 90 000 and skipped the rest, so
+    both paths run.
+- **ThreadSanitizer in CI:** a `clang-tsan` preset (`AX_SANITIZE=thread`, test environment
+  `TSAN_OPTIONS=halt_on_error=1:second_deadlock_stack=1`). A new CI entry runs the base, platform
+  and render_ir suites with it.
+  - gpu/ is not built in that job: its suites run under ASan, and Dawn is not instrumented
+    (decision 44's rule for TSan still applies when gpu/ runs under it locally).
+  - The runner's mmap randomization is lowered to 28 bits, which ThreadSanitizer needs.
+  - Two existing death tests, `base.thread.mutex_unlock_from_other_thread_aborts` and
+    `mutex_unlock_when_unlocked_aborts`, skip under TSan. They misuse a mutex on purpose, and TSan
+    reports the misuse before AXION's own check runs, which decision 41 turns into a failure. The
+    misuse is still caught, by TSan. `AX_TEST_TSAN` in the test harness detects the build.
+
+**Status.** Approved (the preset and its CI job were approved by the owner).

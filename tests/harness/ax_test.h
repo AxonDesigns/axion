@@ -57,6 +57,18 @@ typedef struct ax_test_case {
 #define AX_DEATH_TEST(name) AX_TEST(name)
 
 /* Marks the running case as skipped and leaves it. */
+/* AX_TEST_TSAN is 1 in builds with ThreadSanitizer. */
+#if defined(__SANITIZE_THREAD__)
+#    define AX_TEST_TSAN 1
+#elif defined(__has_feature)
+#    if __has_feature(thread_sanitizer)
+#        define AX_TEST_TSAN 1
+#    endif
+#endif
+#ifndef AX_TEST_TSAN
+#    define AX_TEST_TSAN 0
+#endif
+
 #define AX_SKIP(reason)       \
     do {                      \
         ax_test_skip(reason); \
