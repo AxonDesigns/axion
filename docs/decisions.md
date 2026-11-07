@@ -53,6 +53,7 @@ new entry that points back to the old one.
 | 37  | Frame targets never go backwards                         | Implementation |
 | 38  | Notes: prepare_commit and the Vulkan WSI                 | Notes          |
 | 39  | Hit-test move/resize and cursors (first version)         | Approved       |
+| 40  | Pace configures by frame callbacks; held targets         | Implementation |
 
 ---
 
@@ -719,6 +720,8 @@ size, so unmaximizing did nothing; the presenter integration test against weston
 
 ## 37. Frame targets never go backwards
 
+> The target rule is superseded by decision 40: targets are held, not pushed one refresh ahead per commit.
+
 **Context.** Before the first presentation report arrives, the frame clock can only guess the
 next present time (one refresh from now). The first real reports can put the next vblank
 earlier than that guess, and animations sampling the prediction would then step backwards.
@@ -828,3 +831,40 @@ without server decorations:
   desktop with `examples/m0_window --decorations=none`.
 
 **Status.** Approved (part of the approved plan).
+
+## 40. Pace configures by frame callbacks; held targets
+
+**Supersedes** the target rule of decision 37.
+
+**Context.** Testing `examples/m0_window` on the owner's KDE desktop (260 Hz and 72 Hz monitors)
+showed that the animated bar ran faster while the window was being resized. Two causes:
+1. During an interactive resize KWin sends a configure per pointer motion. The presenter woke and
+   committed for each one without waiting for its frame callback: up to 712 commits per second
+   with 72 presented, the rest discarded by the compositor.
+2. Decision 37's targets advanced one refresh per commit, so those extra commits pushed the
+   animation clock up to ten refreshes ahead.
+
+**Decision.**
+- **Targets never decrease, but are not pushed ahead per commit.**
+  `ax_frame_clock_target = max(prediction, previous committed target)`. Two commits before one
+  refresh share its target: on screen the later one replaces the earlier. A guess that was too
+  far ahead now holds the target for at most a refresh, instead of moving it backwards. Unit
+  test: `extra_commits_do_not_run_the_clock_ahead`.
+- **Configure and commit-request wakes are paced by frame callbacks.**
+  - `ax_surface_wait_frame` returns `AX_WAKE_CONFIGURE` / `AX_WAKE_COMMIT_REQUESTED` at once only
+    when no frame is in flight.
+  - Otherwise it waits for the frame callback (`AX_WAKE_FRAME`). The frame drawn then latches the
+    newest configure, so content still follows the edge, at most one refresh later.
+  - If the callback is late by two refreshes (clamped to 8–100 ms), for example on a hidden
+    window that gets no callbacks, it wakes anyway, so configures are always acknowledged.
+  - Result on the owner's desktop at 260 Hz: no discarded frames during resize.
+- **Example drawing** (not platform/). The bar moves at a constant speed on a fixed-length track,
+  in logical units, so its position never depends on the window size. A first fix that wrapped
+  the bar by the window width made it jump on every resize. Buffer slots keep their
+  shared-memory pool across sizes, which cut the draw time during resize from 2.5 ms mean / 6.8
+  ms max to under 0.5 ms mean.
+- **Test limitation.** The weston integration test (`configure_bursts_do_not_outrun_frames`)
+  guards the behaviour but cannot reproduce KWin's burst: weston answers maximize toggles one
+  configure at a time. The burst is checked by hand on a desktop.
+
+**Status.** Implementation, prompted by the owner's report.

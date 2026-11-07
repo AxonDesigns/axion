@@ -131,6 +131,7 @@ void ax_wl_surface_native(ax_window_impl *w, ax_surface_native *out);
 ax_result ax_wl_surface_prepare_commit(ax_window_impl *w, const ax_frame_target *frame);
 void ax_wl_surface_dispatch(ax_window_impl *w);
 bool ax_wl_surface_frame_due(ax_window_impl *w);
+bool ax_wl_surface_frame_pending(ax_window_impl *w);
 void ax_wl_present_window_destroyed(ax_window_impl *w);
 
 /* wl_pointer.c */

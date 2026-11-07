@@ -61,10 +61,10 @@ uint64_t ax_frame_clock_refresh(const ax_frame_clock *clock);
 uint64_t ax_frame_clock_predict(const ax_frame_clock *clock, uint64_t now_ns);
 
 /*
- * Target present time for a frame about to be drawn at now_ns: the prediction, but never at or
- * before the previous committed frame's target (one commit per refresh at most: frames reach the
- * screen in order). Animations sample this, so it never goes backwards between committed frames,
- * even when the first estimates (made before any presentation report) were too far ahead.
+ * Target present time for a frame about to be drawn at now_ns: the prediction, but never before
+ * the previous committed frame's target. Animations sample this, so it never goes backwards, even
+ * when the first estimates (made before any presentation report) were too far ahead. Two commits
+ * before the same refresh share its target: the later one replaces the earlier on screen.
  */
 uint64_t ax_frame_clock_target(const ax_frame_clock *clock, uint64_t now_ns);
 

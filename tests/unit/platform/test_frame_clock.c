@@ -119,17 +119,31 @@ AX_TEST(targets_never_go_backwards_between_committed_frames)
     /* The first report (for a frame shown at 990 ms) puts the vblanks earlier than guessed: the
      * plain prediction for the next frame lands before t1, but the target must not. */
     ax_frame_clock_presented(&c, 990 * MS, HZ60, 50, true, 0);
-    AX_CHECK(ax_frame_clock_predict(&c, 1001 * MS) <= t1);
+    AX_CHECK(ax_frame_clock_predict(&c, 1001 * MS) < t1);
     t2 = ax_frame_clock_target(&c, 1001 * MS);
-    AX_CHECK(t2 > t1);
-    AX_CHECK_EQ_U(t2, t1 + HZ60);
+    AX_CHECK_EQ_U(t2, t1); /* held, not pushed further ahead */
     ax_frame_clock_committed(&c, t2);
-
-    /* Asking again without committing does not advance the chain. */
-    AX_CHECK_EQ_U(ax_frame_clock_target(&c, 1001 * MS), t2 + HZ60);
-    AX_CHECK_EQ_U(ax_frame_clock_target(&c, 1001 * MS), t2 + HZ60);
 
     /* After an idle second the prediction is far ahead and wins. */
     t3 = ax_frame_clock_target(&c, 2000 * MS);
     AX_CHECK(t3 > 2000 * MS && t3 <= 2000 * MS + HZ60);
+}
+
+AX_TEST(extra_commits_do_not_run_the_clock_ahead)
+{
+    ax_frame_clock c;
+    uint64_t now = 3000 * MS;
+    uint64_t first;
+    int i;
+    ax_frame_clock_init(&c, HZ60);
+    ax_frame_clock_presented(&c, now - 5 * MS, HZ60, 7, true, 0);
+    first = ax_frame_clock_target(&c, now);
+    /* Ten commits before one refresh (a burst of configures): they all target the same refresh. */
+    for (i = 0; i < 10; ++i) {
+        uint64_t t = ax_frame_clock_target(&c, now + (uint64_t)i * 100000u);
+        AX_CHECK_EQ_U(t, first);
+        ax_frame_clock_committed(&c, t);
+    }
+    /* A refresh later the target is one refresh later, not ten. */
+    AX_CHECK_EQ_U(ax_frame_clock_target(&c, first + 1), first + HZ60);
 }

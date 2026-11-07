@@ -120,23 +120,39 @@ ax_result ax_surface_wait_frame(ax_surface surface, uint64_t timeout_ns, ax_wake
     for (;;) {
         uint64_t gen = ax_atomic_load_u64(&app->wake_gen, AX_MO_SEQ_CST);
         uint64_t now;
+        uint64_t sleep_until = deadline;
+        bool configure;
+        bool commit;
 
         /* Run the presenter queue's listeners (frame done, presentation feedback) here, on the
          * presenter thread, where they were registered. */
         app->ops->surface_dispatch(w);
-        if (ax_tb_has_new(&w->config_tb)) {
-            reason = AX_WAKE_CONFIGURE;
-            break;
-        }
-        if (ax_atomic_load_u32(&w->commit_requested, AX_MO_SEQ_CST) != 0) {
-            reason = AX_WAKE_COMMIT_REQUESTED;
-            break;
-        }
-        if (app->ops->surface_frame_due(w)) {
-            reason = AX_WAKE_FRAME;
-            break;
-        }
         now = ax_time_monotonic_ns();
+        if (app->ops->surface_frame_due(w)) {
+            reason = AX_WAKE_FRAME; /* the frame drawn now also picks up any pending configure */
+            break;
+        }
+        configure = ax_tb_has_new(&w->config_tb);
+        commit = ax_atomic_load_u32(&w->commit_requested, AX_MO_SEQ_CST) != 0;
+        if (configure || commit) {
+            /* Commit for it at once only if no frame is in flight. Otherwise wait for the frame
+             * callback: committing on every configure of an interactive resize outruns the display,
+             * and the compositor just discards the extra frames (decision 40). If the callback does
+             * not come within two refreshes (a hidden window gets none), commit anyway so the
+             * configure is still acknowledged. */
+            uint64_t bound = 2 * ax_frame_clock_refresh(&w->clock);
+            bound = bound < 8000000u ? 8000000u : (bound > 100000000u ? 100000000u : bound);
+            if (w->presenter_work_seen_ns == 0) {
+                w->presenter_work_seen_ns = now;
+            }
+            if (!app->ops->surface_frame_pending(w) || now - w->presenter_work_seen_ns >= bound) {
+                reason = configure ? AX_WAKE_CONFIGURE : AX_WAKE_COMMIT_REQUESTED;
+                break;
+            }
+            if (w->presenter_work_seen_ns + bound < sleep_until) {
+                sleep_until = w->presenter_work_seen_ns + bound;
+            }
+        }
         if (now >= deadline) {
             reason = AX_WAKE_TIMEOUT;
             break;
@@ -145,11 +161,14 @@ ax_result ax_surface_wait_frame(ax_surface surface, uint64_t timeout_ns, ax_wake
          * with ax__app_wake_presenters through presenters_waiting and wake_gen). */
         ax_mutex_lock(&app->wake_lock);
         ax_atomic_fetch_add_u32(&app->presenters_waiting, 1, AX_MO_SEQ_CST);
-        if (ax_atomic_load_u64(&app->wake_gen, AX_MO_SEQ_CST) == gen) {
-            ax_cond_wait_timeout(&app->wake_cond, &app->wake_lock, deadline - now);
+        if (ax_atomic_load_u64(&app->wake_gen, AX_MO_SEQ_CST) == gen && sleep_until > now) {
+            ax_cond_wait_timeout(&app->wake_cond, &app->wake_lock, sleep_until - now);
         }
         ax_atomic_fetch_add_u32(&app->presenters_waiting, (uint32_t)-1, AX_MO_SEQ_CST);
         ax_mutex_unlock(&app->wake_lock);
+    }
+    if (reason != AX_WAKE_TIMEOUT) {
+        w->presenter_work_seen_ns = 0; /* the frame drawn next handles what was waiting */
     }
     if (out_reason != NULL) {
         *out_reason = reason;

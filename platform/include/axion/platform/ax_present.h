@@ -67,8 +67,16 @@ typedef enum ax_wake_reason {
     AX_WAKE_TIMEOUT = 4
 } ax_wake_reason;
 
-/* Waits until the next frame should start, dispatching the surface's event queue meanwhile.
- * Returns at once if a configure or commit request is already pending. thread: presenter */
+/*
+ * Waits until the next frame should start, dispatching the surface's event queue meanwhile:
+ *   AX_WAKE_FRAME             the frame callback fired (a pending configure is picked up too);
+ *   AX_WAKE_CONFIGURE         a new configure, when no frame is in flight;
+ *   AX_WAKE_COMMIT_REQUESTED  commit-time state changed, when no frame is in flight;
+ *   AX_WAKE_TIMEOUT           nothing is due.
+ * While a frame is in flight, configures and commit requests wait for its callback, so commits
+ * never outpace the display; if the callback is late by two refreshes (a hidden window gets none),
+ * they wake the presenter anyway, so configures are always acknowledged. thread: presenter
+ */
 AX_API ax_result ax_surface_wait_frame(ax_surface surface, uint64_t timeout_ns,
                                        ax_wake_reason *out_reason);
 

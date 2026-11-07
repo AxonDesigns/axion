@@ -170,6 +170,11 @@ bool ax_wl_surface_frame_due(ax_window_impl *w)
     return false;
 }
 
+bool ax_wl_surface_frame_pending(ax_window_impl *w)
+{
+    return wl_window_of(w)->frame_callback != NULL;
+}
+
 void ax_wl_present_window_destroyed(ax_window_impl *w)
 {
     wl_window *ww = wl_window_of(w);

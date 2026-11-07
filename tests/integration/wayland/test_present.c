@@ -35,8 +35,9 @@ typedef struct presenter {
     ax_atomic_u32 configure_wakes;
     ax_atomic_u32 commit_wakes;
     ax_atomic_u32 presented;
-    ax_atomic_u32 bad_predictions;
+    ax_atomic_u32 bad_predictions; /* a target earlier than the previous frame's */
     ax_atomic_u32 failures;
+    ax_atomic_u64 max_lead_ns; /* largest (target - now) seen at begin_frame */
 
     /* written by the presenter, read by the test after an acquire of `committed` */
     commit_record commits[MAX_COMMITS];
@@ -57,6 +58,7 @@ static void presenter_init(presenter *p, ax_surface surface, bool idle)
     ax_atomic_init_u32(&p->presented, 0);
     ax_atomic_init_u32(&p->bad_predictions, 0);
     ax_atomic_init_u32(&p->failures, 0);
+    ax_atomic_init_u64(&p->max_lead_ns, 0);
 }
 
 static int presenter_main(void *arg)
@@ -90,8 +92,13 @@ static int presenter_main(void *arg)
             break;
         }
         if (t.ready && (draw || t.acks_configure || t.commit_requested)) {
-            if (t.predicted_present_ns <= last_predicted) {
+            uint64_t now = ax_time_monotonic_ns();
+            if (t.predicted_present_ns < last_predicted) {
                 ax_atomic_fetch_add_u32(&p->bad_predictions, 1, AX_MO_RELAXED);
+            }
+            if (t.predicted_present_ns > now &&
+                t.predicted_present_ns - now > ax_atomic_load_u64(&p->max_lead_ns, AX_MO_RELAXED)) {
+                ax_atomic_store_u64(&p->max_lead_ns, t.predicted_present_ns - now, AX_MO_RELAXED);
             }
             last_predicted = t.predicted_present_ns;
             if (ax_surface_prepare_commit(p->surface, &t) != AX_OK ||
@@ -326,4 +333,58 @@ AX_TEST(begin_frame_before_configure_is_not_ready)
     AX_CHECK_RESULT(ax_surface_prepare_commit(s, &f), AX_ERR_UNSUPPORTED);
     AX_CHECK_RESULT(ax_window_destroy(w), AX_OK);
     AX_CHECK_EQ_U(axt_app_destroy(&t), 0);
+}
+
+/* A burst of configures (an interactive resize sends one per pointer motion) must not make the
+ * presenter commit faster than the display, run the animation clock ahead, or leave the newest
+ * configure unacknowledged.
+ *
+ * Limitation: weston answers maximize toggles one configure at a time, waiting for each ack, so it
+ * never produces configures faster than frames the way KWin's interactive resize does; this test
+ * guards the behaviour but does not reproduce that burst. The clock running ahead is reproduced by
+ * tests/unit/platform/test_frame_clock.c (extra_commits_do_not_run_the_clock_ahead), and the burst
+ * itself is checked by resizing examples/m0_window by hand. */
+AX_TEST(configure_bursts_do_not_outrun_frames)
+{
+    static fixture f;
+    ack_goal goal;
+    int i;
+    AXT_REQUIRE_COMPOSITOR();
+    AX_REQUIRE(fixture_start(&f, 320, 240, false));
+    AX_REQUIRE(pump_until_count(f.t.app, &f.p.frame_wakes, 5, AXT_SECONDS(5)));
+
+    {
+        uint32_t commits_before = ax_atomic_load_u32(&f.p.committed, AX_MO_ACQUIRE);
+        uint32_t frames_before = ax_atomic_load_u32(&f.p.frame_wakes, AX_MO_ACQUIRE);
+        uint32_t commits;
+        uint32_t frames;
+        for (i = 0; i < 40; ++i) {
+            ax__wl_test_set_maximized(f.window, (i % 2) == 0);
+            ax_app_pump(f.t.app, 1000000u); /* 1 ms between configures */
+        }
+        commits = ax_atomic_load_u32(&f.p.committed, AX_MO_ACQUIRE) - commits_before;
+        frames = ax_atomic_load_u32(&f.p.frame_wakes, AX_MO_ACQUIRE) - frames_before;
+        /* About one commit per frame callback, not one per configure. */
+        AX_CHECK(commits <= frames + 3);
+    }
+    /* The last request unmaximized: the newest configure is acknowledged at 320x240. */
+    goal.p = &f.p;
+    goal.width = 320;
+    goal.height = 240;
+    AX_CHECK(axt_pump_until(f.t.app, acked_size, &goal, AXT_SECONDS(5)));
+    {
+        uint64_t until = ax_time_monotonic_ns() + 200u * 1000000u;
+        while (ax_time_monotonic_ns() < until) {
+            ax_app_pump(f.t.app, 10u * 1000000u);
+        }
+    }
+    AX_CHECK_EQ_U(fixture_stop(&f), 0);
+    AX_CHECK_EQ_U(ax_atomic_load_u32(&f.p.failures, AX_MO_RELAXED), 0);
+    AX_CHECK_EQ_U(ax_atomic_load_u32(&f.p.bad_predictions, AX_MO_RELAXED), 0);
+    /* The animation clock never runs ahead of real time by more than a few refreshes. */
+    AX_CHECK(ax_atomic_load_u64(&f.p.max_lead_ns, AX_MO_RELAXED) <=
+             4 * f.p.stats.refresh_interval_ns);
+    if (f.p.stats.presented > 0) {
+        AX_CHECK(f.p.stats.discarded <= 2);
+    }
 }

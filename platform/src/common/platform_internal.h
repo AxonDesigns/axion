@@ -85,7 +85,8 @@ struct ax_window_impl {
     bool presenter_has_config;
     ax_surface_config presenter_config;
     ax_frame_clock clock;
-    ax_atomic_u32 presenting; /* debug aid: a presenter is between begin and prepare */
+    uint64_t presenter_work_seen_ns; /* when a configure/commit request was first seen waiting */
+    ax_atomic_u32 presenting;        /* debug aid: a presenter is between begin and prepare */
 };
 
 /* A command handed to the main thread by ax__app_call. Lives on the caller's stack. */
@@ -117,8 +118,9 @@ typedef struct ax_backend_ops {
     void (*surface_native)(ax_window_impl *w, ax_surface_native *out);
     /* presenter thread */
     ax_result (*surface_prepare_commit)(ax_window_impl *w, const ax_frame_target *frame);
-    void (*surface_dispatch)(ax_window_impl *w);  /* dispatch the presenter's queue */
-    bool (*surface_frame_due)(ax_window_impl *w); /* the frame callback fired; clears it */
+    void (*surface_dispatch)(ax_window_impl *w);      /* dispatch the presenter's queue */
+    bool (*surface_frame_due)(ax_window_impl *w);     /* the frame callback fired; clears it */
+    bool (*surface_frame_pending)(ax_window_impl *w); /* a frame callback is outstanding */
 } ax_backend_ops;
 
 struct ax_app_impl {
