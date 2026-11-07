@@ -71,6 +71,8 @@ new entry that points back to the old one.
 | 55  | ax_render_wgpu: vtbl, coverage and pipelines             | Deviation      |
 | 56  | Coverage tests against a provisional CPU reference       | Approved       |
 | 57  | Render-thread frame step: bounded size handshake         | Approved       |
+| 58  | Roping of thin rotated lines with sRGB-space blending    | Approved       |
+| 59  | M0 exit criterion: measurements with the Render IR       | Approved       |
 
 ---
 
@@ -1773,7 +1775,7 @@ recording for hidden windows.
 **Status.** Approved (the bound and the rule for hidden windows were the owner's adjustments;
 the bound's value is proposed from measurements in decision 59).
 
-## 58. Roping of thin rotated lines: a known limitation of sRGB-space blending
+## 58. Roping of thin rotated lines with sRGB-space blending
 
 **Context.** Reviewing `m0_window --renderer=ir` on both monitors, the owner saw beads along the
 turning hairline fan (0.5 units, 0.66 px at scale 1.325) and the thin rects rotated by 3 degrees:

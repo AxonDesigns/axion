@@ -4,8 +4,10 @@ AXION is a UI runtime written in C11 around a stable C ABI. Renderers, platform 
 language bindings are modules on top of that ABI. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 for the design and [docs/decisions.md](docs/decisions.md) for the decisions made while building it.
 
-**Status:** early M0. The `base/` module (allocators, arenas, handles and pools, atomics, threads,
-errors) is in place; everything above it is still to come.
+**Status:** M0 is done: `base/`, the Wayland backend in `platform/`, `gpu/` (Dawn, with
+wgpu-native kept compiling in CI), the Render IR and `ax_render_wgpu`, shown by
+`examples/m0_window`. M1, the thread split, is in progress. See the milestones in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Building
 

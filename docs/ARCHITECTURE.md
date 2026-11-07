@@ -45,11 +45,12 @@ The layers stack strictly downward: each module calls only the layers beneath it
 
 **Dependency rules**
 
-- Base depends only on the C standard library; Platform and GPU depend only on Base.
+- Base depends only on the C standard library and the OS threading primitives it wraps (pthreads, Win32); Platform depends only on Base; GPU depends on Base and on Platform's internal surface handles.
 - Text depends only on Base plus the OS font APIs it calls directly (DirectWrite, Core Text, fontconfig, Canvas 2D on the web), never on Platform, so Core can use it for measurement and renderers for glyph rasterization.
 - Core produces Render IR snapshots and renderers consume them. Neither includes the other's headers, which is what makes renderers interchangeable.
 - Kit is built only on Core's public C API, the same API the bindings use, so anything a built-in component does, an app can do too.
 - Bindings and apps touch only the stable C ABI, never internal headers.
+- Every module has two header levels: the stable ABI in `<module>/include/axion/`, with opaque types, and an internal SDK in `<module>/include/axion/<module>/` that only other runtime modules use, where types such as arenas, pools and mutexes are embeddable structs.
 
 ## Threading model and frame pipeline
 
@@ -222,6 +223,8 @@ ax_txn_set_enum(t, max_btn,  AX_PROP_WINDOW_REGION, AX_REGION_MAXIMIZE);  /* Win
 
 **Events.** Moved, resized, close requested (cancellable by the app), focus, occlusion (rendering pauses while a window is hidden), scale changed, theme changed, and drag-and-drop (see the next section). During live resize, which Windows and macOS run in a modal loop on the main thread, the main thread waits a bounded time for a frame at the new size, so content never stretches or lags behind the frame edge.
 
+**Resize on Wayland.** There is no modal loop. After the first empty commit, only the presenter commits, and it acknowledges each configure in the same commit as a buffer of the new size. A frame never acknowledges a configure without content of that size: it waits for the scene up to half a refresh (2–8 ms), then draws the newest snapshot unstretched, anchored top-left. Pacing follows the compositor's frame callbacks with a MAILBOX swapchain by default. With FIFO, commits can queue behind the compositor's barrier, so a resize first drains them.
+
 **Platform services** (desktop, a first-party plugin): tray and status-bar icons with menus, the macOS application menu bar, and global shortcuts. They live outside the core so headless and embedded builds don't carry them.
 
 **What each platform allows**
@@ -300,6 +303,7 @@ Rendering is decoupled at one seam: the scene produces an immutable, versioned *
 - A layer tree: each layer has a transform (2D affine or 3D with perspective), clip (rect, rounded rect or path), opacity, blend mode and an optional effect chain.
 - Draw items per layer: rects and rounded rects with per-corner radii, borders, box shadows, gradients (linear, radial, conic), paths, images (with nine-slice), glyph runs (font handle, glyph ids, positions), user shader quads, backdrop-filter regions, and 3D viewports referencing a 3D scene.
 - Damage information: which layers and regions changed since the previous snapshot.
+- Encoding (IR 1.0, built in M0): little-endian records, with layers in pre-order carrying their parent and subtree end. Every layer and item record carries its own size, so a newer minor version can append fields and item types; a consumer skips an unknown item, or drops its whole layer when the item is flagged REQUIRED. Colors are premultiplied float RGBA in linear light with sRGB primaries and extended range, and each layer's blend space decides how they blend. Coordinates are logical units, and the snapshot records the logical size it was built for, which a renderer never stretches to another size.
 
 ```c
 typedef struct ax_renderer_vtbl {
@@ -310,6 +314,10 @@ typedef struct ax_renderer_vtbl {
     void      (*detach_surface)(void *self, ax_surface surface);
     ax_result (*render)(void *self, ax_surface surface, const ax_render_ir *ir, ax_frame_info info);
     void      (*query_caps)(void *self, ax_renderer_caps *out_caps);  /* compute, HDR, MSAA, ... */
+    /* Added in M0: how the render thread waits for its next frame depends on the renderer
+       (the swapchain's pacing, and polling the device so a lost one is recreated). */
+    ax_result (*wait_frame)(void *self, ax_surface surface, bool animating,
+                            uint64_t timeout_ns, ax_wake_reason *out_reason);
 } ax_renderer_vtbl;
 ```
 
@@ -603,7 +611,9 @@ Everything AXION draws (shapes, paths, SVG, Lottie, text, images, clips, user sh
 
 **Seams between touching shapes.** Coverage antialiasing leaves faint seams where two shapes share an edge, which is common in SVG and Lottie exports. Layers can opt into an exact vector mode that rasterizes with 16 samples per pixel before resolving, removing seams at extra cost.
 
-**Blending and color.** Premultiplied alpha everywhere. UI blends in sRGB space by default to match browsers and design tools; blur, 3D and HDR content work in linear light; text coverage gets its own gamma correction. Layers can opt into linear blending.
+**Blending and color.** Premultiplied alpha everywhere. UI blends in sRGB space by default to match browsers and design tools; blur, 3D and HDR content work in linear light; text coverage gets its own gamma correction. Layers can opt into linear blending. The sRGB default is built by drawing into a unorm view of the swapchain; linear layers use its sRGB view or an FP16 offscreen. Known limitation: sRGB-space blending makes thin rotated lines bead (roping), as in browsers. Whether the default changes is decided together with Latin text in M1 (issue #4).
+
+**Coverage under affine transforms.** For 2D affine layers, the CPU inverts each instance's transform and passes the pixel's footprint in local space, so coverage is exact and identical across WebGPU implementations. Screen-space derivatives are used only once perspective transforms arrive. Until `ax_render_soft` exists (M1), coverage tests compare against a supersampled CPU reference.
 
 **Verification.** Golden-image tests compare each GPU renderer to the software reference within a perceptual tolerance on antialiasing torture scenes: rotating hairlines, zone plates, thin text in motion, touching Lottie shapes and nested rounded clips. A renderer that drifts fails CI.
 
@@ -1293,7 +1303,7 @@ CMake is the one canonical build for the C core and native dependencies, wrapped
 | iOS | UIKit + CAMetalLayer | Metal | Clang / Xcode | `.ipa` |
 | Web | `<canvas>` + DOM events | Browser WebGPU, WebGL2 fallback | Emscripten | Static bundle (`.wasm` + `.js`) |
 
-**Dependencies.** HarfBuzz, FreeType, SheenBidi, libunibreak, ThorVG, cgltf, image decoders (libpng, libjpeg-turbo, libwebp, or stb\_image for small builds), QuickJS-ng and Lua build from source through CMake. Dawn is consumed as prebuilt binaries per platform, because building it from source is slow and needs its own toolchain.
+**Dependencies.** HarfBuzz, FreeType, SheenBidi, libunibreak, ThorVG, cgltf, image decoders (libpng, libjpeg-turbo, libwebp, or stb\_image for small builds), QuickJS-ng and Lua build from source through CMake. Dawn is consumed as the official prebuilt binaries from the Dawn project's releases, pinned by version and SHA-256, because building it from source is slow and needs its own toolchain; wgpu-native's official binaries are pinned the same way for the CI job that keeps it compiling. On Linux the platform backend links libwayland-client and libwayland-cursor, and vendors the wayland-protocols XML it generates code from.
 
 **Export pipeline** (`axion export <target>`)
 
@@ -1334,12 +1344,14 @@ axion/
 
 **Milestones**
 
-1. **M0, skeleton**: base, one desktop platform backend, `ax_gpu` clearing a window, the Render IR, and rounded rects. Exit: a window resizes smoothly at the display's refresh rate.
-2. **M1, the thread split**: node store, transactions, the app/scene/render pipeline, flex layout, implicit animations, Latin text (shaping plus atlas), the software renderer for golden tests, the headless host, and the accessibility tree, with AccessKit's iOS and web coverage confirmed. Exit: an app thread blocked for 500 ms does not drop animation frames.
+1. **M0, skeleton**: base, one desktop platform backend, `ax_gpu` clearing a window, the Render IR, and rounded rects. Exit: a window resizes smoothly at the display's refresh rate. Done on Nov 7, 2026, with the Wayland backend, measured on KWin 6.8 with an NVIDIA GPU: at the refresh rate when still on 72 Hz and 260 Hz monitors; when resizing, 0–0.3 missed vblanks a second at 72 Hz and a mean of 4.8 at 260 Hz (issue #2).
+2. **M1, the thread split**: node store, transactions, the app/scene/render pipeline, flex layout, implicit animations, Latin text (shaping plus atlas), the software renderer for golden tests, the headless host, and the accessibility tree, with AccessKit's iOS and web coverage confirmed. Exit: an app thread blocked for 500 ms does not drop animation frames. Carried over from M0: the job system; resizing at 260 Hz within 1 missed vblank a second (issue #2); the blend-space decision, taken with text (issue #4); and re-measuring the resize handshake's bound with real layout and text.
 3. **M2, interaction**: pointer and keyboard input, gesture arena, the scroll engine (wheel smoothing, physics presets, overscroll) and virtualized lists, the first headless components, the C# binding, HMR for C# and stylesheets, the automation protocol with the C# testing API, and the accessibility bridge on the first platform. Exit: a styled settings screen built entirely in C# and edited live without restarting, and fully usable with a screen reader and keyboard.
 4. **M3, depth**: full text (bidi, fallback, emoji, IME, TextField), AXGL with fill and backdrop shaders, AXGL scroll physics, SVG, the full windowing API (custom chrome, hit-test regions, system backdrops, multi-window), accessibility bridges on all desktop platforms, the plugin system with the first-party platform-services plugin, native drag and drop within and between windows and apps (this milestone builds the transient overlay window that M4's cross-window heroes reuse), and the MCP server. Exit: a chat app with mixed-script text and frosted panels.
 5. **M4, motion and reach**: layout animations, navigator with deep links and URL schemes, heroes, view transitions, Lottie playback; Android and iOS ports, each shipping with its accessibility bridge. Exit: the gallery-to-detail hero demo running on phones with an interactive back gesture.
 6. **M5, breadth**: 3D PBR, user compute, the web target with the WebGL2 renderer, TS/TSX, Lua and Python bindings with HMR, devtools, and the export tool for all six targets.
+
+Implementation decisions and their measurements are logged in `docs/decisions.md` in the AxonDesigns/axion repository; this document records the architecture they implement.
 
 **Decisions**
 
@@ -1355,3 +1367,7 @@ axion/
 - [x] Cross-window hero flights and drag visuals: supported through a transient overlay window (see Navigation and Drag and drop).
 - [x] License: Apache 2.0, with a permissive-only dependency allow-list (see Build and export).
 - [x] Name and API prefix: AXION (`ax_`).
+- [x] First desktop backend: Wayland on Linux. X11 and the other backends implement the same internal backend vtable.
+- [x] Frame pacing: driven by the compositor's frame callbacks with a MAILBOX swapchain, pending validation with Mesa on AMD or Intel hardware.
+- [x] Render IR colors: premultiplied float RGBA in linear light, with extended range.
+- [x] Renderer interface: a seventh vtbl entry, `wait_frame`.
