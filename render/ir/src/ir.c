@@ -276,8 +276,8 @@ void ax_ir_pop_layer(ax_ir_builder *b)
         return;
     }
     close_implicit(b);
+    AX_ASSERT_MSG(b->depth > 1, "ax_ir_pop_layer without a matching push");
     if (b->depth <= 1) {
-        AX_ASSERT_MSG(false, "ax_ir_pop_layer without a matching push");
         fail(b, AX_ERR_UNSUPPORTED);
         return;
     }
@@ -373,8 +373,8 @@ ax_result ax_ir_builder_end(ax_ir_builder *b, const ax_render_ir **out_ir)
     b->recording = false;
     if (b->error == AX_OK) {
         close_implicit(b);
+        AX_ASSERT_MSG(b->depth == 1, "ax_ir_builder_end with layers still pushed");
         if (b->depth != 1) {
-            AX_ASSERT_MSG(false, "ax_ir_builder_end with layers still pushed");
             b->error = AX_ERR_UNSUPPORTED;
         }
     }

@@ -291,7 +291,7 @@ AX_DEATH_TEST(end_with_open_layers_asserts)
 typedef struct handmade {
     ax_render_ir ir;
     ax_ir_layer layers[3];
-    AX_ALIGNAS(8) uint8_t items[sizeof(ax_ir_rect_item) * 2];
+    uint64_t items[sizeof(ax_ir_rect_item) * 2 / 8]; /* 8-byte aligned stream */
 } handmade;
 
 /* Root with one rect, and a child with one rect: valid as made. */
@@ -302,8 +302,8 @@ static void handmade_init(handmade *h)
     memset(&r, 0, sizeof r);
     r.header.type = AX_IR_ITEM_RECT;
     r.header.size = sizeof r;
-    memcpy(h->items, &r, sizeof r);
-    memcpy(h->items + sizeof r, &r, sizeof r);
+    memcpy((uint8_t *)h->items, &r, sizeof r);
+    memcpy((uint8_t *)h->items + sizeof r, &r, sizeof r);
     h->layers[0].parent = AX_IR_NO_LAYER;
     h->layers[0].subtree_end = 2;
     h->layers[0].items_size = sizeof r;
@@ -319,7 +319,7 @@ static void handmade_init(handmade *h)
     h->ir.layer_stride = sizeof(ax_ir_layer);
     h->ir.layers = h->layers;
     h->ir.items_size = sizeof h->items;
-    h->ir.items = h->items;
+    h->ir.items = (const uint8_t *)h->items;
 }
 
 AX_TEST(validate_rejects_malformed_snapshots)
@@ -365,19 +365,19 @@ AX_TEST(validate_rejects_malformed_snapshots)
     ih.type = AX_IR_ITEM_RECT;
     ih.flags = 0;
     ih.size = 16; /* a known rect smaller than its record */
-    memcpy(h.items + sizeof(ax_ir_rect_item), &ih, sizeof ih);
+    memcpy((uint8_t *)h.items + sizeof(ax_ir_rect_item), &ih, sizeof ih);
     h.layers[1].items_size = 16;
     AX_CHECK_RESULT(ax_ir_validate(&h.ir), AX_ERR_UNSUPPORTED);
 
     handmade_init(&h);
     ih.type = 999;
     ih.size = 12; /* not a multiple of 8 */
-    memcpy(h.items + sizeof(ax_ir_rect_item), &ih, sizeof ih);
+    memcpy((uint8_t *)h.items + sizeof(ax_ir_rect_item), &ih, sizeof ih);
     AX_CHECK_RESULT(ax_ir_validate(&h.ir), AX_ERR_UNSUPPORTED);
 
     handmade_init(&h);
     ih.size = 0; /* would never advance */
-    memcpy(h.items, &ih, sizeof ih);
+    memcpy((uint8_t *)h.items, &ih, sizeof ih);
     AX_CHECK_RESULT(ax_ir_validate(&h.ir), AX_ERR_UNSUPPORTED);
 
     handmade_init(&h);
