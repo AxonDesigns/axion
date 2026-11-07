@@ -57,6 +57,18 @@ typedef struct ax_test_case {
 #define AX_DEATH_TEST(name) AX_TEST(name)
 
 /* Marks the running case as skipped and leaves it. */
+/* AX_TEST_TSAN is 1 in builds with ThreadSanitizer. */
+#if defined(__SANITIZE_THREAD__)
+#    define AX_TEST_TSAN 1
+#elif defined(__has_feature)
+#    if __has_feature(thread_sanitizer)
+#        define AX_TEST_TSAN 1
+#    endif
+#endif
+#ifndef AX_TEST_TSAN
+#    define AX_TEST_TSAN 0
+#endif
+
 #define AX_SKIP(reason)       \
     do {                      \
         ax_test_skip(reason); \
@@ -116,6 +128,18 @@ int ax_test_main(const char *suite, const ax_test_case *cases, size_t count, int
             ax_test_fail(__FILE__, __LINE__, "%s == %s (got %p, expected %p)", #actual, #expected, \
                          ax__a, ax__e);                                                            \
         }                                                                                          \
+    } while (0)
+
+/* |actual - expected| <= tolerance, in double precision. */
+#define AX_CHECK_NEAR_F(actual, expected, tolerance)                                             \
+    do {                                                                                         \
+        double ax__a = (double)(actual);                                                         \
+        double ax__e = (double)(expected);                                                       \
+        double ax__d = ax__a > ax__e ? ax__a - ax__e : ax__e - ax__a;                            \
+        if (!(ax__d <= (double)(tolerance))) {                                                   \
+            ax_test_fail(__FILE__, __LINE__, "%s ~= %s (got %.9g, expected %.9g, tolerance %g)", \
+                         #actual, #expected, ax__a, ax__e, (double)(tolerance));                 \
+        }                                                                                        \
     } while (0)
 
 #define AX_CHECK_RESULT(actual, expected)                                             \

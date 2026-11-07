@@ -43,3 +43,10 @@ bool ax__webgpu_force_device_loss(WGPUDevice device, const char *message)
     wgpuDeviceForceLoss(device, WGPUDeviceLostReason_Unknown, msg);
     return true;
 }
+
+WGPUFuture ax__webgpu_create_render_pipeline_async(WGPUDevice device,
+                                                   const WGPURenderPipelineDescriptor *desc,
+                                                   WGPUCreateRenderPipelineAsyncCallbackInfo info)
+{
+    return wgpuDeviceCreateRenderPipelineAsync(device, desc, info);
+}

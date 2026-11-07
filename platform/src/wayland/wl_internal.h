@@ -98,6 +98,7 @@ typedef struct wl_window {
     int32_t pending_width, pending_height; /* from xdg_toplevel.configure; 0 = client decides */
     bool pending_activated;
     bool pending_suspended;
+    bool test_suspended; /* ax__wl_test_set_occluded: kept across configures */
     bool pending_maximized;
     bool pending_fullscreen;
     bool pending_tiled;

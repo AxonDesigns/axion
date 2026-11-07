@@ -31,18 +31,27 @@ jobs:
           - { name: "Windows / MSVC / Debug",        os: windows-latest, preset: msvc-debug }
           - { name: "Windows / MSVC / Release",      os: windows-latest, preset: msvc-release }
           - { name: "macOS / Clang / ASan+UBSan",    os: macos-latest,   preset: clang-asan }
-          - { name: "macOS / Clang / Release",       os: macos-latest,   preset: clang-release }
+          - { name: "macOS / Clang / Release",       os: macos-latest,   preset: clang-release, coverage: dawn-metal }
           - { name: "Linux / GCC / ASan+UBSan",      os: ubuntu-latest,  preset: gcc-asan }
           - { name: "Linux / GCC / Release",         os: ubuntu-latest,  preset: gcc-release }
           - { name: "Linux / Clang / ASan+UBSan",    os: ubuntu-latest,  preset: clang-asan }
-          - { name: "Linux / Clang / Release",       os: ubuntu-latest,  preset: clang-release }
-          # The alternative WebGPU implementation (decision 43): builds gpu/ against wgpu-native
-          # and runs its offscreen tests only.
+          - { name: "Linux / Clang / Release",       os: ubuntu-latest,  preset: clang-release, coverage: dawn-lavapipe }
+          # The alternative WebGPU implementation (decision 43): builds gpu/ and the renderer
+          # against wgpu-native and runs their offscreen tests only.
           - name: "Linux / GCC / ASan+UBSan / wgpu-native (gpu only)"
             os: ubuntu-latest
             preset: gcc-asan
             configure_args: "-DAX_WEBGPU=wgpu-native"
-            test_args: "-L ^gpu$"
+            test_args: "-L \"^(gpu|render_wgpu)$\""
+            coverage: wgpu-native-lavapipe
+          # ThreadSanitizer over the code with cross-thread handoffs: base's primitives, the
+          # platform module's queues and triple buffers, and the Render IR's mailbox. gpu/ is not
+          # built: its suites run under ASan, and Dawn is not instrumented (decision 44).
+          - name: "Linux / Clang / TSan (base, platform, render IR)"
+            os: ubuntu-latest
+            preset: clang-tsan
+            configure_args: "-DAX_BUILD_GPU=OFF"
+            test_args: "-L \"^(base|platform|render_ir)$\""
     steps:
       - uses: actions/checkout@v4
 
@@ -77,6 +86,12 @@ jobs:
           path: .deps
           key: webgpu-${{ runner.os }}-${{ runner.arch }}-${{ contains(matrix.configure_args, 'wgpu-native') && 'wgpu-native' || 'dawn' }}-${{ hashFiles('gpu/third_party/webgpu_deps.cmake') }}
 
+      # The runners' 32-bit mmap randomization breaks ThreadSanitizer's memory layout
+      # ("unexpected memory mapping"); 28 bits is what it supports.
+      - name: ASLR entropy for ThreadSanitizer
+        if: contains(matrix.preset, 'tsan')
+        run: sudo sysctl vm.mmap_rnd_bits=28
+
       - name: Configure
         run: cmake --preset ${{ matrix.preset }} ${{ matrix.configure_args }}
 
@@ -84,11 +99,18 @@ jobs:
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }} -- -k 0
 
+      # The coverage tests write their images here, for the compare-coverage job (decision 56).
+      - name: Coverage image directory
+        if: matrix.coverage
+        shell: bash
+        run: mkdir -p "${{ runner.temp }}/coverage"
+
       # gpu/ tests fail instead of skipping when no adapter exists (macOS runners have Metal).
       - name: Test
         if: runner.os != 'Linux'
         env:
           AX_REQUIRE_GPU_TESTS: "1"
+          AX_TEST_ARTIFACT_DIR: ${{ matrix.coverage && format('{0}/coverage', runner.temp) || '' }}
         run: ctest --preset ${{ matrix.preset }} ${{ matrix.test_args }}
 
       # Linux also runs the Wayland integration tests against a headless weston.
@@ -98,7 +120,36 @@ jobs:
         env:
           AX_TEST_GPU_ADAPTER: software
           AX_REQUIRE_GPU_TESTS: "1"
+          AX_TEST_ARTIFACT_DIR: ${{ matrix.coverage && format('{0}/coverage', runner.temp) || '' }}
         run: tools/ci/with-weston.sh ctest --preset ${{ matrix.preset }} ${{ matrix.test_args }}
+
+      - name: Upload coverage images
+        if: matrix.coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.coverage }}
+          path: ${{ runner.temp }}/coverage
+          if-no-files-found: error
+
+  # The renderer's coverage images must match across WebGPU implementations (decision 56): Dawn on
+  # lavapipe, wgpu-native on lavapipe and Dawn on Metal, each also checked against the CPU reference
+  # in its own job.
+  compare-coverage:
+    name: Coverage images match across WebGPU implementations
+    needs: build-test
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: coverage-*
+          path: coverage
+      - name: Compare
+        run: |
+          python3 tools/ci/compare_ppm.py --tolerance 3 \
+            coverage/coverage-dawn-lavapipe coverage/coverage-wgpu-native-lavapipe \
+            coverage/coverage-dawn-metal
 
   # Wayland tests against weston 15, which has wp_fifo_v1 and commit-timing (the Ubuntu runners
   # have weston 13, without them). Covers the drain before acknowledging a configure (decision 48),

@@ -63,6 +63,14 @@ new entry that points back to the old one.
 | 47  | Failed commits after prepare_commit                      | Approved       |
 | 48  | GPU surfaces, swapchain resizes and the FIFO queue       | Approved       |
 | 49  | Pacing default and who reads the socket (measured)       | Approved       |
+| 50  | 2D math and color representation in base                 | Approved       |
+| 51  | Render IR format, compatibility and building             | Approved       |
+| 52  | Render IR publication (mailbox) and the TSan job         | Approved       |
+| 53  | sRGB-space blending through a unorm view; upload ring    | Approved       |
+| 54  | Acknowledge a configure only with content of its size    | Approved       |
+| 55  | ax_render_wgpu: vtbl, coverage and pipelines             | Deviation      |
+| 56  | Coverage tests against a provisional CPU reference       | Approved       |
+| 57  | Render-thread frame step: bounded size handshake         | Approved       |
 
 ---
 
@@ -1171,6 +1179,8 @@ acknowledged in that case. That premise is wrong:
 
 ## 48. GPU surfaces, swapchain resizes and the FIFO queue
 
+> The format choice is amended by decision 53: frames render through an 8-bit unorm view with sRGB-encoded colors, so blending happens in sRGB space.
+
 **Context.** Decision 38 listed the risks of presenting through a Vulkan swapchain (Dawn on Mesa's
 WSI, or NVIDIA's) instead of AXION's own commits. This entry records how ax_gpu presents and
 resolves risks 3, 5 and 7, and the part of risk 1 that is not measurement. Risk 2 and the measured
@@ -1334,6 +1344,7 @@ present or hit a protocol error.
     NVIDIA 615.78, out of a 3.85 ms frame. shm reuses its buffers.
   - Accepted by the owner for this step. Tracked in issue #2 (AxonDesigns/axion), to be reviewed when M0's exit
     criterion (smooth resize at the display's refresh rate) is measured.
+  - Measured again with the Render IR path in decision 59.
 - **Future work: a swapchain reserved in sizes rounded up, cropped with the viewport's source.**
   - The swapchain would be allocated at the configure's pixel size rounded up to a bucket, for
     example the next multiple of 128 or 256 px, or with headroom over the current size.
@@ -1382,3 +1393,546 @@ present or hit a protocol error.
 
 **Status.** Approved (the owner set the method and the rule to choose from NVIDIA's numbers);
 pending validation with Mesa on AMD or Intel hardware.
+
+## 50. 2D math and color representation in base
+
+**Context.** The Render IR and the renderers need vectors, rectangles, 2D affine transforms and
+colors. The document puts math in base and asks for premultiplied colors, but leaves their
+encoding open, while later layers will blend in linear light and draw HDR content.
+
+**Decision.**
+- **Where:** `base/include/axion/base/ax_math.h`, in the internal SDK (decision 2), with only
+  what M0 needs: `ax_vec2`, `ax_rect` (x, y, w, h, like `ax_hit_region`), `ax_affine2` and
+  `ax_color`. Small operations are inline; the rest is in `base/src/math.c`, so base now links
+  the C math library on Linux and the web.
+- **Affine layout:** `x' = a·x + c·y + tx`, `y' = b·x + d·y + ty`, the order of CSS's
+  `matrix(a, b, c, d, tx, ty)`. `ax_affine2_mul(m, n)` applies n first. With y pointing down, a
+  positive rotation turns clockwise on screen.
+- **Color: linear-light, premultiplied, extended-range float RGBA** in the sRGB / Rec. 709
+  primaries. Components may be negative or above 1, as in scRGB or Apple's extended linear sRGB.
+  - Why linear: HDR and wide-gamut colors fit without a format change, and whether a layer
+    blends in sRGB or in linear light becomes a property of the layer, not of the color.
+  - Layers that blend in sRGB space (all of them in M0) convert per instance: unpremultiply,
+    encode, premultiply again (`ax_color_to_srgb_premultiplied`).
+  - The sRGB transfer functions keep the sign of negative values and follow the same curve
+    above 1, so out-of-range colors convert both ways.
+  - A color with alpha 0 (additive light) has its components converted directly, so it
+    survives the trip.
+  - Tests: every 8-bit sRGB value comes back to the same byte, opaque and translucent; the
+    premultiplied round trip covers alpha 0, negative components and components above 1.
+- **Triple buffer moved to base:** `platform/src/common/triple_buffer.h` became
+  `base/include/axion/base/ax_triple_buffer.h`, unchanged, so the Render IR's publication can use
+  it without depending on the platform module. Its tests moved to `tests/unit/base/`.
+
+**Status.** Approved by the owner (the color representation, with the sign-preserving
+conversion and the round-trip coverage).
+
+## 51. Render IR format, compatibility and building
+
+**Context.** The document describes the Render IR as plain-old-data, versioned and serializable,
+consumed by every renderer, plugins such as render_gl included. M0 needs only a layer tree with
+2D affine transforms and two draw items, but the format must take the document's other items,
+clips, opacity and blend modes later without breaking its version.
+
+**Decision.**
+- **Where:** `render/ir/` (library `ax_render_ir`, header `axion/render/ax_render_ir.h`), in the
+  internal SDK for now, depending on base only. It is written as the contract it will become.
+- **Snapshot:** `ax_render_ir` holds indices and byte offsets, never pointers between its parts:
+  - the logical size it was recorded for, the predicted present time, a publication sequence and
+    a background color;
+  - damage: a "full" flag plus rects. M0 always records full damage;
+  - layers in pre-order, each with `parent`, `subtree_end`, its own item range, flags, a 2D
+    affine transform, a clip (none, rect, rounded rect or path index), group opacity, a blend
+    mode and an effect-chain index (none in M0). Layer 0 is the root;
+  - one item stream: records `{u16 type, u16 flags, u32 size}` plus payload, 8-byte aligned.
+    M0 has `RECT` and `ROUNDED_RECT` (a circular radius per corner, CSS clamping, solid fill).
+    The numbers of the document's other items are reserved; 0x8000 and above are private.
+- **Painting order:** a layer's own items, then its children. Items recorded into a layer after
+  one of its children go into an implicit child layer (`AX_IR_LAYER_IMPLICIT`), so the order is
+  kept and every layer's items stay contiguous.
+- **Units and color:** logical units in the space of the layer that holds them. Renderers apply
+  the device scale and never stretch a snapshot to another size. Colors are decision 50's.
+- **Compatibility:** major.minor (1.0 now).
+  - Another major is rejected (`AX_ERR_ABI_MISMATCH`).
+  - A newer minor only adds: fields at the end of layer records (consumers index layers with
+    `layer_stride`, also in memory, so a plugin built against an older header keeps working),
+    fields at the end of item records (consumers step with `size` and read the prefix they
+    know), new item types, clip kinds, blend modes and header fields.
+- **What a consumer does with what it does not know** (each case is counted):
+  - an unknown item type is skipped;
+  - an unknown item flagged `AX_IR_ITEM_REQUIRED` skips the rest of that layer's own items
+    (children still draw), for future items that change how their siblings draw;
+  - a clip it cannot apply skips the layer and its subtree, since unclipped content could
+    cover what the clip protects;
+  - an unknown blend mode, or effects it cannot run, draw as if neutral.
+- **Building without an allocation per item:** `ax_ir_builder` records into its own arena.
+  Arrays grow geometrically inside it, and each frame reserves the largest previous frame's
+  sizes, so a warmed-up frame allocates nothing from the parent allocator (tested with the
+  tracking allocator). Errors are sticky and reported by `ax_ir_builder_end`; unbalanced
+  push/pop asserts in debug builds.
+- **Binary form:** little-endian with explicit header size and layer stride, so a reader skips
+  fields it does not know and a newer writer's larger records read correctly (tested by
+  rewriting a snapshot as minor + 1 would). The item stream is copied unchanged, so unknown items
+  survive a round trip. Every AXION target is little-endian; a big-endian host is rejected.
+- **Validation:** `ax_ir_validate` checks the version, the tree shape, item ranges and record
+  sizes; deserialization always validates. Malformed input returns `AX_ERR_UNSUPPORTED` with the
+  reason in `ax_last_error()`: the stable ABI has no invalid-argument code, and adding one is
+  not needed for M0.
+- **Text dump:** `ax_ir_dump`, one indented line per layer and item, non-default layer
+  properties only. Tests compare dumps as expected text.
+- **Tests** (`tests/unit/render_ir/`): building and painting order, implicit layers, unknown and
+  grown items, damage, steady-state allocations, out of memory, death tests for unbalanced
+  layers, validation of hand-made malformed snapshots, a byte-exact round trip, the pinned header
+  layout, a newer minor, every truncated prefix and 4000 random corruptions (run under ASan).
+
+**Status.** Approved (part of the approved plan).
+
+## 52. Render IR publication (mailbox) and the TSan job
+
+**Context.** Step 6 of the document's frame pipeline publishes each snapshot "to a triple buffer
+with an atomic index swap"; the render thread takes the newest, and the scene overwrites a
+pending one (mailbox style) rather than queueing.
+
+**Decision.**
+- **`ax_ir_mailbox`** (`render/ir/include/axion/render/ax_ir_mailbox.h`): three builders, each with
+  its own arena (decision 51), behind base's triple buffer (decision 50).
+  - Writer (scene thread): `ax_ir_mailbox_begin` returns the free slot's builder, already begun;
+    `ax_ir_mailbox_publish` ends it, numbers it (sequence from 1) and swaps it in. It never waits
+    for the reader. A snapshot the reader has not taken is replaced by the newer one.
+  - Reader (render thread): `ax_ir_mailbox_acquire` returns the newest snapshot, or the one it
+    already holds; the writer never touches a held snapshot.
+  - A snapshot that fails to record is not published, and the slot stays the writer's.
+- **Waking the reader:** `ax_ir_mailbox_wait(after_sequence, timeout)` sleeps until something
+  newer is published. It is a Dekker handshake like the event queue's (decision 31): the writer
+  takes the mutex only when the reader is actually waiting, and only to signal. The render
+  thread uses it for the bounded waits of the resize handshake (step 6 of this milestone).
+  Without threads it only checks (decision 25).
+- **Tests** (`tests/unit/render_ir/test_mailbox.c`):
+  - the newest snapshot wins;
+  - a held snapshot stays intact while the writer publishes 1500 more;
+  - a failed snapshot is not published;
+  - waits time out and are woken;
+  - no allocations in a steady state;
+  - a two-thread stress: 100 000 snapshots, each checked whole (every value derived from its
+    number) with increasing sequences. The reader took about 90 000 and skipped the rest, so
+    both paths run.
+- **ThreadSanitizer in CI:** a `clang-tsan` preset (`AX_SANITIZE=thread`, test environment
+  `TSAN_OPTIONS=halt_on_error=1:second_deadlock_stack=1`). A new CI entry runs the base, platform
+  and render_ir suites with it.
+  - gpu/ is not built in that job: its suites run under ASan, and Dawn is not instrumented
+    (decision 44's rule for TSan still applies when gpu/ runs under it locally).
+  - The runner's mmap randomization is lowered to 28 bits, which ThreadSanitizer needs.
+  - Two existing death tests, `base.thread.mutex_unlock_from_other_thread_aborts` and
+    `mutex_unlock_when_unlocked_aborts`, skip under TSan. They misuse a mutex on purpose, and TSan
+    reports the misuse before AXION's own check runs, which decision 41 turns into a failure. The
+    misuse is still caught, by TSan. `AX_TEST_TSAN` in the test harness detects the build.
+
+**Status.** Approved (the preset and its CI job were approved by the owner).
+
+## 53. sRGB-space blending through a unorm view; upload ring
+
+> Amends decision 48's format choice.
+
+**Context.** The document says the UI blends in sRGB space by default, like browsers and design
+tools. Decision 48 configured the swapchain with an sRGB format and rendered through an sRGB view,
+where the GPU decodes, blends in linear light and encodes again. Antialiased edges and
+translucent colors then look different from browsers: thinner light-on-dark text and edges, and
+different mixes.
+
+**Decision.**
+- **Frames render through an 8-bit unorm view** with sRGB-encoded, premultiplied colors, so the
+  GPU blends the encoded values: sRGB-space blending.
+  - The swapchain format is BGRA8Unorm or RGBA8Unorm when the surface offers one (Vulkan and
+    Metal always do). A surface that offers only sRGB formats gets its unorm counterpart as a
+    view format.
+  - For the compositor nothing changes: Wayland compositors read 8-bit buffers as sRGB whatever
+    the Vulkan format.
+  - `ax_gpu_surface_info.view_format` is now the unorm format.
+  - Colors come from the Render IR in linear light (decision 50); the renderer encodes them per
+    instance.
+- **Linear blending is kept possible:** `ax_gpu_surface_desc.srgb_view` adds the sRGB counterpart
+  as a view format (`srgb_view_format`), so a pass can blend in linear light into the same
+  texture. Layers that opt into linear blending (`AX_IR_LAYER_LINEAR_BLEND`) will render that
+  way, or into an FP16 offscreen composited afterwards; M0 draws none.
+  - It is off by default, because a mutable-format swapchain can cost something on some drivers.
+  - Tested on lavapipe with Dawn (`gpu_wayland.gpu_present.an_srgb_view_can_be_requested`).
+- **Upload ring** (`gpu/include/axion/gpu/ax_gpu_upload.h`), the minimal per-frame data path the
+  document lists for `ax_gpu`:
+  - One buffer per ring, written with `wgpuQueueWriteBuffer`. The queue orders a write after the
+    work submitted before it, so each frame starts again at offset 0 and nothing waits for the
+    GPU.
+  - A frame that needs more gets a buffer twice as large; slices already handed out stay valid
+    (the old buffer is released at the next frame). After a device loss the buffer is recreated
+    on the new device.
+  - Tests (`tests/unit/gpu/test_upload.c`): aligned offsets, reuse, growth with earlier slices
+    intact, recreation after a loss.
+  - A mapped staging ring (no copy inside the implementation) comes with the render graph.
+
+**Status.** Approved (part of the approved plan).
+
+## 54. Acknowledge a configure only with content of its size
+
+**Context.** With a scene thread recording the Render IR ahead of the render thread, the newest
+snapshot can have been recorded for the previous window size when a configure arrives.
+Acknowledging the configure with it would either stretch it (forbidden) or show it at the old size
+inside the new buffer, with the window edge (client-side decorations) ahead of the content.
+
+**Decision.**
+- **`ax_gpu_frame.content_logical_width/height`:** the logical size the frame's content was
+  recorded for. When a frame would acknowledge a configure of another logical size,
+  `ax_gpu_surface_begin_frame` acquires nothing and sets `content_mismatch`. Nothing is
+  acknowledged or committed: the compositor keeps showing the last frame, consistent with the
+  last acknowledged size, as with the drain of decision 48. The caller asks the scene for the new
+  size and retries.
+- A scale-only change (same logical size) does not wait: the renderer applies the new scale to
+  the same snapshot.
+- The caller passes 0 to accept any content. That is the bounded wait's way out: when it expires,
+  the frame acknowledges and draws the newest snapshot unstretched (see the renderer's entry for
+  the bound and for hidden windows, which decision 40 requires to keep acknowledging).
+- Test: `gpu_wayland.gpu_present.configures_wait_for_content_of_their_size`, where content lags
+  three tries behind each new size. Every frame shown matches its content's size, and both resizes
+  complete.
+
+**Status.** Approved by the owner, with a total bound on the wait and a rule for hidden windows
+(implemented with the renderer, step 6).
+
+## 55. ax_render_wgpu: vtbl, coverage and pipelines
+
+**Context.** The document's default renderer draws rects and rounded rects as instanced SDF
+primitives, with coverage "computed in device space from screen-space derivatives", smooth at
+fractional positions, under rotation and under scale, behind `ax_renderer_vtbl`.
+
+**Decision.**
+- **Interface:** `render/ir/include/axion/render/ax_renderer.h` declares `ax_renderer_vtbl` with
+  the document's six entries, then **`wait_frame`** (a deviation, approved by the owner, who
+  updates the document).
+  - Why: how a render thread waits for its next frame depends on the renderer: the swapchain's
+    pacing (decision 49), and polling the device so a lost one is recreated (decision 46).
+  - `ax_frame_info` carries flags (`ONLY_IF_REQUIRED`, `ACCEPT_ANY_SIZE`) and an optional
+    `ax_frame_result`: the status (presented, cleared, nothing, content mismatch), the frame
+    target it latched, and `ax_render_counts`, the cases the Render IR's compatibility rules count.
+  - The parts that need no window (`ax_renderer_chain`, `ax_frame_status`, `ax_render_counts`)
+    are in `ax_renderer_types.h`, so the renderer still builds without the platform module (the
+    macOS offscreen tests).
+- **Renderer:** `render/wgpu/` (library `ax_render_wgpu`). `ax_render_wgpu.h` creates it and draws
+  a snapshot into any texture; `ax_render_wgpu_surface.h` gives the vtbl, which presents into
+  windows through `ax_gpu_surface`.
+- **Primitives:** one instanced quad per rect or rounded rect (96 bytes). Each instance carries:
+  the local rect, the radii clamped as CSS does, the color encoded to sRGB and premultiplied
+  (decision 53), the local-to-clip transform and the pixel footprint (below). One draw call per
+  frame; painting order is instance order; premultiplied source-over blending.
+- **Coverage: the exact area of the pixel square on the inner side of each edge.**
+  - A straight edge's coverage is the CDF of the unit pixel square projected onto the edge's
+    normal: a closed-form trapezoid, exact at any angle.
+  - A pair of parallel edges is a slab, covered exactly by `cov(left) + cov(right) - 1`, so rects
+    thinner than a pixel draw at their true area (a 0.25 px line is 1 px at 25 %, as the
+    document asks).
+  - A rect is the product of its two slabs, which is exact when they are axis-aligned on screen.
+  - A rounded corner takes the circle's distance, treated as locally straight, and keeps the
+    smaller of that and the slabs. All four corners are checked: with CSS radii an arc can reach
+    past the middle of a side, which the first version (choosing the corner by quadrant) got
+    wrong at 89/255.
+- **Clarification of "screen-space derivatives":** the coverage needs the pixel's footprint in
+  local space, d(local)/d(device).
+  - Every M0 transform is affine, so the footprint is constant per instance. The CPU computes it
+    from the inverse of the transform's linear part and passes it as instance data.
+  - Same mathematics, but exact and identical on every implementation. WGSL's `dpdx` lets each
+    implementation choose coarse or fine derivatives, which could make Metal and lavapipe
+    disagree at edges.
+  - The derivative path (`dpdxFine`/`dpdyFine`, flag `FOOTPRINT_FROM_DERIVATIVES`) stays in the
+    shader for transforms with perspective. A coverage test runs it on affine content, and it
+    matches.
+- **What M0 draws of the IR's other properties** (counted in `ax_render_counts`):
+  - transforms, fully;
+  - layer opacity is multiplied into each item. That is exact for layers with one item and no
+    children; otherwise it is counted as `approximated` until offscreen layers arrive with the
+    render graph;
+  - any clip skips the layer and its subtree;
+  - other blend modes and effects draw as normal;
+  - unknown and `REQUIRED` items are handled as decision 51 says.
+- **Pipelines:**
+  - Created asynchronously when a surface is attached, and again on each new device generation,
+    through `ax_gpu_create_render_pipeline_async`. Dawn compiles on its own threads; wgpu-native
+    has no asynchronous creation, so it builds at once (isolated in `impl_wgpu_native.c`).
+  - Until the pipeline is ready, and while a lost device is recovered, frames are presented
+    cleared to the snapshot's background (`AX_FRAME_CLEARED`, counted as `clear_only_frames`).
+    On Wayland a window appears only with its first buffer, so it is not delayed.
+  - `ax_render_wgpu_surface_stats` measures attach to first frame and attach to first content.
+- **Per-frame data:** instances go through `ax_gpu_upload_ring` (decision 53). Each draw is
+  submitted before the next one writes, so the ring restarts per draw.
+- **WGSL:** `render/wgpu/shaders/rect.wgsl`, embedded as a byte array by
+  `render/wgpu/embed_wgsl.cmake` (not a string literal: MSVC limits their length). The
+  repository's `shaders/` stays for the AXGL compiler.
+
+**Status.** Deviation (`wait_frame`, approved by the owner); the footprint from the inverse
+transform was the owner's change to the plan.
+
+## 56. Coverage tests against a provisional CPU reference
+
+**Context.** The document makes the software renderer the reference every GPU renderer is
+tested against. It arrives in M1; M0's renderer needs a reference now.
+
+**Decision.**
+- **Provisional reference** (`tests/unit/render_wgpu/coverage_reference.c`): it draws the same
+  Render IR snapshot on the CPU.
+  - Each pixel's coverage is supersampled, 128 x 128 points, within 1/256 of the exact area for
+    a straight edge.
+  - Only pixels within one footprint of the outline are sampled; the distance to the outline is
+    exact (four segments, four quarter arcs).
+  - It composites in sRGB space with premultiplied alpha.
+  - It is replaced by `ax_render_soft` in M1.
+- **Scenes** (`tests/unit/render_wgpu/test_coverage.c`):
+  - rects at fractional positions;
+  - rects 0.1 to 1.5 px thin;
+  - rotations of 7°, 30°, 45°, -60° and 15°, including rotated hairlines;
+  - rounded rects with radii per corner, a pill and tiny radii;
+  - device scales 1.325 and 2 with nested transforms (a rotation and a non-uniform scale);
+  - translucent overlaps that check sRGB-space blending (50 % white over black is 128, not 188);
+  - the compatibility fallbacks;
+  - the derivative path;
+  - clear-only frames before the pipeline is ready.
+- **Tolerances** (per channel, 8-bit):
+  - 3/255 away from corners, where the coverage is exact;
+  - 20/255 near a rect's vertex under rotation or near an arc, where it is an approximation;
+  - a mean of 0.35/255 over the image.
+- **Measured** (Dawn and wgpu-native, on NVIDIA 615.78 and lavapipe; the same on all four):
+
+  | Scene | Edges | Near corners | Mean |
+  | --- | --- | --- | --- |
+  | axis-aligned | 1/255 | 1/255 | 0.004/255 |
+  | thin | 1/255 | 1/255 | 0.04-0.06/255 |
+  | rotated | 1/255 | 6/255 | 0.005-0.010/255 |
+  | rounded | 1/255 | 12/255 | 0.023-0.026/255 |
+  | scale 1.325 / 2 | 1/255 | 5 / 6/255 | 0.02 / 0.01/255 |
+  | derivative path | 1/255 | 5/255 | 0.008-0.010/255 |
+
+- **Implementations must agree:** each CI job that runs the tests on a different implementation
+  uploads its images: Dawn on lavapipe (Linux Clang Release), wgpu-native on lavapipe and Dawn on
+  Metal (macOS Clang Release). The `compare-coverage` job compares every pair with
+  `tools/ci/compare_ppm.py`, within 3/255. Locally, Dawn on NVIDIA and Dawn and wgpu-native on
+  lavapipe differed by at most 1/255; the two lavapipe runs were identical.
+
+**Status.** Approved (part of the approved plan; the owner asked for the reference to be recorded
+as provisional).
+
+## 57. Render-thread frame step: bounded size handshake
+
+**Context.** Decision 54 holds a configure until a snapshot of its logical size exists. The owner
+asked for a total bound on that wait, like the document's bounded wait, and for decision 40's
+guarantee (a hidden window always acknowledges its configures) to survive a scene that stops
+recording for hidden windows.
+
+**Decision.**
+- **`ax_render_frame`** (`render/frame/`, needs the platform module) is one render-thread frame
+  for one surface. It is M0 scaffolding shared by `examples/m0_window` and the presentation tests;
+  the core's render thread takes it over in M1. Each step:
+  1. waits for the frame (`vtbl->wait_frame`);
+  2. renders the newest snapshot from the mailbox;
+  3. asks the scene, through a callback, to record the next frame: one refresh after this
+     frame's predicted present time, at this frame's logical size. The scene works on frame N+1
+     while the render thread presents frame N, as in the document.
+- **Size handshake.** When `render` reports a content mismatch, the step asks the scene for the
+  new size at once, waits for its next publication (`ax_ir_mailbox_wait`) and renders again.
+  - The wait has a **total bound per frame**. When it expires, the frame is acknowledged with the
+    newest snapshot as it is (`AX_FRAME_ACCEPT_ANY_SIZE`): drawn unstretched, anchored top-left,
+    the background filling the rest. It is counted as `forced_acks`, apart from `scene_late`
+    (configures that waited and got their snapshot in time).
+  - **Hidden windows:** the bound applies at once when the window is occluded
+    (`ax_window_info.occluded`), counted as `hidden_acks`. Decision 40's guarantee then holds
+    whatever the scene does for hidden windows. The alternative (the scene always recording for
+    hidden windows) would leave the guarantee to every future scene implementation.
+  - Default bound: half a refresh, within 2-8 ms (`ax_render_frame_default_max_wait`), so a late
+    scene costs at most the frame it delays. `m0_window --max-wait-ms` overrides it. Confirmed
+    by the exit-criterion measurements (decision 59).
+- **Example** (`examples/m0_window --renderer=ir`, replacing the minimal pipeline of `gpu.c`):
+  - main thread: pump;
+  - app thread: events and hit regions;
+  - scene thread (`scene.c`): records each request into the mailbox. It waits only for
+    requests, never for the render thread;
+  - render thread (`ir.c`): `ax_render_wgpu` and `ax_render_frame_step`.
+  - The scene draws rounded rects with radii per corner, a turning rounded rect and a turning
+    hairline fan, a rect moving at 7.3 units a second, rects 0.25-1.5 units thin (straight and
+    rotated) and the timed bar. With `--decorations=none` it also draws the title band, resize
+    borders and corners as rects over exactly the published hit-test regions, plus a one-unit
+    outline.
+  - `--stats` adds the frame step's counters after the `gpu:` part, read by
+    `tools/diag/measure_m0.py`, whose matrix now measures `ir` instead of `gpu`.
+- **Measured at start** (Dawn, Release, NVIDIA 615.78, KWin): first frame (cleared) 8-10 ms after
+  attaching the surface, first frame with content 25-31 ms, pipeline ready in 13-15 ms. On
+  lavapipe: 6 ms and 77 ms.
+- **Tests** (`tests/integration/gpu_wayland/test_ir_present.c`, headless weston, lavapipe). The
+  render thread wraps the renderer's vtbl and counts every acknowledgement made with a snapshot of
+  another size without `ACCEPT_ANY_SIZE`: always zero.
+  - snapshots are presented;
+  - a scene 5 ms late on new sizes is waited for (`scene_late`, no forced acknowledgement);
+  - a stalled scene is waited for only up to a 30 ms bound;
+  - a hidden window with a stalled scene and a 10 s bound acknowledges at once
+    (`ax__wl_test_set_occluded`, a new test hook that persists across configures);
+  - after a device loss, frames are cleared until the new pipeline is ready, and content resumes.
+
+**Status.** Approved (the bound and the rule for hidden windows were the owner's adjustments;
+the bound's value is proposed from measurements in decision 59).
+
+## 58. Roping of thin rotated lines: a known limitation of sRGB-space blending
+
+**Context.** Reviewing `m0_window --renderer=ir` on both monitors, the owner saw beads along the
+turning hairline fan (0.5 units, 0.66 px at scale 1.325) and the thin rects rotated by 3 degrees:
+the line looks brighter and dimmer in turn, repeating about every 19 px at 3 degrees.
+
+**Cause.** It is the roping of antialiasing blended in sRGB space, not a coverage fault. The
+coverage is the exact pixel area (decision 55; within 1/255 of the reference, decision 56):
+- A line 0.66 px wide centred on a pixel covers 66% of it. Straddling two pixels, it covers 33%
+  of each. The light added is the same only if the blend is linear.
+- In sRGB space, one pixel at 66% emits about 2.3 times the light of two pixels at 33% (light on
+  dark), so the line beads as it crosses pixel columns. Dark on light beads too, in the opposite
+  phase, so no correction of the coverage alone fixes both.
+
+**Measured** with `tools/diag/roping_sim.py`: the light the line adds per scanline, max/min over
+the scanlines (1.00 is even), for a line rotated 3 degrees, #E8ECF4 on #1E2129:
+
+| Width (px) | Box, sRGB (default) | Box, linear | Tent 1 px, sRGB |
+| --- | --- | --- | --- |
+| 0.33 | 1.48 | 1.05 | 1.29 |
+| 0.66 | 1.71 | 1.02 | 1.28 |
+| 1.325 | 1.27 | 1.01 | 1.07 |
+| 1.99 | 1.30 | 1.01 | 1.04 |
+
+The blending space causes nearly all of it. A wider filter only halves it and softens every edge
+to a 2 px ramp.
+
+**Decision.**
+- **sRGB-space blending stays the default**, as the document and decision 53 say. The roping is a
+  known limitation, the same browsers show. It shrinks with line width and display density.
+- **The exit criterion's "no jaggies when turning" means the staircase of aliasing**, which the
+  exact area coverage removes and the owner confirmed by eye on both monitors. The beads of
+  roping are a different artifact, accepted here.
+- **Diagnostic option** to compare both spaces: `ax_render_wgpu_desc.diagnostic_flags` with
+  `AX_RENDER_WGPU_DIAG_LINEAR_BLEND`.
+  - It is **unsupported**: for development comparisons only. It may change or disappear in any
+    version, and no application may set it.
+  - Colors are uploaded in linear light. Window surfaces render through the swapchain's sRGB view
+    (`ax_gpu_surface_desc.srgb_view`, decision 53), and `ax_render_wgpu_draw_ir` expects an
+    sRGB-format target.
+  - The library reads no environment variable. `examples/m0_window` sets the option when
+    `AX_RW_LINEAR_BLEND=1`.
+  - Test: `render_wgpu.coverage.the_linear_blend_diagnostic_mixes_in_linear_light` (translucent
+    colors and half coverage give 188, not 128).
+- **The blending space is to be decided together with text rendering:** issue #4
+  (AxonDesigns/axion). It holds this table, the consequences of blending in linear light
+  (translucency unlike CSS; edge and text weight depending on contrast; no hybrid in one pass
+  without reading the destination), and text engines' luminance-based contrast corrections as a
+  starting point.
+
+**Status.** Approved (the owner chose to keep sRGB-space blending and record the limitation).
+
+## 59. M0 exit criterion: measurements with the Render IR
+
+**Context.** M0's exit criterion asks for the measurement matrix of decision 49 again, with
+`m0_window --renderer=ir`, and compared with that step. It also asks for the size handshake's
+bound (decision 57) to be set from the data, and for issue #2 to be reviewed.
+
+**Method.** The desktop of decision 49 (KWin 6.8.2, NVIDIA GTX 1650 with 615.78, HDMI-A-1 at
+71.91 Hz scale 1, DP-2 at 260 Hz scale 1.325). The same tool and matrix
+(`tools/diag/measure_m0.py --with-lavapipe`), with `ir` (scene thread, mailbox, `ax_render_wgpu`,
+`ax_render_frame`) in place of the GPU step's minimal pipeline. Each run measures 6-7 s after a
+warm-up. The owner did not touch the windows.
+- Pass 1 (full matrix) found two measurement faults, both fixed before the passes used here:
+  - the frame step's wait counter included the acknowledging frame's own rendering and present
+    (fixed: it stops where that frame starts; `m0_window` prints its mean too);
+  - the frame clock, without a vblank counter (KWin sends none), locked onto a quarter of the
+    real refresh after the window moved from DP-2 to HDMI-A-1: 288 Hz measured, 213 "missed"
+    vblanks a second, predictions on quarters of the 72 Hz refresh. That is the "wrong output"
+    error the tool reported. A measurement more than 5% away from the compositor's nominal refresh
+    is now dropped and measured again (`platform.frame_clock.moving_to_*`).
+- Pass 2: full matrix with the wait fix. Pass 3: HDMI-A-1 with the frame-clock fix (pass 2's
+  "wrong output" runs there). Pass 4: DP-2 again without lavapipe, because pass 1 and pass 2
+  disagreed at 260 Hz while resizing. Ranges below cover passes 1-4 where a value is valid
+  (pass 1's waits and its HDMI-A-1 quiet native runs are not).
+
+**Results**, NVIDIA, compositor pacing (the default). Format: Hz presented; missed vblanks per
+second; configure-to-screen mean / max; swapchain resizes per second, cost mean / max. Both
+decoration modes are within the same ranges.
+
+| Monitor, state | Decision 49 (GPU step) | Render IR, this step | shm, this step |
+| --- | --- | --- | --- |
+| 72 Hz, quiet | 71.9 Hz, 0 | 71.9 Hz, 0 | 71.9 Hz, 0 |
+| 72 Hz, resizing | 71.9 Hz, 0; 22.3 / 28.3 ms; 72/s, 1.6 / 4.7 ms | 71.6-71.9 Hz, 0-0.29; 22.0-22.9 / 38.4 ms; 71-72/s, 1.6-1.9 / 8.3 ms | 71.6-71.9 Hz, 0-0.29; 22.5-28.5 / 52.9 ms |
+| 260 Hz, quiet | 260.0 Hz, 0 | 259.0-260.0 Hz, 0-1.0 | 259.9-260.0 Hz, 0-0.14 |
+| 260 Hz, resizing | 257.2 Hz, 2.8 (0-6 per second, once 13); 11.5 / 17.9 ms; 124/s, 1.5 / 5.3 ms | 251.3-258.9 Hz, 1.1-8.7 per run (mean 4.8; seconds up to 25); 9.7-11.7 / 25.7 ms; 124/s, 1.5-1.6 / 10.7 ms | 259.0-260.0 Hz, 0-1.0 (51 of 54 seconds at 0-3) |
+
+- Driver pacing (FIFO) collapses while resizing as in decision 49: 24 Hz at 72 Hz, 64 Hz at 260 Hz.
+- lavapipe with compositor pacing: 71.9 Hz with nothing missed at 72 Hz; 183-224 Hz resizing at
+  260 Hz (software rendering, 223 Hz in decision 49).
+- No run lost a frame, failed a present or hit a protocol error. Quiet runs never waited for the
+  scene, and `ir` drew 34 instances per frame with no unknown items.
+
+**Missed vblanks with the window quiet at 260 Hz** (up to 1.0 per second, 0 in decision 49).
+The owner asked for an explanation. The per-second records of the runs above give it:
+- **All of it comes from pass 1.** Per pass, `ir` measured 0.57 and 1.0 (pass 1), 0 and 0.14
+  (pass 2) and 0 and 0 (pass 4), for native and no decorations. shm measured 0-0.14 in the same
+  passes. Without pass 1, `ir` is within shm's range.
+- **In pass 1 the misses follow long acquires, not the scene.**
+  - Every measured second with misses has an acquire maximum of 3.2-12.9 ms: time blocked in
+    NVIDIA's WSI waiting for a free swapchain image, which the compositor returns.
+  - Seconds without misses stay at 0.5-1.6 ms, with one exception at 5.6 ms. Passes 2 and 4
+    never exceed 2.7 ms.
+  - Pass 1 was also the pass with the most misses while resizing (8.4-8.7 per second).
+- **The scene is not the cause.**
+  - The renderer's work does not depend on the animation's phase: 34 instances every frame, and
+    encoding at most 0.2 ms in every second, with or without misses.
+  - Each run of 7 measured seconds sweeps 315 degrees of the turning rect (45 degrees a second)
+    and 70 degrees of the hairline fan. A phase of the scene that cost a vblank would therefore
+    show in every run. Passes 2 and 4 show one miss in 28 seconds (with a 2.1 ms acquire).
+- shm draws in the CPU into its own wl_shm buffers and never goes through the WSI's acquire.
+  That fits its 0-0.14 in pass 1, against 0.57-1.0 for `ir`.
+- **Conclusion:** a disturbance of the environment during pass 1 (the compositor or the driver
+  holding swapchain images), seen only by the swapchain paths. Decision 49 measured a single pass,
+  and the minimal pipeline shared the same acquire path.
+- `measure_m0.py` dropped 2 warm-up seconds instead of the 3 it states (an off-by-one, fixed
+  after these runs). The third second, measured above, has no misses in any quiet 260 Hz run, so
+  the quiet numbers do not change. The resizing numbers include that second.
+
+**The size handshake's bound.**
+- Scene waits (time from the content mismatch to the frame that acknowledged): 14,939 over passes
+  2-4. Mean 0.02-0.04 ms per run; per-second maxima above 0.5 ms in 6 of 504 seconds and above
+  1 ms in 2. One wait reached 2.22 ms at 260 Hz with driver pacing, where the bound is 2 ms: the
+  only forced acknowledgement. Recording a snapshot took at most 0.28 ms.
+- **Proposed: keep the default, half a refresh within 2-8 ms.**
+  - At 260 Hz the 2 ms floor is 2.5 times the longest wait but one. With the 1.5 ms mean
+    swapchain recreation it still fits a 3.85 ms frame, so a wait up to the bound costs no more
+    than that frame. A forced acknowledgement shows one frame of top-left-anchored content, which
+    the next frame corrects, and costs less than a missed one.
+  - At 72 Hz the bound is 6.95 ms, and no wait came near it.
+  - A lower bound would only add forced acknowledgements: waits are 0.03 ms, and the bound acts
+    on the tail. M1's scenes will record more than this one, which argues against lowering it.
+  - **To be measured again in M1, with real layout and text.** This scene records 34 instances in
+    at most 0.28 ms; scenes with layout and shaped text will take longer to record, and the
+    bound must cover their tail.
+
+**Issue #2 (misses while resizing at 260 Hz).**
+- The gap to shm persists. It varies more between runs than in decision 49 (1.1 to 8.7 missed
+  per second), with single seconds up to 25.
+- The scene handshake is not the cause (0.03 ms mean). The misses follow the per-configure cost:
+  - every other frame recreates the swapchain, 1.5-1.6 ms of a 3.85 ms frame;
+  - seconds with 20-25 misses occurred with recreation maxima of 2.1 ms as well as 10.7 ms, so
+    this is the steady cost of recreating, not only its outliers;
+  - shm, which reuses its buffers, misses 0-1.
+- Option (b), the swapchain reserved in buckets and cropped with the viewport's source, removes
+  that cost from most configures. It changes the contracts of decisions 34 and 38, and needs
+  `set_source` validated with dmabuf buffers on KWin, weston and GNOME, plus a design for the
+  Win32 equivalent.
+- **Recommendation: close M0 with this as a known limitation, and keep issue #2 open for M1.**
+  - The criterion is met at 72 Hz (at most 0.29 missed per second, as shm) and quiet at both
+    rates. At 260 Hz, 98% of refreshes still get a
+    new frame while resizing.
+  - Option (b) is a contract change across backends. It belongs with M1's render thread, which
+    takes over swapchain ownership from the M0 scaffolding (decision 57).
+
+- **Acceptance criterion for M1 (issue #2):** resizing at 260 Hz with the renderer within shm's
+  range, at most 1 missed vblank per second on average.
+- The blending space (issue #4, decision 58) is decided in M1, where the document places Latin
+  text (shaping and atlas).
+
+**Status.** Approved by the owner: the bound (default kept, to be measured again in M1), the
+recommendation on issue #2 (M0 closes with the limitation; option (b) in M1 with the criterion
+above), and the blending space in M1.

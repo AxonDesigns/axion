@@ -32,7 +32,7 @@
 #include "axion/ax_event.h"
 #include "axion/base/ax_atomic.h"
 #include "axion/base/ax_thread.h"
-#include "triple_buffer.h"
+#include "axion/base/ax_triple_buffer.h"
 
 typedef struct ax_evq_geometry {
     float width, height; /* logical */

@@ -2,8 +2,8 @@
  * Copyright 2026 Axon Works
  * SPDX-License-Identifier: Apache-2.0
  *
- * Triple buffer: one writer thread publishes values, one reader thread takes the newest, and
- * neither ever waits for the other.
+ * Internal SDK: triple buffer. One writer thread publishes values, one reader thread takes the
+ * newest, and neither ever waits for the other.
  *
  * The caller owns three value slots (an array of 3); this struct only tracks which slot each
  * side may touch:
@@ -13,13 +13,13 @@
  * A slot is never touched by both sides at once, so the values need no atomics. The writer may
  * publish any number of times between reads; the reader always sees the latest.
  */
-#ifndef AX_PLATFORM_TRIPLE_BUFFER_H
-#define AX_PLATFORM_TRIPLE_BUFFER_H
+#ifndef AX_BASE_TRIPLE_BUFFER_H
+#define AX_BASE_TRIPLE_BUFFER_H
 
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "axion/base/ax_atomic.h"
+#include "ax_atomic.h"
 
 /* state: bits 0-1 hold the index of the shared ("middle") slot, bit 2 says it is fresh. */
 #define AX_TB_INDEX_MASK 3u
@@ -79,4 +79,4 @@ static inline uint32_t ax_tb_acquire(ax_triple_buffer *tb)
     return tb->read_index;
 }
 
-#endif /* AX_PLATFORM_TRIPLE_BUFFER_H */
+#endif /* AX_BASE_TRIPLE_BUFFER_H */

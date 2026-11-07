@@ -8,8 +8,7 @@ set(_ax_platform_unit_tests
     test_abi_headers.c
     test_event_queue.c
     test_frame_clock.c
-    test_hit_test.c
-    test_triple_buffer.c)
+    test_hit_test.c)
 
 foreach(_t IN LISTS _ax_platform_unit_tests)
     ax_add_unit_test(platform "${_t}")

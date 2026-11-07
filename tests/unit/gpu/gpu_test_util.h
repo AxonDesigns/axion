@@ -44,4 +44,13 @@ int axt_gpu_create(const ax_allocator *allocator, ax_gpu **out_gpu);
  * pixel. Reports failures itself; returns true when the device rendered correctly. */
 bool axt_gpu_clear_and_read_back(ax_gpu *gpu);
 
+/* Copies `size` bytes (a multiple of 4) of a buffer with CopySrc usage into `out`. Reports
+ * failures itself. */
+bool axt_gpu_read_buffer(ax_gpu *gpu, WGPUBuffer src, uint64_t offset, uint64_t size, void *out);
+
+/* Copies a 4-byte-per-texel texture with CopySrc usage into `out`, tightly packed (width * 4
+ * bytes per row). Reports failures itself. */
+bool axt_gpu_read_texture(ax_gpu *gpu, WGPUTexture texture, uint32_t width, uint32_t height,
+                          uint8_t *out);
+
 #endif

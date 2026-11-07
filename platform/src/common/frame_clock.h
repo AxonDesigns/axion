@@ -16,6 +16,7 @@
 
 typedef struct ax_frame_clock {
     uint64_t nominal_refresh_ns;  /* from the system when known, else a default */
+    bool nominal_from_system;     /* nominal_refresh_ns was reported by the system */
     uint64_t measured_refresh_ns; /* smoothed measurement; 0 until two frames were presented */
     uint64_t last_present_ns;
     uint64_t last_msc;       /* media stream counter (vblank count) of the last present */
@@ -46,6 +47,9 @@ void ax_frame_clock_init(ax_frame_clock *clock, uint64_t default_refresh_ns);
  *   configure_ns when the configure this frame acknowledged arrived, or 0.
  * Missed vblanks assume the presenter submits a frame for every refresh, which is what an
  * animating surface does; an idle surface's gaps are not misses (reset the stats when idling).
+ * A nominal refresh from the system bounds the measurement: a measurement more than 5% away from
+ * it is dropped (the surface moved to another output, the mode changed, or vblanks were miscounted)
+ * and measuring starts again, without the old output's counter.
  */
 void ax_frame_clock_presented(ax_frame_clock *clock, uint64_t present_ns, uint64_t refresh_ns,
                               uint64_t msc, bool msc_valid, uint64_t configure_ns);

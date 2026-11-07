@@ -54,6 +54,9 @@ typedef struct ax_gpu_surface_desc {
      * the surface does not support the mode asked for, the implementation's fallback is used and
      * ax_gpu_surface_get_info reports it. */
     WGPUPresentMode present_mode;
+    /* Also allow sRGB views of the swapchain's textures (ax_gpu_surface_info.srgb_view_format),
+     * for passes that blend in linear light. Frames render through the unorm view either way. */
+    bool srgb_view;
 } ax_gpu_surface_desc;
 
 typedef struct ax_gpu_surface_info {
@@ -63,8 +66,11 @@ typedef struct ax_gpu_surface_info {
     bool present_mode_supported;  /* the surface lists it; otherwise a fallback is in use */
     WGPUPresentMode effective_present_mode; /* what the swapchain actually uses */
     WGPUTextureFormat format;               /* the swapchain's format */
-    WGPUTextureFormat view_format;          /* the format frames are rendered in (sRGB) */
-    uint32_t width, height;                 /* current swapchain size */
+    /* The format of frame->view: 8-bit unorm. Frames hold sRGB-encoded, premultiplied colors, so
+     * blending happens in sRGB space (decision 53). */
+    WGPUTextureFormat view_format;
+    WGPUTextureFormat srgb_view_format; /* the sRGB view, when asked for; Undefined otherwise */
+    uint32_t width, height;             /* current swapchain size */
 } ax_gpu_surface_info;
 
 typedef struct ax_gpu_frame {
@@ -81,6 +87,12 @@ typedef struct ax_gpu_frame {
     WGPUTextureView view; /* in ax_gpu_surface_info.view_format */
     uint32_t width, height;
     bool resized; /* the swapchain was resized for this frame */
+    /* Set by the caller: the logical size the frame's content was recorded for, 0 to accept
+     * any. When the frame would acknowledge a configure of another logical size, begin_frame
+     * acquires nothing and sets content_mismatch: the configure stays unacknowledged until
+     * content of its size exists (decision 54). */
+    float content_logical_width, content_logical_height;
+    bool content_mismatch;
 } ax_gpu_frame;
 
 typedef struct ax_gpu_surface_stats {

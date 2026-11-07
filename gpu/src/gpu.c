@@ -506,3 +506,12 @@ uint32_t ax_gpu_uncaptured_error_count(ax_gpu *gpu)
 {
     return ax_atomic_load_u32(&gpu->uncaptured_errors, AX_MO_RELAXED);
 }
+
+WGPUFuture ax_gpu_create_render_pipeline_async(ax_gpu *gpu,
+                                               const WGPURenderPipelineDescriptor *desc,
+                                               WGPUCreateRenderPipelineAsyncCallbackInfo info)
+{
+    AX_GPU_ASSERT_THREAD(gpu);
+    AX_ASSERT(info.mode == WGPUCallbackMode_AllowProcessEvents && info.callback != NULL);
+    return ax__webgpu_create_render_pipeline_async(gpu->device, desc, info);
+}

@@ -2,24 +2,28 @@
  * Copyright 2026 Axon Works
  * SPDX-License-Identifier: Apache-2.0
  *
- * m0_window: one window, three threads.
+ * m0_window: one window, the document's threads in small.
  *
  *   main thread    runs the platform event pump (ax_app_run) and nothing else
  *   app thread     consumes events and publishes the window's hit regions
- *   draw thread    the surface's presenter: a background, a title band (when the compositor does
- *                  not draw one), and a bar that moves at a constant speed in logical units, timed
- *                  by the frame clock's predicted present time, so a dropped or late frame shows
- *                  as a visible hitch. Drawn with shared-memory buffers (shm.c) or the GPU (gpu.c).
+ *   draw threads   --renderer=shm (shm.c): one presenter thread painting shared-memory buffers: a
+ *                  background, a title band (when the compositor does not draw one), and a bar
+ *                  that moves at a constant speed in logical units, timed by the frame clock's
+ *                  predicted present time, so a dropped or late frame shows as a visible hitch.
+ *                  --renderer=ir (ir.c, scene.c): a scene thread records the Render IR of each
+ *                  frame and publishes it; the render thread presents the newest snapshot with
+ *                  ax_render_wgpu.
  *
- * Usage: m0_window [--renderer=shm|gpu] [--decorations=native|none] [--stats]
+ * Usage: m0_window [--renderer=shm|ir] [--decorations=native|none] [--stats]
  *                  [--duration=SECONDS] [--width=W] [--height=H]
- *                  [--pacing=default|compositor|driver]                      (gpu)
- *                  [--present-mode=default|fifo|fifo-relaxed|mailbox|immediate] (gpu)
- *                  [--adapter=default|software]                              (gpu)
+ *                  [--pacing=default|compositor|driver]                         (ir)
+ *                  [--present-mode=default|fifo|fifo-relaxed|mailbox|immediate] (ir)
+ *                  [--adapter=default|software] [--max-wait-ms=MS]              (ir)
  *
  * --stats prints presentation statistics once a second: mean interval between presented frames,
- * presented/missed/discarded/lost counts, configure -> on-screen latency and draw time; the GPU
- * renderer adds swapchain resizes, acquire and present times and deferred acknowledgements.
+ * presented/missed/discarded/lost counts, configure -> on-screen latency and draw time; the ir
+ * renderer adds swapchain resizes, acquire and present times, deferred acknowledgements and the
+ * size handshake's counters.
  */
 #include <math.h>
 #include <stdio.h>
@@ -31,7 +35,7 @@
 #include "axion/platform/ax_hit_regions.h"
 #include "m0_window.h"
 
-#if defined(M0_HAVE_GPU)
+#if defined(M0_HAVE_IR)
 #    include "axion/gpu/ax_gpu_surface.h"
 #endif
 
@@ -39,10 +43,10 @@
  */
 
 static const char usage[] =
-    "usage: %s [--renderer=shm|gpu] [--decorations=native|none] [--stats] [--duration=SECONDS]\n"
+    "usage: %s [--renderer=shm|ir] [--decorations=native|none] [--stats] [--duration=SECONDS]\n"
     "          [--width=W] [--height=H] [--pacing=default|compositor|driver]\n"
     "          [--present-mode=default|fifo|fifo-relaxed|mailbox|immediate]\n"
-    "          [--adapter=default|software]\n";
+    "          [--adapter=default|software] [--max-wait-ms=MS]\n";
 
 static int parse_options(int argc, char **argv, options *o)
 {
@@ -68,14 +72,16 @@ static int parse_options(int argc, char **argv, options *o)
             o->height = (float)atof(a + 9);
         } else if (strcmp(a, "--renderer=shm") == 0) {
             o->renderer = M0_RENDERER_SHM;
-        } else if (strcmp(a, "--renderer=gpu") == 0) {
-#if defined(M0_HAVE_GPU)
-            o->renderer = M0_RENDERER_GPU;
+        } else if (strcmp(a, "--renderer=ir") == 0) {
+#if defined(M0_HAVE_IR)
+            o->renderer = M0_RENDERER_IR;
 #else
             fprintf(stderr, "%s: built without the gpu module\n", argv[0]);
             return -1;
 #endif
-#if defined(M0_HAVE_GPU)
+#if defined(M0_HAVE_IR)
+        } else if (strncmp(a, "--max-wait-ms=", 14) == 0) {
+            o->max_wait_ns = (uint64_t)(atof(a + 14) * 1e6);
         } else if (strcmp(a, "--pacing=default") == 0) {
             o->pacing = AX_GPU_PACING_DEFAULT;
         } else if (strcmp(a, "--pacing=compositor") == 0) {
@@ -295,10 +301,10 @@ int main(int argc, char **argv)
 
     s.start_ns = ax_time_monotonic_ns();
     if (ax_thread_create(&draw_t,
-#if defined(M0_HAVE_GPU)
-                         s.opt.renderer == M0_RENDERER_GPU ? m0_gpu_draw_thread :
+#if defined(M0_HAVE_IR)
+                         s.opt.renderer == M0_RENDERER_IR ? m0_ir_draw_thread :
 #endif
-                                                           m0_shm_draw_thread,
+                                                          m0_shm_draw_thread,
                          &s) != AX_OK ||
         ax_thread_create(&app_t, app_thread, &s) != AX_OK) {
         fprintf(stderr, "m0_window: could not start threads\n");

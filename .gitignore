@@ -17,3 +17,4 @@ compile_commands.json
 
 # Pinned prebuilt dependencies (cmake/AxionPrebuilt.cmake)
 /.deps/
+__pycache__/

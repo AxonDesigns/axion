@@ -56,6 +56,7 @@ endif()
 if(AX_BUILD_GPU)
     add_subdirectory(gpu)
 endif()
+add_subdirectory(render)
 
 if(AX_BUILD_EXAMPLES)
     add_subdirectory(examples)

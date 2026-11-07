@@ -100,6 +100,18 @@ AX_API bool ax_gpu_wait(ax_gpu *gpu, WGPUFuture future, const bool *done, uint64
 /* Waits until the queue has finished all work submitted so far. thread: presenter */
 AX_API ax_result ax_gpu_wait_idle(ax_gpu *gpu);
 
+/*
+ * Creates a render pipeline without blocking the calling thread, so a first frame never waits for
+ * shaders to compile. `info.mode` must be WGPUCallbackMode_AllowProcessEvents: the callback runs
+ * on this thread, from ax_gpu_poll or ax_gpu_wait, and owns the pipeline it receives (NULL on
+ * failure). With implementations that cannot compile asynchronously (wgpu-native) the pipeline is
+ * built at once and the callback runs before this returns. The future is for ax_gpu_wait.
+ * thread: presenter
+ */
+AX_API WGPUFuture
+ax_gpu_create_render_pipeline_async(ax_gpu *gpu, const WGPURenderPipelineDescriptor *desc,
+                                    WGPUCreateRenderPipelineAsyncCallbackInfo info);
+
 /* Number of validation and out-of-memory errors the device reported without an error scope
  * (uncaptured errors) since the ax_gpu was created. Each one is also printed to stderr.
  * thread: any */

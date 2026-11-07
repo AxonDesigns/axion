@@ -25,6 +25,17 @@ void ax_frame_clock_presented(ax_frame_clock *clock, uint64_t present_ns, uint64
 {
     if (refresh_ns >= AX_MIN_REFRESH_NS && refresh_ns <= AX_MAX_REFRESH_NS) {
         clock->nominal_refresh_ns = refresh_ns;
+        clock->nominal_from_system = true;
+        if (clock->measured_refresh_ns != 0 &&
+            (clock->measured_refresh_ns * 20 < refresh_ns * 19 ||
+             clock->measured_refresh_ns * 20 > refresh_ns * 21)) {
+            /* Another output or mode, or a miscount that would otherwise sustain itself: counting
+             * vblanks of 13.9 ms with a 3.85 ms measurement finds 4 and measures 3.48 ms forever.
+             * Measure again from the nominal refresh, and the old output's counter does not apply.
+             */
+            clock->measured_refresh_ns = 0;
+            clock->have_msc = false;
+        }
     }
 
     if (clock->interval_valid && present_ns > clock->last_present_ns) {
@@ -34,8 +45,10 @@ void ax_frame_clock_presented(ax_frame_clock *clock, uint64_t present_ns, uint64
         if (msc_valid && clock->have_msc && msc > clock->last_msc) {
             vblanks = msc - clock->last_msc;
         } else {
-            /* No counter: count refresh cycles in dt, rounding to the nearest. */
-            uint64_t r = ax_frame_clock_refresh(clock);
+            /* No counter: count refresh cycles in dt, rounding to the nearest, preferably with the
+             * system's nominal refresh. */
+            uint64_t r = clock->nominal_from_system ? clock->nominal_refresh_ns
+                                                    : ax_frame_clock_refresh(clock);
             vblanks = (dt + r / 2) / r;
             if (vblanks == 0) {
                 vblanks = 1;

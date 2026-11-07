@@ -45,4 +45,12 @@ bool ax__webgpu_fallback_includes_cpu_adapters(void);
  * the implementation has no way to do it. */
 bool ax__webgpu_force_device_loss(WGPUDevice device, const char *message);
 
+/* Creates a render pipeline and reports it through `info` (mode AllowProcessEvents). Dawn compiles
+ * it on its own threads and calls back from ax_gpu_poll; wgpu-native has no asynchronous creation
+ * (its entry point is not implemented), so the pipeline is built here and the callback runs
+ * before this returns. */
+WGPUFuture ax__webgpu_create_render_pipeline_async(WGPUDevice device,
+                                                   const WGPURenderPipelineDescriptor *desc,
+                                                   WGPUCreateRenderPipelineAsyncCallbackInfo info);
+
 #endif
