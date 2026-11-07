@@ -295,6 +295,10 @@ ax_result ax_gpu_surface_begin_frame(ax_gpu_surface *s, ax_gpu_frame *frame)
     if (r != AX_OK || !frame->target.ready) {
         return r;
     }
+    if (frame->only_if_required && !frame->target.acks_configure &&
+        !frame->target.commit_requested) {
+        return AX_OK;
+    }
     if (s->gpu->lost) {
         return ax_set_error(AX_ERR_DEVICE_LOST, "ax_gpu_surface: the device is lost");
     }

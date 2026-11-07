@@ -69,6 +69,10 @@ typedef struct ax_gpu_surface_info {
 
 typedef struct ax_gpu_frame {
     uint32_t struct_size; /* set by the caller: sizeof(ax_gpu_frame) */
+    /* Set by the caller: acquire a texture only when the frame must be drawn anyway (it
+     * acknowledges a configure or answers a commit request). For a presenter with nothing new to
+     * show, e.g. after a wait that timed out. */
+    bool only_if_required;
     ax_frame_target target;
     /* The texture to render into, NULL when there is nothing to draw (the window is not
      * configured yet, or the frame was skipped). Owned by the ax_gpu_surface; valid until

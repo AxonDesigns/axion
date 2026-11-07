@@ -43,6 +43,7 @@ else()
     set(_ax_gpu_default OFF)
 endif()
 option(AX_BUILD_GPU "Build the gpu module (Linux and macOS for now)" ${_ax_gpu_default})
+option(AX_BUILD_DIAG_TOOLS "Build development-only diagnostics (tools/diag); never shipped" OFF)
 set(AX_SANITIZE "" CACHE STRING
     "Sanitizers for GCC and Clang builds, as a list: address;undefined")
 
@@ -58,6 +59,11 @@ endif()
 
 if(AX_BUILD_EXAMPLES)
     add_subdirectory(examples)
+endif()
+
+if(AX_BUILD_DIAG_TOOLS)
+    find_package(Threads REQUIRED)
+    add_subdirectory(tools/diag)
 endif()
 
 if(AX_BUILD_TESTS)
