@@ -50,13 +50,13 @@ set(AX_SANITIZE "" CACHE STRING
 ax_enable_platform_languages()
 
 add_subdirectory(base)
-add_subdirectory(render)
 if(AX_BUILD_PLATFORM)
     add_subdirectory(platform)
 endif()
 if(AX_BUILD_GPU)
     add_subdirectory(gpu)
 endif()
+add_subdirectory(render)
 
 if(AX_BUILD_EXAMPLES)
     add_subdirectory(examples)

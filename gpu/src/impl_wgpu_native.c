@@ -65,3 +65,19 @@ bool ax__webgpu_force_device_loss(WGPUDevice device, const char *message)
     (void)message;
     return false;
 }
+
+WGPUFuture ax__webgpu_create_render_pipeline_async(WGPUDevice device,
+                                                   const WGPURenderPipelineDescriptor *desc,
+                                                   WGPUCreateRenderPipelineAsyncCallbackInfo info)
+{
+    static const char ok[] = "";
+    WGPUStringView message = {ok, 0};
+    WGPURenderPipeline pipeline = wgpuDeviceCreateRenderPipeline(device, desc);
+    info.callback(pipeline != NULL ? WGPUCreatePipelineAsyncStatus_Success
+                                   : WGPUCreatePipelineAsyncStatus_ValidationError,
+                  pipeline, message, info.userdata1, info.userdata2);
+    {
+        WGPUFuture none = {0};
+        return none;
+    }
+}

@@ -68,6 +68,8 @@ new entry that points back to the old one.
 | 52  | Render IR publication (mailbox) and the TSan job         | Approved       |
 | 53  | sRGB-space blending through a unorm view; upload ring    | Approved       |
 | 54  | Acknowledge a configure only with content of its size    | Approved       |
+| 55  | ax_render_wgpu: vtbl, coverage and pipelines             | Deviation      |
+| 56  | Coverage tests against a provisional CPU reference       | Approved       |
 
 ---
 
@@ -1591,3 +1593,122 @@ inside the new buffer, with the window edge (client-side decorations) ahead of t
 
 **Status.** Approved by the owner, with a total bound on the wait and a rule for hidden windows
 (implemented with the renderer, step 6).
+
+## 55. ax_render_wgpu: vtbl, coverage and pipelines
+
+**Context.** The document's default renderer draws rects and rounded rects as instanced SDF
+primitives, with coverage "computed in device space from screen-space derivatives", smooth at
+fractional positions, under rotation and under scale, behind `ax_renderer_vtbl`.
+
+**Decision.**
+- **Interface:** `render/ir/include/axion/render/ax_renderer.h` declares `ax_renderer_vtbl` with
+  the document's six entries, then **`wait_frame`** (a deviation, approved by the owner, who
+  updates the document).
+  - Why: how a render thread waits for its next frame depends on the renderer: the swapchain's
+    pacing (decision 49), and polling the device so a lost one is recreated (decision 46).
+  - `ax_frame_info` carries flags (`ONLY_IF_REQUIRED`, `ACCEPT_ANY_SIZE`) and an optional
+    `ax_frame_result`: the status (presented, cleared, nothing, content mismatch), the frame
+    target it latched, and `ax_render_counts`, the cases the Render IR's compatibility rules count.
+  - The parts that need no window (`ax_renderer_chain`, `ax_frame_status`, `ax_render_counts`)
+    are in `ax_renderer_types.h`, so the renderer still builds without the platform module (the
+    macOS offscreen tests).
+- **Renderer:** `render/wgpu/` (library `ax_render_wgpu`). `ax_render_wgpu.h` creates it and draws
+  a snapshot into any texture; `ax_render_wgpu_surface.h` gives the vtbl, which presents into
+  windows through `ax_gpu_surface`.
+- **Primitives:** one instanced quad per rect or rounded rect (96 bytes). Each instance carries:
+  the local rect, the radii clamped as CSS does, the color encoded to sRGB and premultiplied
+  (decision 53), the local-to-clip transform and the pixel footprint (below). One draw call per
+  frame; painting order is instance order; premultiplied source-over blending.
+- **Coverage: the exact area of the pixel square on the inner side of each edge.**
+  - A straight edge's coverage is the CDF of the unit pixel square projected onto the edge's
+    normal: a closed-form trapezoid, exact at any angle.
+  - A pair of parallel edges is a slab, covered exactly by `cov(left) + cov(right) - 1`, so rects
+    thinner than a pixel draw at their true area (a 0.25 px line is 1 px at 25 %, as the
+    document asks).
+  - A rect is the product of its two slabs, which is exact when they are axis-aligned on screen.
+  - A rounded corner takes the circle's distance, treated as locally straight, and keeps the
+    smaller of that and the slabs. All four corners are checked: with CSS radii an arc can reach
+    past the middle of a side, which the first version (choosing the corner by quadrant) got
+    wrong at 89/255.
+- **Clarification of "screen-space derivatives":** the coverage needs the pixel's footprint in
+  local space, d(local)/d(device).
+  - Every M0 transform is affine, so the footprint is constant per instance. The CPU computes it
+    from the inverse of the transform's linear part and passes it as instance data.
+  - Same mathematics, but exact and identical on every implementation. WGSL's `dpdx` lets each
+    implementation choose coarse or fine derivatives, which could make Metal and lavapipe
+    disagree at edges.
+  - The derivative path (`dpdxFine`/`dpdyFine`, flag `FOOTPRINT_FROM_DERIVATIVES`) stays in the
+    shader for transforms with perspective. A coverage test runs it on affine content, and it
+    matches.
+- **What M0 draws of the IR's other properties** (counted in `ax_render_counts`):
+  - transforms, fully;
+  - layer opacity is multiplied into each item. That is exact for layers with one item and no
+    children; otherwise it is counted as `approximated` until offscreen layers arrive with the
+    render graph;
+  - any clip skips the layer and its subtree;
+  - other blend modes and effects draw as normal;
+  - unknown and `REQUIRED` items are handled as decision 51 says.
+- **Pipelines:**
+  - Created asynchronously when a surface is attached, and again on each new device generation,
+    through `ax_gpu_create_render_pipeline_async`. Dawn compiles on its own threads; wgpu-native
+    has no asynchronous creation, so it builds at once (isolated in `impl_wgpu_native.c`).
+  - Until the pipeline is ready, and while a lost device is recovered, frames are presented
+    cleared to the snapshot's background (`AX_FRAME_CLEARED`, counted as `clear_only_frames`).
+    On Wayland a window appears only with its first buffer, so it is not delayed.
+  - `ax_render_wgpu_surface_stats` measures attach to first frame and attach to first content.
+- **Per-frame data:** instances go through `ax_gpu_upload_ring` (decision 53). Each draw is
+  submitted before the next one writes, so the ring restarts per draw.
+- **WGSL:** `render/wgpu/shaders/rect.wgsl`, embedded as a byte array by
+  `render/wgpu/embed_wgsl.cmake` (not a string literal: MSVC limits their length). The
+  repository's `shaders/` stays for the AXGL compiler.
+
+**Status.** Deviation (`wait_frame`, approved by the owner); the footprint from the inverse
+transform was the owner's change to the plan.
+
+## 56. Coverage tests against a provisional CPU reference
+
+**Context.** The document makes the software renderer the reference every GPU renderer is
+tested against. It arrives in M1; M0's renderer needs a reference now.
+
+**Decision.**
+- **Provisional reference** (`tests/unit/render_wgpu/coverage_reference.c`): it draws the same
+  Render IR snapshot on the CPU.
+  - Each pixel's coverage is supersampled, 128 x 128 points, within 1/256 of the exact area for
+    a straight edge.
+  - Only pixels within one footprint of the outline are sampled; the distance to the outline is
+    exact (four segments, four quarter arcs).
+  - It composites in sRGB space with premultiplied alpha.
+  - It is replaced by `ax_render_soft` in M1.
+- **Scenes** (`tests/unit/render_wgpu/test_coverage.c`):
+  - rects at fractional positions;
+  - rects 0.1 to 1.5 px thin;
+  - rotations of 7°, 30°, 45°, -60° and 15°, including rotated hairlines;
+  - rounded rects with radii per corner, a pill and tiny radii;
+  - device scales 1.325 and 2 with nested transforms (a rotation and a non-uniform scale);
+  - translucent overlaps that check sRGB-space blending (50 % white over black is 128, not 188);
+  - the compatibility fallbacks;
+  - the derivative path;
+  - clear-only frames before the pipeline is ready.
+- **Tolerances** (per channel, 8-bit):
+  - 3/255 away from corners, where the coverage is exact;
+  - 20/255 near a rect's vertex under rotation or near an arc, where it is an approximation;
+  - a mean of 0.35/255 over the image.
+- **Measured** (Dawn and wgpu-native, on NVIDIA 615.78 and lavapipe; the same on all four):
+
+  | Scene | Edges | Near corners | Mean |
+  | --- | --- | --- | --- |
+  | axis-aligned | 1/255 | 1/255 | 0.004/255 |
+  | thin | 1/255 | 1/255 | 0.04-0.06/255 |
+  | rotated | 1/255 | 6/255 | 0.005-0.010/255 |
+  | rounded | 1/255 | 12/255 | 0.023-0.026/255 |
+  | scale 1.325 / 2 | 1/255 | 5 / 6/255 | 0.02 / 0.01/255 |
+  | derivative path | 1/255 | 5/255 | 0.008-0.010/255 |
+
+- **Implementations must agree:** each CI job that runs the tests on a different implementation
+  uploads its images: Dawn on lavapipe (Linux Clang Release), wgpu-native on lavapipe and Dawn on
+  Metal (macOS Clang Release). The `compare-coverage` job compares every pair with
+  `tools/ci/compare_ppm.py`, within 3/255. Locally, Dawn on NVIDIA and Dawn and wgpu-native on
+  lavapipe differed by at most 1/255; the two lavapipe runs were identical.
+
+**Status.** Approved (part of the approved plan; the owner asked for the reference to be recorded
+as provisional).
