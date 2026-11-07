@@ -491,42 +491,54 @@ AX_TEST(full_queues_run_jobs_on_the_submitter)
 
 /* ---- Sleeping -------------------------------------------------------------------------------- */
 
+typedef struct slow_ctx {
+    ax_job_system *js;
+    ax_atomic_u32 finished;
+} slow_ctx;
+
+/* Runs until the waiting thread has gone to sleep (or 5 s pass), so the waiter's backoff always
+ * ends in a sleep however loaded the machine is; finishing then has to wake it. */
 static void slow_job(void *arg)
 {
-    uint64_t until = ax_time_monotonic_ns() + 30000000u; /* 30 ms */
-    while (ax_time_monotonic_ns() < until) {
-        ax_thread_yield();
-    }
-    ax_atomic_store_u32((ax_atomic_u32 *)arg, 1, AX_MO_RELAXED);
-}
-
-AX_TEST(a_waiter_with_nothing_to_run_sleeps_and_is_woken)
-{
-    ax_atomic_u32 finished;
-    ax_job_system *js;
-    ax_job job;
-    ax_job_counter done = AX_JOB_COUNTER_INIT;
-    ax_jobs_stats stats;
-    REQUIRE_THREADS();
-    js = make_system(AX_JOBS_THREADED, 1);
-    AX_REQUIRE(js != NULL);
-    ax_atomic_init_u32(&finished, 0);
-    job.fn = slow_job;
-    job.arg = &finished;
-    ax_jobs_submit(js, &job, 1, &done);
-    /* Give the worker time to take the job, so this thread has nothing to run. */
-    while (ax_atomic_load_u32(&done.pending, AX_MO_ACQUIRE) != 0) {
+    slow_ctx *ctx = (slow_ctx *)arg;
+    uint64_t give_up = ax_time_monotonic_ns() + 5000000000ull;
+    for (;;) {
         ax_jobs_stats s;
-        ax_jobs_get_stats(js, &s);
-        if (s.injected > 0) {
+        ax_jobs_get_stats(ctx->js, &s);
+        if (s.sleeps > 0 || ax_time_monotonic_ns() > give_up) {
             break;
         }
         ax_thread_yield();
     }
+    ax_atomic_store_u32(&ctx->finished, 1, AX_MO_RELAXED);
+}
+
+AX_TEST(a_waiter_with_nothing_to_run_sleeps_and_is_woken)
+{
+    slow_ctx ctx;
+    ax_job_system *js;
+    ax_job job;
+    ax_job_counter done = AX_JOB_COUNTER_INIT;
+    ax_jobs_stats stats;
+    uint64_t start;
+    uint64_t elapsed;
+    REQUIRE_THREADS();
+    js = make_system(AX_JOBS_THREADED, 1);
+    AX_REQUIRE(js != NULL);
+    ctx.js = js;
+    ax_atomic_init_u32(&ctx.finished, 0);
+    job.fn = slow_job;
+    job.arg = &ctx;
+    start = ax_time_monotonic_ns();
+    ax_jobs_submit(js, &job, 1, &done);
+    /* Let the worker take the job, so this thread has nothing to run. */
+    wait_until_a_worker_takes_it(js, 0);
     ax_jobs_wait(js, &done);
-    AX_CHECK_EQ_U(ax_atomic_load_u32(&finished, AX_MO_RELAXED), 1);
+    elapsed = ax_time_monotonic_ns() - start;
+    AX_CHECK_EQ_U(ax_atomic_load_u32(&ctx.finished, AX_MO_RELAXED), 1);
     ax_jobs_get_stats(js, &stats);
     AX_CHECK(stats.sleeps > 0);
+    AX_CHECK(elapsed < 5000000000ull); /* the job saw the sleep instead of giving up */
     ax_jobs_destroy(js);
 }
 
