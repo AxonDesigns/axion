@@ -149,6 +149,22 @@ AX_API void ax_world_recycle_handle(ax_world world, ax_node next_handle);
  */
 AX_API uint32_t ax_world_apply_pending(ax_world world, uint64_t deadline_ns);
 
+/* ---- The app thread's mirror (ax_mirror.h) --------------------------------------------------- */
+
+/*
+ * Publishes the tree's current state to the app thread's mirror: the slots changed since the copy
+ * being written last reflected them. Call it once per frame, after transactions, layout and
+ * anything else that changes what the mirror shows, so the app never sees a frame half done.
+ * Applying transactions does not publish. Returns false when nothing changed, or when memory for
+ * a larger copy was not available (it retries on the next call). thread: scene
+ */
+AX_API bool ax_world_publish_mirror(ax_world world);
+
+/* Marks a node as changed for the next publication. Transactions mark what they touch; layout
+ * calls it for nodes whose frame changed (the mirror's channel for layout results). thread: scene
+ */
+AX_API void ax_world_touch_node(ax_world world, ax_node node);
+
 AX_EXTERN_C_END
 
 #endif /* AX_CORE_WORLD_SDK_H */

@@ -58,6 +58,7 @@ static void recycle_handle(world_impl *w, ax_node next_handle);
 static void on_slot_freed(void *user, ax_node next_handle)
 {
     world_impl *w = (world_impl *)user;
+    ax__mirror_touch_slot(w, ax_handle_slot(next_handle.h)); /* the node is gone */
     if (!w->suppress_recycle) {
         recycle_handle(w, next_handle);
     }
@@ -84,6 +85,7 @@ static void free_world(world_impl *w)
         ax_scene_deinit(&w->scene);
     }
     ax__apply_free(w);
+    ax__mirror_free(w);
     ax_mem_free(&a, w->free_handles, sizeof(ax_node) * w->free_handle_capacity);
     ax_mem_free(&a, w->recycle_backlog, sizeof(ax_node) * w->recycle_backlog_capacity);
     ax_mem_free(&a, w->return_backlog, sizeof(ax_txn *) * w->return_backlog_capacity);
@@ -157,6 +159,7 @@ ax_result ax_world_create(const ax_world_desc *desc, ax_world *out_world)
     store_desc.user = w;
     ax_scene_init(&w->scene, &store_desc);
     w->scene_ready = true;
+    ax__mirror_init(w);
 
     out_world->h = ax_handle_make(slot, w->generation);
     return AX_OK;

@@ -14,6 +14,7 @@
 #include <axion/base/ax_atomic.h>
 #include <axion/base/ax_spsc_ring.h>
 #include <axion/base/ax_thread.h>
+#include <axion/base/ax_triple_buffer.h>
 #include <axion/core/ax_scene.h>
 #include <axion/core/ax_world_sdk.h>
 
@@ -50,6 +51,27 @@ struct ax_txn {
     struct ax_txn *next_free; /* app thread's free list */
     struct ax_txn *next_all;  /* every object of the world, for teardown */
 };
+
+/* One node in a mirror copy (ax_mirror.h). Dead or unknown slots are zero. */
+typedef struct mirror_node {
+    uint64_t handle; /* the live node's handle; 0 when the slot holds none */
+    uint64_t parent;
+    uint32_t kind;
+    uint32_t reserved;
+    ax_node_style style;
+    ax_node_paint paint;
+    ax_node_composite composite;
+    ax_node_layout layout;
+} mirror_node;
+
+/* A published copy, indexed by slot. */
+typedef struct mirror_copy {
+    mirror_node *nodes;
+    uint32_t count;    /* slots described */
+    uint32_t capacity; /* slots allocated */
+    uint64_t pub;      /* publication it reflects; 0: never written */
+    uint64_t seq;      /* newest transaction it includes */
+} mirror_copy;
 
 /* A rejection, as it crosses to the app thread. */
 typedef struct txn_failure {
@@ -100,7 +122,16 @@ typedef struct world_impl {
     uint32_t return_backlog_count;
     uint32_t return_backlog_capacity;
     bool suppress_recycle; /* rolling back: the app thread recycles a rejected txn's creates */
-    void *undo;            /* apply.c's undo log, reused between transactions */
+    /* Mirror (mirror.c): three copies behind a triple buffer; the scene writes, the app reads. */
+    mirror_copy mirror[3];
+    ax_triple_buffer mirror_tb;
+    uint32_t mirror_read; /* app thread: the latched copy */
+    uint64_t mirror_pub;  /* scene: last publication number */
+    uint64_t *changed_at; /* scene: per slot, the publication that will carry its change */
+    uint32_t changed_capacity;
+    uint64_t changed_all_at; /* scene: a publication that must copy every slot (stamps failed) */
+    bool mirror_dirty;       /* scene: something changed since the last publication */
+    void *undo;              /* apply.c's undo log, reused between transactions */
     uint32_t undo_capacity;
     ax_node *removed; /* subtrees removed by the transaction being applied */
     uint32_t removed_capacity;
@@ -147,5 +178,12 @@ void ax__txn_free(world_impl *w, ax_txn *t);
 
 /* Frees apply.c's buffers (world teardown). */
 void ax__apply_free(world_impl *w);
+
+/* Scene thread: the slot's state changed; the next publication copies it. Never fails. */
+void ax__mirror_touch_slot(world_impl *w, uint32_t slot);
+
+/* Mirror setup and teardown. */
+void ax__mirror_init(world_impl *w);
+void ax__mirror_free(world_impl *w);
 
 #endif /* AX_CORE_WORLD_INTERNAL_H */

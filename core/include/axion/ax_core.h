@@ -7,6 +7,7 @@
 #ifndef AX_CORE_H
 #define AX_CORE_H
 
+#include "ax_mirror.h"
 #include "ax_node.h"
 #include "ax_prop.h"
 #include "ax_txn.h"

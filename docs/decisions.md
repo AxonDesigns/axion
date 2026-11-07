@@ -82,6 +82,7 @@ new entry that points back to the old one.
 | 66  | Handle reservation on the app thread                     | Approved       |
 | 67  | The world, the transaction API and its encoding          | Approved       |
 | 68  | Applying transactions atomically; rejection              | Approved       |
+| 69  | The app thread's mirror                                  | Implementation |
 
 ---
 
@@ -2500,3 +2501,65 @@ SDK, on the scene thread.
   runner). Both stress tests now add every call's count.
 
 **Status.** Approved by the owner.
+
+## 69. The app thread's mirror
+
+**Context.** "The app thread keeps a cheap mirror of handles and last-published layout results, so
+it can read sizes and positions from the most recent frame without a round trip." The owner asked
+for the mirror with handles and the last published values, readable without a round trip, never
+showing an intermediate state to a reader on another thread while a transaction applies, and with
+the channel for layout results in place.
+
+**Decision.** Stable `core/include/axion/ax_mirror.h`; `core/src/mirror.c`.
+- **Three copies behind base's triple buffer** (decision 50). The scene thread writes one and the
+  app thread reads the one it latched; the buffer swaps them with an atomic exchange, so neither
+  side waits and neither touches the other's copy.
+  - A copy is indexed by slot. Each entry holds the live node's handle (0 when the slot holds
+    none), its parent, its kind, its style, paint and composite values, and its layout frame.
+  - The copy records the publication it reflects and the newest transaction it includes.
+- **Publishing is explicit, once per frame** (`ax_world_publish_mirror`, internal SDK, scene
+  thread). Applying transactions does not publish. The frame pipeline (next step) publishes after
+  transactions and layout, so the app never sees new values with an old layout. A copy therefore
+  only ever reflects the state between two frames, never part of a transaction.
+- **Incremental copies:**
+  - every change stamps its slot with the publication that will carry it: a create, a set, the
+    moved child of an insert, a removed node, and every destroyed slot through the store's report;
+  - publishing writes only the slots stamped after the publication the target copy last reflected,
+    so a copy that the app held for several frames catches up in one pass;
+  - the scan over the stamps is O(slots), the copying O(changed slots). The commit 7 benchmarks
+    measure it;
+  - if the stamp array cannot grow, the next publication copies every slot; if a copy cannot grow,
+    publishing is retried on the next frame.
+- **Reading** (app thread):
+  - `ax_world_mirror_sync` latches the newest publication and returns the newest sequence it
+    includes (0 before any). Every read until the next sync sees that same publication, so several
+    reads never mix two frames;
+  - `ax_mirror_is_live` and `ax_mirror_parent`;
+  - `ax_mirror_get_f32` / `get_dimension` / `get_color` / `get_transform`: core properties, with
+    the scene's shorthand rule (decision 63);
+  - `ax_mirror_get_frame`: **the layout channel.** Layout will write the store's `layout` column
+    and call `ax_world_touch_node` for nodes whose frame changed; the next publication carries
+    them. Zero until layout exists.
+  - Errors: a node not live in the latched publication is `AX_ERR_INVALID_HANDLE`, an unknown
+    property or wrong getter `AX_ERR_INVALID_ARGUMENT`, a property registered at run time
+    `AX_ERR_UNSUPPORTED`. Those live in side components on the scene thread and are not mirrored
+    yet; they arrive with `ax_prop_info` (M2, decision 63).
+- **Not mirrored yet:** child order (only the parent), inherited (computed) values, run-time
+  properties. Each is added when something needs it.
+- **Tests** (`tests/unit/core/test_mirror.c`):
+  - nothing is visible before a publication and a sync;
+  - values, parents, the shorthand rule and the errors; a removal, and the slot's reuse at the next
+    generation;
+  - a copy held across ten publications, each changing different nodes, catches up exactly;
+  - the layout channel (a frame written and touched reaches the mirror);
+  - **atomicity across threads, under TSan:**
+    - 1500 transactions, each moving a node, setting 32 opacities, creating a marker node and
+      removing the previous one; one in seven ends with a stale handle and must be rejected whole;
+    - the scene thread applies one or two per frame and publishes, while the app thread syncs and
+      checks every read against the state the newest valid transaction left: every opacity, the
+      parent, the marker, no earlier and no later marker, none from a rejected transaction;
+    - a mutation check (publishing after each set, inside a transaction) makes it fail at the
+      first read;
+    - repeated 20 times under TSan, 10 pinned to one CPU, and 100 Release runs, without a failure.
+
+**Status.** Implementation, pending the owner's approval.
