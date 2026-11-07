@@ -64,6 +64,7 @@ new entry that points back to the old one.
 | 48  | GPU surfaces, swapchain resizes and the FIFO queue       | Approved       |
 | 49  | Pacing default and who reads the socket (measured)       | Approved       |
 | 50  | 2D math and color representation in base                 | Approved       |
+| 51  | Render IR format, compatibility and building             | Approved       |
 
 ---
 
@@ -1416,3 +1417,63 @@ encoding open, while later layers will blend in linear light and draw HDR conten
 
 **Status.** Approved by the owner (the color representation, with the sign-preserving
 conversion and the round-trip coverage).
+
+## 51. Render IR format, compatibility and building
+
+**Context.** The document describes the Render IR as plain-old-data, versioned and serializable,
+consumed by every renderer, plugins such as render_gl included. M0 needs only a layer tree with
+2D affine transforms and two draw items, but the format must take the document's other items,
+clips, opacity and blend modes later without breaking its version.
+
+**Decision.**
+- **Where:** `render/ir/` (library `ax_render_ir`, header `axion/render/ax_render_ir.h`), in the
+  internal SDK for now, depending on base only. It is written as the contract it will become.
+- **Snapshot:** `ax_render_ir` holds indices and byte offsets, never pointers between its parts:
+  - the logical size it was recorded for, the predicted present time, a publication sequence and
+    a background color;
+  - damage: a "full" flag plus rects. M0 always records full damage;
+  - layers in pre-order, each with `parent`, `subtree_end`, its own item range, flags, a 2D
+    affine transform, a clip (none, rect, rounded rect or path index), group opacity, a blend
+    mode and an effect-chain index (none in M0). Layer 0 is the root;
+  - one item stream: records `{u16 type, u16 flags, u32 size}` plus payload, 8-byte aligned.
+    M0 has `RECT` and `ROUNDED_RECT` (a circular radius per corner, CSS clamping, solid fill).
+    The numbers of the document's other items are reserved; 0x8000 and above are private.
+- **Painting order:** a layer's own items, then its children. Items recorded into a layer after
+  one of its children go into an implicit child layer (`AX_IR_LAYER_IMPLICIT`), so the order is
+  kept and every layer's items stay contiguous.
+- **Units and color:** logical units in the space of the layer that holds them. Renderers apply
+  the device scale and never stretch a snapshot to another size. Colors are decision 50's.
+- **Compatibility:** major.minor (1.0 now).
+  - Another major is rejected (`AX_ERR_ABI_MISMATCH`).
+  - A newer minor only adds: fields at the end of layer records (consumers index layers with
+    `layer_stride`, also in memory, so a plugin built against an older header keeps working),
+    fields at the end of item records (consumers step with `size` and read the prefix they
+    know), new item types, clip kinds, blend modes and header fields.
+- **What a consumer does with what it does not know** (each case is counted):
+  - an unknown item type is skipped;
+  - an unknown item flagged `AX_IR_ITEM_REQUIRED` skips the rest of that layer's own items
+    (children still draw), for future items that change how their siblings draw;
+  - a clip it cannot apply skips the layer and its subtree, since unclipped content could
+    cover what the clip protects;
+  - an unknown blend mode, or effects it cannot run, draw as if neutral.
+- **Building without an allocation per item:** `ax_ir_builder` records into its own arena.
+  Arrays grow geometrically inside it, and each frame reserves the largest previous frame's
+  sizes, so a warmed-up frame allocates nothing from the parent allocator (tested with the
+  tracking allocator). Errors are sticky and reported by `ax_ir_builder_end`; unbalanced
+  push/pop asserts in debug builds.
+- **Binary form:** little-endian with explicit header size and layer stride, so a reader skips
+  fields it does not know and a newer writer's larger records read correctly (tested by
+  rewriting a snapshot as minor + 1 would). The item stream is copied unchanged, so unknown items
+  survive a round trip. Every AXION target is little-endian; a big-endian host is rejected.
+- **Validation:** `ax_ir_validate` checks the version, the tree shape, item ranges and record
+  sizes; deserialization always validates. Malformed input returns `AX_ERR_UNSUPPORTED` with the
+  reason in `ax_last_error()`: the stable ABI has no invalid-argument code, and adding one is
+  not needed for M0.
+- **Text dump:** `ax_ir_dump`, one indented line per layer and item, non-default layer
+  properties only. Tests compare dumps as expected text.
+- **Tests** (`tests/unit/render_ir/`): building and painting order, implicit layers, unknown and
+  grown items, damage, steady-state allocations, out of memory, death tests for unbalanced
+  layers, validation of hand-made malformed snapshots, a byte-exact round trip, the pinned header
+  layout, a newer minor, every truncated prefix and 4000 random corruptions (run under ASan).
+
+**Status.** Approved (part of the approved plan).
