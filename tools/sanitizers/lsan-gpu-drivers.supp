@@ -1,0 +1,23 @@
+# LeakSanitizer suppressions for GPU driver code, used by gpu/ tests in ASan builds only.
+#
+# GPU drivers and the libraries they pull in allocate process-lifetime state when a WebGPU
+# implementation probes them, and never free it. Every entry names a driver-side module; none
+# names AXION, Dawn or wgpu-native code, so a WebGPU object AXION forgets to release is still
+# reported. Two conditions make the module names visible, and the gpu/ tests arrange both:
+# - full stacks (fast_unwind_on_malloc=0): driver code has no frame pointers;
+# - drivers still loaded at exit: the Vulkan loader unloads ICDs with the last VkInstance, which
+#   turns their frames into "<unknown module>"; the tests keep one instance alive
+#   (tests/unit/gpu/gpu_test_util.c).
+
+# NVIDIA's proprietary driver (Vulkan ICD, EGL and GLX vendor libraries, shared internals).
+leak:libnvidia-
+leak:libEGL_nvidia.so
+leak:libGLX_nvidia.so
+# Mesa: lavapipe (the software Vulkan driver in CI), its LLVM JIT and the shared gallium code.
+leak:libvulkan_lvp.so
+leak:libgallium-
+leak:libLLVM
+leak:libEGL_mesa.so
+# D-Bus, which NVIDIA's driver uses to register with the session bus.
+leak:libdbus-1.so
+

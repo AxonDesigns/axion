@@ -87,6 +87,12 @@ struct ax_window_impl {
     ax_frame_clock clock;
     uint64_t presenter_work_seen_ns; /* when a configure/commit request was first seen waiting */
     ax_atomic_u32 presenting;        /* debug aid: a presenter is between begin and prepare */
+    /* What the last successful prepare_commit changed, for ax_surface_commit_failed. */
+    bool presenter_prepared;               /* a prepared commit has not been confirmed or failed */
+    bool presenter_prepared_request;       /* it cleared commit_requested */
+    uint64_t presenter_prev_target_ns;     /* the frame clock's target before it */
+    uint64_t presenter_frame_requested_ns; /* when the outstanding frame callback was requested */
+    uint64_t presenter_lost_frames;        /* statistics: failed commits and lost frames */
 };
 
 /* A command handed to the main thread by ax__app_call. Lives on the caller's stack. */
@@ -121,6 +127,14 @@ typedef struct ax_backend_ops {
     void (*surface_dispatch)(ax_window_impl *w);      /* dispatch the presenter's queue */
     bool (*surface_frame_due)(ax_window_impl *w);     /* the frame callback fired; clears it */
     bool (*surface_frame_pending)(ax_window_impl *w); /* a frame callback is outstanding */
+    /* The commit prepared last was not made: forget the frame callback and feedback it asked
+     * for (only those; earlier ones stay). */
+    void (*surface_commit_failed)(ax_window_impl *w);
+    /* Give up on the outstanding frame callback and feedback (they will never arrive). */
+    void (*surface_drop_frame)(ax_window_impl *w);
+    /* Commits made whose fate the compositor has not reported yet (presentation feedback
+     * outstanding). Without presentation feedback, an outstanding frame callback counts. */
+    uint32_t (*surface_commits_in_flight)(ax_window_impl *w);
 } ax_backend_ops;
 
 struct ax_app_impl {

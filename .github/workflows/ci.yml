@@ -36,6 +36,13 @@ jobs:
           - { name: "Linux / GCC / Release",         os: ubuntu-latest,  preset: gcc-release }
           - { name: "Linux / Clang / ASan+UBSan",    os: ubuntu-latest,  preset: clang-asan }
           - { name: "Linux / Clang / Release",       os: ubuntu-latest,  preset: clang-release }
+          # The alternative WebGPU implementation (decision 43): builds gpu/ against wgpu-native
+          # and runs its offscreen tests only.
+          - name: "Linux / GCC / ASan+UBSan / wgpu-native (gpu only)"
+            os: ubuntu-latest
+            preset: gcc-asan
+            configure_args: "-DAX_WEBGPU=wgpu-native"
+            test_args: "-L ^gpu$"
     steps:
       - uses: actions/checkout@v4
 
@@ -51,28 +58,107 @@ jobs:
         uses: lukka/get-cmake@latest
 
       # The platform module (Linux only for now) needs libwayland and wayland-scanner; weston
-      # runs headless for the Wayland integration tests.
-      - name: Wayland development packages
+      # runs headless for the Wayland integration tests. The runners have no GPU: gpu/ tests run on
+      # Mesa's software Vulkan driver (lavapipe, in mesa-vulkan-drivers).
+      - name: Wayland and Vulkan packages
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libwayland-dev libwayland-bin weston
+          sudo apt-get install -y --no-install-recommends libwayland-dev libwayland-bin weston \
+            libvulkan1 mesa-vulkan-drivers
+
+      # Pinned prebuilt WebGPU packages (gpu/third_party/webgpu_deps.cmake), unpacked into .deps/.
+      # CMake verifies each archive's checksum when it downloads one; a cache hit was verified
+      # when it was saved.
+      - name: Cache WebGPU packages
+        if: runner.os != 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: .deps
+          key: webgpu-${{ runner.os }}-${{ runner.arch }}-${{ contains(matrix.configure_args, 'wgpu-native') && 'wgpu-native' || 'dawn' }}-${{ hashFiles('gpu/third_party/webgpu_deps.cmake') }}
 
       - name: Configure
-        run: cmake --preset ${{ matrix.preset }}
+        run: cmake --preset ${{ matrix.preset }} ${{ matrix.configure_args }}
 
       # -k 0: keep going after a failure, so one run reports every compile error.
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }} -- -k 0
 
+      # gpu/ tests fail instead of skipping when no adapter exists (macOS runners have Metal).
       - name: Test
         if: runner.os != 'Linux'
-        run: ctest --preset ${{ matrix.preset }}
+        env:
+          AX_REQUIRE_GPU_TESTS: "1"
+        run: ctest --preset ${{ matrix.preset }} ${{ matrix.test_args }}
 
       # Linux also runs the Wayland integration tests against a headless weston.
+      # gpu/ tests use the software adapter (lavapipe) and fail instead of skipping without it.
       - name: Test (with headless weston)
         if: runner.os == 'Linux'
-        run: tools/ci/with-weston.sh ctest --preset ${{ matrix.preset }}
+        env:
+          AX_TEST_GPU_ADAPTER: software
+          AX_REQUIRE_GPU_TESTS: "1"
+        run: tools/ci/with-weston.sh ctest --preset ${{ matrix.preset }} ${{ matrix.test_args }}
+
+  # Wayland tests against weston 15, which has wp_fifo_v1 and commit-timing (the Ubuntu runners
+  # have weston 13, without them). Covers the drain before acknowledging a configure (decision 48),
+  # which only FIFO swapchains on such a compositor exercise. The image is pinned by digest and
+  # pacman by the Arch Linux Archive snapshot of the same day, so every package version is fixed:
+  # weston 15.0.1, Mesa 26.2.5 (lavapipe), libwayland 1.26.0.
+  wayland-weston15:
+    name: Linux / GCC / Debug / weston 15 (Wayland and GPU presentation tests)
+    runs-on: ubuntu-latest
+    container:
+      # archlinux:base-20261018.0.612668
+      image: archlinux@sha256:52dfbd5afb23a220d5ee92dafcb4c788d96c026ed04179890c23adef4c897fa0
+    steps:
+      # The snapshot never changes, so its packages are cached; archive.archlinux.org is slow at
+      # times, so downloads are retried.
+      - name: Cache pacman packages
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/pacman/pkg
+          key: pacman-archive-2026-10-18-v1
+
+      - name: Packages from the 2026-10-18 snapshot
+        run: |
+          echo 'Server = https://archive.archlinux.org/repos/2026/10/18/$repo/os/$arch' \
+            > /etc/pacman.d/mirrorlist
+          for attempt in 1 2 3 4; do
+            if pacman -Syyuu --noconfirm --needed --disable-download-timeout base-devel git \
+                 cmake ninja wayland weston vulkan-icd-loader vulkan-swrast; then
+              break
+            fi
+            if [ "$attempt" = 4 ]; then
+              exit 1
+            fi
+            echo "pacman failed (attempt $attempt); retrying in 30 s"
+            sleep 30
+          done
+          weston --version
+
+      - uses: actions/checkout@v4
+
+      - name: Cache WebGPU packages
+        uses: actions/cache@v4
+        with:
+          path: .deps
+          key: webgpu-arch-${{ runner.arch }}-dawn-${{ hashFiles('gpu/third_party/webgpu_deps.cmake') }}
+
+      - name: Configure
+        run: cmake --preset gcc-debug
+
+      - name: Build
+        run: cmake --build --preset gcc-debug -- -k 0
+
+      # Only the Wayland suites; AX_REQUIRE_WP_FIFO=1 makes the FIFO resize test fail rather than
+      # skip if this compositor ever stops announcing wp_fifo_manager_v1.
+      - name: Test (with headless weston 15)
+        env:
+          AX_TEST_GPU_ADAPTER: software
+          AX_REQUIRE_GPU_TESTS: "1"
+          AX_REQUIRE_WP_FIFO: "1"
+        run: tools/ci/with-weston.sh ctest --preset gcc-debug -L "^(wayland|gpu_wayland)$"
 
   emscripten:
     name: Web / Emscripten / base only (single-threaded)

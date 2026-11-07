@@ -56,6 +56,13 @@ new entry that points back to the old one.
 | 40  | Pace configures by frame callbacks; held targets         | Implementation |
 | 41  | Sanitizers must not abort inside death tests             | Approved       |
 | 42  | Marshalled calls when the main thread stops              | Approved       |
+| 43  | Dawn and wgpu-native as pinned official binaries         | Approved       |
+| 44  | GPU driver leaks under LeakSanitizer                     | Implementation |
+| 45  | ax_gpu lifecycle, adapters and waiting                   | Approved       |
+| 46  | Device-lost detection and recovery                       | Approved       |
+| 47  | Failed commits after prepare_commit                      | Approved       |
+| 48  | GPU surfaces, swapchain resizes and the FIFO queue       | Approved       |
+| 49  | Pacing default and who reads the socket (measured)       | Approved       |
 
 ---
 
@@ -750,6 +757,8 @@ earlier than that guess, and animations sampling the prediction would then step 
 
 ## 38. Notes: prepare_commit and the Vulkan WSI
 
+> Each risk below is resolved by a later entry; risk 4's premise is corrected by decision 47 (the acknowledgement must not be sent twice).
+
 **Context.** Nothing is implemented yet. These are notes for the GPU step, recorded now because
 `ax_surface_prepare_commit` was designed around them. With Vulkan (Dawn on top of it), the
 commit is made by the driver's WSI inside `vkQueuePresentKHR`. Mesa's Wayland WSI attaches,
@@ -951,3 +960,425 @@ its memory was freed.
     allocation), so ordering is a property of the structure.
 
 **Status.** Approved by the owner.
+
+## 43. Dawn and wgpu-native as pinned official binaries
+
+**Context.** The document consumes Dawn as prebuilt binaries per platform and keeps wgpu-native
+compiling in CI as the alternative. The owner asked for official binaries only, pinned to an exact
+version at least two weeks old, with verified checksums.
+
+**Decision.**
+- **Dawn, official release binaries.** The Dawn project publishes daily release assets built by
+  its own CI on GitHub (`google/dawn` releases).
+  - Pinned: `v20261022.205350` (commit `5373085`, published 2026-10-23).
+  - Packages: `ubuntu-latest-Release` (Linux x86_64) and `macos-latest-Release` /
+    `macos-15-intel-Release` (macOS). Each is a static `libwebgpu_dawn.a` with headers and a CMake
+    package.
+  - Checked before pinning: the Linux package creates Wayland surfaces through
+    `VK_KHR_wayland_surface`, and loads `libvulkan.so.1` at run time without linking any windowing
+    library.
+  - No build from source and no third-party binaries, so this is not a deviation.
+- **Where the pins live.** Versions, URLs and SHA-256 checksums are only in
+  `gpu/third_party/webgpu_deps.cmake`. Provenance, licences (Dawn BSD 3-Clause plus the
+  permissively licensed code it vendors), checksums and the update procedure are in
+  `gpu/third_party/README.md`.
+- **Fetching.**
+  - CMake downloads the archive at configure time, checks its SHA-256 (`file(DOWNLOAD ...
+    EXPECTED_HASH)`) and unpacks it into `.deps/` at the repository root. `.deps/` is shared
+    between build trees and ignored by git.
+  - A stamp records the checksum after a complete extraction, so an interrupted download is
+    redone and a changed pin replaces the directory.
+  - `AX_DAWN_ROOT` / `AX_WGPU_NATIVE_ROOT` select an unpacked package instead (offline builds).
+  - CI caches `.deps/` keyed on the manifest's hash.
+- **Release package for every configuration.** The Debug packages are 250-850 MB. Dawn keeps its
+  API validation in release builds, so Debug and sanitizer builds link the Release package too.
+- **C++ runtime.** Dawn is static C++. gpu/ links `stdc++` (Linux) or `c++` (Apple) explicitly,
+  because AXION links with the C driver. No C++ compiler is enabled in the project.
+- **Selecting the implementation.** CMake cache variable `AX_WEBGPU=dawn|wgpu-native`; the
+  interface target `ax_webgpu` carries the headers (as system headers), the libraries and
+  `AX_WEBGPU_DAWN` or `AX_WEBGPU_WGPU_NATIVE`.
+- **wgpu-native.** Pinned: official release `v29.0.1.1` (2026-06-23), Linux x86_64 package only.
+  - Its `webgpu.h` and Dawn's agree on every struct and enum gpu/ uses. Differences are isolated
+    in one place in gpu/'s sources.
+  - A CI job builds gpu/ against it (GCC, ASan+UBSan) and runs the gpu/ offscreen tests. It is
+    never shipped.
+- **Where gpu/ builds.** `AX_BUILD_GPU` defaults on for Linux and macOS. Windows waits for the
+  Win32 backend, where the choice between Dawn's Debug package and building gpu/ with `/MD` is
+  still open. The web waits for emdawnwebgpu.
+
+**Status.** Approved (part of the approved plan).
+
+## 44. GPU driver leaks under LeakSanitizer
+
+**Context.** WebGPU implementations probe GPU drivers when an instance or adapter is created.
+NVIDIA's driver, Mesa's lavapipe and the libraries they use (D-Bus, LLVM) allocate
+process-lifetime state and never free it, which LeakSanitizer reports in ASan builds.
+- With the default fast unwinder, driver frames have no frame pointers, so the stacks stop inside
+  the driver.
+- The Vulkan loader unloads the driver libraries (ICDs) when the last `VkInstance` is destroyed,
+  so by exit time their frames print as `<unknown module>`.
+- Neither case can be matched by module name.
+
+**Decision.**
+- **Suppressions name driver modules only:** `tools/sanitizers/lsan-gpu-drivers.supp` lists
+  `libnvidia-*`, `libEGL_nvidia`, `libGLX_nvidia`, `libvulkan_lvp`, `libgallium-*`, `libLLVM`,
+  `libEGL_mesa` and `libdbus-1`. No entry names AXION, Dawn or wgpu-native code, so a WebGPU
+  object AXION forgets to release is still reported.
+- **Conditions arranged by the gpu/ tests, so module names are visible:**
+  - `LSAN_OPTIONS=fast_unwind_on_malloc=0:suppressions=...` gives full stacks, on gpu/ tests in
+    ASan builds only;
+  - `axt_gpu_pin_drivers()` keeps one Vulkan instance alive until exit (test code only), so the
+    loader never unloads the drivers.
+- **Checked locally (NVIDIA 615.78):** the wgpu-native instance test reported 3.8 KB in 26
+  allocations before; with both measures and the file, it is clean. An entry matching
+  wgpu-native's own instance-probing frames also worked, but was dropped, because it names
+  implementation code.
+- **Other sanitizers:** TSan is not suppressed or disabled for gpu/. If TSan runs over gpu/ report
+  races inside the uninstrumented libraries, suppressions limited to those libraries' symbols will
+  be added here.
+
+**Status.** Implementation, following the owner's rule for sanitizers and uninstrumented
+libraries.
+
+## 45. ax_gpu lifecycle, adapters and waiting
+
+**Context.** ax_gpu's lifecycle (instance, adapter, device, queue) on both WebGPU implementations,
+with an option that forces a software adapter for CI.
+
+**Decision.**
+- **API:** `gpu/include/axion/gpu/ax_gpu.h`, internal SDK only.
+  - `ax_gpu_create` / `ax_gpu_destroy`.
+  - Handle getters for the instance, adapter, device and queue.
+  - `ax_gpu_device_generation`, which counts device creations.
+  - `ax_gpu_get_info`, `ax_gpu_poll`, `ax_gpu_wait` and `ax_gpu_wait_idle`.
+  - `ax_gpu_uncaptured_error_count`.
+- **Threads:** the thread that creates an ax_gpu owns it. Every function is tagged
+  `thread: presenter` and asserts in debug builds that it runs there (death test
+  `gpu.device.use_from_another_thread_asserts`); only `ax_gpu_uncaptured_error_count` is
+  `thread: any`.
+  - Every WebGPU callback is registered with `WGPUCallbackMode_AllowProcessEvents`, so it runs on
+    the owner thread inside `ax_gpu_poll` or `ax_gpu_wait`.
+  - The exception is the uncaptured-error callback, which webgpu.h may call on any thread: it only
+    increments an atomic counter and prints the message.
+- **Adapter selection:**
+  - `AX_GPU_ADAPTER_DEFAULT`: high-performance power preference, restricted to the platform's
+    primary backend (Vulkan on Linux, Metal on Apple), so no GL drivers are probed.
+  - `AX_GPU_ADAPTER_SOFTWARE`: the standard `forceFallbackAdapter` request where it can return a
+    CPU adapter (wgpu-native finds lavapipe). Dawn treats only SwiftShader as a fallback, and its
+    packages lack it, so there the adapter of the default request is accepted only if its type is
+    CPU.
+    - Dawn always prefers a GPU, even with the low-power preference, so on a machine with a GPU
+      its software mode needs the Vulkan loader restricted to the software driver
+      (`VK_DRIVER_FILES=.../lvp_icd.json`); the error message says so.
+    - CI runners have no GPU, so lavapipe is the only adapter there.
+- **Waiting:** wgpu-native v29 implements neither `wgpuInstanceWaitAny` nor
+  `wgpuHasInstanceFeature` (both panic).
+  - `ax_gpu_wait` therefore takes the future and a `done` flag set by its callback.
+  - Dawn waits on the future (instance feature `TimedWaitAny`).
+  - wgpu-native polls (`wgpuInstanceProcessEvents`, then `wgpuDevicePoll`) until the flag is set.
+  - This and the instance options are the only implementation-specific code (`gpu/src/impl_*.c`
+    behind `webgpu_impl.h`), along with forcing a device loss (decision 46).
+- **Tests** (`tests/unit/gpu/test_device.c`): device creation and adapter info; clearing a 64x64
+  texture and reading it back; the software adapter; the thread assertion.
+  - They run on the default adapter. `AX_TEST_GPU_ADAPTER=software` selects the software one.
+  - `AX_REQUIRE_GPU_TESTS=1` turns a missing adapter into a failure instead of a skip.
+  - CI sets both on Linux (lavapipe from `mesa-vulkan-drivers`), and the second on macOS (Metal).
+  - Checked locally: Dawn and wgpu-native on the GTX 1650 and on lavapipe.
+
+**Status.** Approved (part of the approved plan); the software-adapter rule for Dawn is an
+implementation detail.
+
+## 46. Device-lost detection and recovery
+
+**Context.** The document asks ax_gpu to recover from a device loss by recreating every GPU
+resource from its descriptor; Android and iOS need this after backgrounding.
+
+**Decision.**
+- **Detection:** the device-lost callback runs on the owner thread (AllowProcessEvents) and marks
+  the ax_gpu lost.
+  - Reasons `Destroyed`, `CallbackCancelled` and `FailedCreation` come from AXION releasing or
+    failing to create a device, and are not losses.
+  - The callback carries the generation it was registered for, so a late callback from a replaced
+    device is ignored.
+- **Recovery,** in `ax_gpu_poll`:
+  - The old device and adapter are released, then a new adapter and device are requested: an
+    adapter that created a device cannot create another, and a real loss can take the adapter
+    with it.
+  - `ax_gpu_device_generation` advances. Resources from older generations are dead; their owners
+    recreate them from their descriptors when they see the change. Surfaces are reconfigured by
+    ax_gpu itself (decision 48).
+  - If recovery fails, `ax_gpu_poll` returns `AX_ERR_DEVICE_LOST` and tries again on the next
+    call.
+- **Forcing a loss in tests:**
+  - Dawn: `wgpuDeviceForceLoss`, a real loss through the callback
+    (`gpu.device_lost.a_forced_loss_is_detected_and_the_device_recreated`). wgpu-native has no
+    equivalent, so that test skips there.
+  - Any implementation: an internal hook marks the device lost as the callback would, so the
+    recovery path runs everywhere (`recovery_creates_a_working_device_each_time`, three
+    recoveries in a row, each followed by a clear and read-back).
+  - Hooks live in `gpu/src/gpu_testing.h`, which only tests include.
+
+**Status.** Approved (part of the approved plan).
+
+## 47. Failed commits after prepare_commit
+
+**Amends** decision 38 (risk 4).
+
+**Context.** With a GPU swapchain, the commit is made inside the present call. A present can fail
+after `ax_surface_prepare_commit` has already queued the configure acknowledgement, the viewport,
+the frame callback and the presentation feedback. Decision 38 proposed not marking the serial
+acknowledged in that case. That premise is wrong:
+- The `ack_configure` request has already been sent. The compositor applies it with the next
+  commit the client makes.
+- Acknowledging the same serial again is a protocol error. Checked: re-arming the acknowledgement
+  in the new test makes weston close the connection with "Wrong configure serial".
+
+**Decision.**
+- **New `ax_surface_commit_failed(surface)`** (internal SDK, `thread: presenter`), called when the
+  commit prepared last was not made. It undoes what would otherwise be wrong:
+  - It destroys the frame callback and feedback proxies that `prepare_commit` created, but only
+    those, not ones from earlier commits. Their requests sit in the surface's pending state and
+    the next commit makes its own.
+  - It restores the frame clock's target to its value before that commit.
+  - It raises the commit request again if that commit was answering one.
+  - It counts a lost frame.
+- **The acknowledgement stays marked.** The next frame latches the newest configure, so it
+  delivers that serial's size (or acknowledges a newer serial) without repeating the ack.
+- **Errors:** `AX_ERR_UNSUPPORTED` when no prepared commit is outstanding (a second call, or a
+  call after `wait_frame`).
+- **Lost-frame bound in `ax_surface_wait_frame`.** Dawn hides one failure:
+  `wgpuSurfacePresent` treats `VK_ERROR_OUT_OF_DATE_KHR` as success after recreating the
+  swapchain, so a commit can be lost without an error.
+  - If the outstanding frame callback has not come after eight refreshes (clamped to 50-250 ms),
+    the frame is given up: proxies dropped, a lost frame counted, `AX_WAKE_FRAME` returned.
+  - Cost: a hidden window that gets no callbacks but keeps animating draws at that slow rate
+    instead of not at all. An idle presenter does not wake for it.
+  - With Mesa, Vulkan's present returns `OUT_OF_DATE` only for a retired swapchain. ax_gpu
+    recreates the swapchain before acquiring (decision 48), so the presented one is never retired,
+    and this is a safety net.
+- **Statistics:** `ax_present_stats.lost_frames` counts both cases.
+- **Tests** (`tests/integration/wayland/test_commit_failed.c`, weston with shared-memory
+  buffers):
+  - `a_failed_commit_is_undone_without_acknowledging_twice`: a frame acknowledging a new
+    configure and answering a commit request is prepared and not committed. The test checks that
+    the target is restored, the callback forgotten and the request raised again, and that the
+    presenter wakes at once. The next frame does not acknowledge again, has the same size, and is
+    shown, with the connection still healthy.
+  - `a_frame_callback_that_never_comes_is_given_up`: the same failure without reporting it; the
+    presenter wakes after the bound instead of the 2 s timeout.
+
+**Status.** Approved (the correction to risk 4 was approved with the plan).
+
+## 48. GPU surfaces, swapchain resizes and the FIFO queue
+
+**Context.** Decision 38 listed the risks of presenting through a Vulkan swapchain (Dawn on Mesa's
+WSI, or NVIDIA's) instead of AXION's own commits. This entry records how ax_gpu presents and
+resolves risks 3, 5 and 7, and the part of risk 1 that is not measurement. Risk 2 and the measured
+choice of risk 1 are in decision 49, risk 4 in decision 47; risk 6 stays open.
+
+**Decision.**
+- **API:** `ax_gpu_surface` (`gpu/include/axion/gpu/ax_gpu_surface.h`), one per `ax_surface`, on
+  the ax_gpu's thread, which is the surface's presenter.
+  - Each frame: `ax_gpu_surface_begin_frame` (latch the configure, resize the swapchain, acquire),
+    render, `ax_gpu_surface_present` (`ax_surface_prepare_commit`, then `wgpuSurfacePresent`), and
+    `ax_gpu_surface_wait`.
+  - Format: sRGB, preferring a format that is sRGB itself, otherwise the first format with an sRGB
+    view format. Alpha is opaque when offered.
+  - Present mode: configurable. ax_gpu applies Dawn's fallback order to the surface's capabilities
+    to know the mode actually in use (`effective_present_mode`), because Dawn falls back silently.
+- **Pacing (risk 1), both options implemented:** `AX_GPU_PACING_COMPOSITOR` (MAILBOX, paced by
+  frame callbacks and the frame clock) and `AX_GPU_PACING_DRIVER` (FIFO; `ax_gpu_surface_wait`
+  does not wait while animating). Which is the default is measured and chosen in decision 49.
+- **Swapchain resizes (risk 3):** `wgpuSurfaceConfigure` runs in `begin_frame`, before the
+  acquire, with the exact pixel size of the configure the frame acknowledges.
+  - That is at most one resize per frame, since `begin_frame` latches only the newest configure.
+  - Its cost is measured (`resizes`, `resize_ns_*`).
+  - Mesa recreates its swapchain with `oldSwapchain` and does one roundtrip on its own queue.
+- **One commit carries the acknowledgement and the new size.** Checked with `WAYLAND_DEBUG` on
+  lavapipe and weston 15:
+  - MAILBOX: one commit per frame. The acknowledgement, viewport, frame callback and our feedback
+    precede the attach of the new-size buffer and its commit.
+  - FIFO with wp_fifo_v1 and commit-timing: Mesa makes two commits per present, a timestamped one
+    with the buffer and an empty one with `wait_barrier`. Our requests always precede the first.
+    The resize frame is a single commit with the acknowledgement and the 1280x688 buffer.
+- **Dawn (risk 7):** checked in Dawn's source at the pinned commit:
+  - `wgpuSurfaceConfigure` creates the VkSwapchain synchronously, passing `oldSwapchain`.
+  - Dawn commits only inside `wgpuSurfacePresent`, through `vkQueuePresentKHR`.
+  - Mesa's WSI commits only in present.
+  - A size outside the surface's extent limits would make Dawn blit (scale). Wayland reports
+    `currentExtent = 0xFFFFFFFF` with wide limits, so it never applies; the presentation tests check
+    that every texture matches the configure's pixel size.
+- **Feedback (risk 5):** Mesa binds its own `wp_presentation` and creates its own feedback per
+  present (seen in the trace). Ours keeps going through our wrapper and queue, and arrives for
+  every GPU commit; the tests check `presented`.
+- **The FIFO queue and acknowledgements (found here):**
+  - Weston 15 queues content updates behind wp_fifo_v1 barriers, but applies
+    `xdg_surface.ack_configure` on receipt. When it later applies the older, smaller updates still
+    queued, it checks them against the acknowledged state and disconnects the client: "xdg_surface
+    geometry (320 x 240) does not match the configured maximized state (1280 x 688)".
+  - Reproduced without Mesa by a 200-line client. A report for weston's tracker is drafted in
+    `docs/upstream/weston-fifo-ack-configure/` (not filed; the owner decides).
+  - Rule: a configure is never acknowledged while commits of ours may still be queued in the
+    compositor.
+    - `commits_may_queue()` in `gpu/src/surface.c` is the single condition. Today it is true for
+      FIFO and FIFO-relaxed; adopting commit-timing (risk 6) adds a case there.
+    - Before such a frame, `begin_frame` calls the new `ax_surface_wait_commits_applied`. It
+      returns once every earlier commit's presentation feedback has arrived and two refreshes
+      have passed since the last presentation.
+      - The second condition covers commits the swapchain makes without our feedback. With
+        commit-timing, Mesa follows each frame with an empty commit that waits on the previous
+        barrier, and it is applied one refresh after that frame is shown.
+      - The feedback alone was not enough: in one run of ten, the acknowledgement left 2 ms after
+        the last feedback, and the trailing empty commit was applied after it.
+    - The wait lasts a short slice, four refreshes clamped to 20-50 ms. If the queue has not
+      drained, the frame is skipped: no acknowledgement, no commit, so the queue can only shrink.
+      It is counted (`deferred_acks`) and retried on the next frame.
+    - The presenter never blocks long, even for a hidden window whose queue does not move.
+  - Waiting for one frame callback is not enough (several commits are queued), and acknowledging
+    after a timeout reproduces the error.
+    - Without the drain, the test fails every time.
+    - With it, it passed 10 of 10 runs each on the GCC ASan and Clang Release builds, with 10-18
+      acknowledgements deferred per run, at most 50 ms each.
+- **Tests** (`tests/integration/gpu_wayland/test_gpu_present.c`, headless weston, always on lavapipe
+  through `VK_DRIVER_FILES`):
+  - frames presented in both pacings;
+  - resizes in both pacings: two swapchain resizes, acknowledged frames shown, every texture the
+    configured size;
+  - presentation continuing across a device loss, with the surface recreated.
+  - The FIFO resize test skips when the compositor does not announce `wp_fifo_manager_v1`, because
+    it would test nothing. `AX_REQUIRE_WP_FIFO=1` turns that into a failure.
+- **CI:**
+  - The Ubuntu jobs have weston 13 (no wp_fifo), so that test skips there.
+  - A new job runs the Wayland and GPU presentation suites in an Arch Linux container pinned by
+    digest (`archlinux:base-20261018.0.612668`), with pacman pinned to the Arch Linux Archive
+    snapshot of the same day: weston 15.0.1, Mesa 26.2.5. It sets `AX_REQUIRE_WP_FIFO=1`.
+- **An environment quirk, not ours:** FIFO on weston 15 headless runs at about 6 fps with Mesa.
+  vkcube is just as slow (120 frames in 19 s with FIFO, 148 ms with MAILBOX). The FIFO tests check
+  correctness, never rates.
+- **KWin (checked on the owner's desktop, KWin 6.8.2):**
+  - The standalone reproduction that weston 15 rejects runs on KWin without a protocol error
+    (3 of 3). KWin announces wp_fifo_v1.
+  - NVIDIA's WSI (615.78) on KWin with FIFO makes one commit per present: wp_fifo_v1 barriers,
+    explicit sync, no commit-timing.
+  - In a resize traced with `WAYLAND_DEBUG`, every frame that acknowledged a configure did so in
+    the same commit as the buffer of the new size (for example 825x480 logical, a 1093x636 buffer
+    at scale 1.325). 167 acknowledgements, no protocol error.
+  - With lavapipe on KWin, both pacings ran the whole measurement matrix without errors
+    (decision 49).
+  - The drain stays: weston needs it, and it costs nothing when nothing is queued.
+
+**Status.** Approved (the drain and its rules were approved by the owner).
+
+## 49. Pacing default and who reads the socket (measured)
+
+**Context.** Decision 38's risk 1 (double throttling) and risk 2 (who reads the socket) needed
+measurements on the owner's desktop:
+- KDE Plasma 6.8.2 (KWin, Wayland);
+- NVIDIA GeForce GTX 1650 with the proprietary driver 615.78, so the Vulkan WSI is NVIDIA's,
+  closed;
+- HDMI-A-1 at 71.91 Hz (scale 1) and DP-2 at 260 Hz (scale 1.325).
+
+The owner asked for the choice to be made from NVIDIA's numbers only, since no GPU on this
+machine presents through Mesa.
+
+**Method.** `tools/diag/measure_m0.py` (development only) runs `examples/m0_window --stats`
+across the matrix:
+- renderer: shm, GPU with compositor pacing, GPU with driver pacing, plus the same two on
+  lavapipe (Mesa's WSI on KWin, software rendering);
+- decorations: native, none;
+- monitor: both;
+- state: quiet, or resized by a KWin script (`tools/diag/kwin_place_m0.qml.in`) about 120 times a
+  second.
+
+Each run measures 6 s after a 3 s warm-up; the table below averages per second. A first full run
+was discarded: KWin refused the script ("File name case mismatch"), so windows were neither placed
+nor resized by the script.
+
+**Results** (Hz presented; missed vblanks and discarded frames per second; configure-to-screen
+latency mean / max; swapchain resizes per second and their cost mean / max):
+
+| Renderer | Monitor | Quiet | Resizing |
+| --- | --- | --- | --- |
+| shm | 72 Hz | 71.9 Hz, 0 missed, 0 discarded | 71.9 Hz, 0 missed, 22.8 / 29.2 ms |
+| shm | 260 Hz | 260.0 Hz, 0, 0 | 260.0 Hz, 0 missed, 11.9 / 14.8 ms |
+| GPU, compositor pacing (MAILBOX) | 72 Hz | 71.9 Hz, 0, 0 | 71.9 Hz, 0 missed, 22.3 / 28.3 ms; 72 resizes/s, 1.6 / 4.7 ms |
+| GPU, compositor pacing | 260 Hz | 260.0 Hz, 0, 0 | 257.2 Hz, 2.8 missed/s, 11.5 / 17.9 ms; 124 resizes/s, 1.5 / 5.3 ms |
+| GPU, driver pacing (FIFO) | 72 Hz | 71.9 Hz, 0, 0 | 24.0 Hz, 46 missed/s, 57 / 62 ms |
+| GPU, driver pacing | 260 Hz | 260.0 Hz, 0, 0 (0.14 in one run) | 63.6 Hz, 193 missed/s, 26 / 38 ms |
+| lavapipe, compositor | 72 / 260 Hz | 71.9 / 260.0 Hz, 0, 0 | 71.9 Hz, 0 missed / 223 Hz, 37 missed/s (software rendering at 260 Hz) |
+| lavapipe, driver | 72 / 260 Hz | 71.9 / 260.0 Hz, 0, 0 | 24.0 Hz / 56 Hz, the same collapse as NVIDIA |
+
+Both decoration modes gave the same numbers (within 0.2 missed/s). No run lost a frame, failed a
+present or hit a protocol error.
+
+**Decision.**
+- **Risk 1, pacing:** the default is compositor pacing (MAILBOX, paced by frame callbacks and the
+  frame clock), on every driver.
+  - Quiet, both pacings reach the refresh rate with nothing missed. With FIFO, the frames block
+    in the driver instead: acquire up to 15 ms.
+  - Resizing separates them. With FIFO, every frame that acknowledges a configure first waits for
+    the swapchain's queue to drain plus two refreshes (decision 48), so resizes run at a third of
+    the refresh rate. That is the jitter the owner saw on the 72 Hz monitor.
+  - Driver pacing stays selectable (`AX_GPU_PACING_DRIVER`, `m0_window --pacing=driver`).
+- **Per-driver choice:** `default_pacing()` in `gpu/src/surface.c` is the only place the default
+  is chosen, with the adapter's vendor and driver available. lavapipe follows the same pattern as
+  NVIDIA, so nothing suggests Mesa needs a different default.
+  - **Pending validation with Mesa on real hardware (AMD or Intel).** The choice was measured
+    with NVIDIA 615.78 only.
+- **Exit-criterion comparison with shm:** quiet, and resizing on the 72 Hz monitor, the GPU path
+  measures the same as shm. The owner validated the example by eye on both monitors.
+- **Known limitation: resizing at 260 Hz.**
+  - The GPU path misses 0 to 6 vblanks per second while resizing, and shm misses none. One second
+    reached 13, during a 5.3 ms recreation.
+  - Cause: every configure with a new size recreates the swapchain, 1.5 ms mean and 5.3 ms max on
+    NVIDIA 615.78, out of a 3.85 ms frame. shm reuses its buffers.
+  - Accepted by the owner for this step. Tracked in issue #2 (AxonDesigns/axion), to be reviewed when M0's exit
+    criterion (smooth resize at the display's refresh rate) is measured.
+- **Future work: a swapchain reserved in sizes rounded up, cropped with the viewport's source.**
+  - The swapchain would be allocated at the configure's pixel size rounded up to a bucket, for
+    example the next multiple of 128 or 256 px, or with headroom over the current size.
+  - Frames render only the configured region. `wp_viewport.set_source` crops the buffer to it,
+    and `set_destination` keeps mapping that region to the logical size.
+  - The swapchain is recreated only when a configure leaves the bucket, not on every configure.
+  - **This changes the contract of decisions 34 and 38.** Today the buffer committed with an
+    acknowledgement measures exactly the acknowledged pixel size. With buckets, the attached
+    buffer is larger, and the viewport's source rectangle carries the exact size instead.
+    - Decision 34's rule becomes "the acknowledgement, a source rectangle of the configured size
+      and the matching destination land in one commit".
+    - Decision 38's step 2 (the swapchain extent equals the frame's pixel size) becomes "the
+      extent contains it".
+    - The presentation tests' check that every texture equals the configured size would compare
+      the source rectangle instead.
+  - **Other considerations:**
+    - Memory: up to a bucket's worth of extra pixels per image.
+    - Every frame must set the source rectangle.
+    - `set_source` is part of wp_viewporter, which KWin and weston implement; still to check with
+      GPU (dmabuf) buffers on each.
+    - Still to validate: no stretching while the bucket changes.
+  - **Windows equivalent** for when the Win32 backend lands:
+    - DXGI's `IDXGISwapChain2::SetSourceSize(width, height)` sets the region of the back buffers
+      that is presented. That is an effective resize without the more expensive
+      `ResizeBuffers`.
+    - The region must fit within the buffers' size (from creation or the last `ResizeBuffers`), so
+      the same bucketing applies, with `ResizeBuffers` only when a size leaves the bucket.
+    - Check the exact requirements against the DXGI documentation when that backend is designed.
+- **Risk 2, who reads the socket:** measured with `tools/diag/wl_read_trace.c` (LD_PRELOAD,
+  3-second runs on KWin).
+  - Mesa (lavapipe): reads the display fd from the presenter thread, inside acquire and present,
+    with libwayland's `prepare_read` protocol: 28 reads in 3 s with MAILBOX, 1471 with FIFO (every
+    frame).
+  - NVIDIA 615.78: the presenter reads 47 times in 3 s in both modes, all of them setup
+    roundtrips; it does not read per frame. It throttles with explicit sync
+    (`wp_linux_drm_syncobj`) and wp_fifo_v1.
+  - No driver creates a thread of its own that reads the connection.
+  - This is safe. The main thread holds a prepared read while it polls, so a WSI read on the
+    presenter thread blocks until the main thread reads too (libwayland's last reader reads), and
+    no event is lost. The main thread wakes presenters after every read, and `wait_frame`
+    dispatches the presenter queue before sleeping, so events another thread read are handled.
+  - `wait_frame` does not need to poll the fd itself.
+  - Cost: a WSI read on the presenter can wait for the main thread to be scheduled; a stalled main
+    thread would stall a presenter inside acquire. Recorded, not a problem today.
+- **Risk 6 (commit-timing)** stays for later.
+
+**Status.** Approved (the owner set the method and the rule to choose from NVIDIA's numbers);
+pending validation with Mesa on AMD or Intel hardware.

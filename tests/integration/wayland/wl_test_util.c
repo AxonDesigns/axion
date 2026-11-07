@@ -243,3 +243,55 @@ bool axt_shm_commit(axt_shm *s, struct wl_surface *surface, uint32_t width, uint
     wl_display_flush(s->display);
     return true;
 }
+
+/* ---- compositor globals ------------------------------------------------------------------- */
+
+typedef struct axt_global_query {
+    const char *interface;
+    bool found;
+} axt_global_query;
+
+static void query_global(void *data, struct wl_registry *registry, uint32_t name,
+                         const char *interface, uint32_t version)
+{
+    axt_global_query *q = (axt_global_query *)data;
+    (void)registry;
+    (void)name;
+    (void)version;
+    if (strcmp(interface, q->interface) == 0) {
+        q->found = true;
+    }
+}
+
+static void query_global_remove(void *data, struct wl_registry *registry, uint32_t name)
+{
+    (void)data;
+    (void)registry;
+    (void)name;
+}
+
+static const struct wl_registry_listener query_listener = {query_global, query_global_remove};
+
+bool axt_compositor_has_global(const char *interface)
+{
+    axt_global_query q;
+    struct wl_display *display;
+    struct wl_registry *registry;
+    const char *name = getenv("AX_TEST_WAYLAND_DISPLAY");
+
+    q.interface = interface;
+    q.found = false;
+    if (name == NULL || name[0] == '\0') {
+        return false;
+    }
+    display = wl_display_connect(name);
+    if (display == NULL) {
+        return false;
+    }
+    registry = wl_display_get_registry(display);
+    wl_registry_add_listener(registry, &query_listener, &q);
+    wl_display_roundtrip(display);
+    wl_registry_destroy(registry);
+    wl_display_disconnect(display);
+    return q.found;
+}

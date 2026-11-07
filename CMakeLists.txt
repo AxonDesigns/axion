@@ -35,6 +35,15 @@ else()
 endif()
 option(AX_BUILD_PLATFORM "Build the platform module (Linux/Wayland only for now)"
        ${_ax_platform_default})
+# gpu/ links a prebuilt WebGPU implementation (cmake/AxionWebGPU.cmake). Pinned packages exist for
+# Linux and macOS; Windows waits for its platform backend, and the web for emdawnwebgpu.
+if(CMAKE_SYSTEM_NAME MATCHES "^(Linux|Darwin)$")
+    set(_ax_gpu_default ON)
+else()
+    set(_ax_gpu_default OFF)
+endif()
+option(AX_BUILD_GPU "Build the gpu module (Linux and macOS for now)" ${_ax_gpu_default})
+option(AX_BUILD_DIAG_TOOLS "Build development-only diagnostics (tools/diag); never shipped" OFF)
 set(AX_SANITIZE "" CACHE STRING
     "Sanitizers for GCC and Clang builds, as a list: address;undefined")
 
@@ -44,9 +53,17 @@ add_subdirectory(base)
 if(AX_BUILD_PLATFORM)
     add_subdirectory(platform)
 endif()
+if(AX_BUILD_GPU)
+    add_subdirectory(gpu)
+endif()
 
 if(AX_BUILD_EXAMPLES)
     add_subdirectory(examples)
+endif()
+
+if(AX_BUILD_DIAG_TOOLS)
+    find_package(Threads REQUIRED)
+    add_subdirectory(tools/diag)
 endif()
 
 if(AX_BUILD_TESTS)

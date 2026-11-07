@@ -1,0 +1,64 @@
+// Copyright 2026 Axon Works
+// SPDX-License-Identifier: Apache-2.0
+//
+// KWin declarative script used by tools/diag/measure_m0.sh (development only): finds the
+// m0_window window of process @PID@ (so a script left from an earlier run never touches this
+// run's window), moves it onto output @OUTPUT@ at 800x500, and with @RESIZE@ = true keeps
+// resizing it smoothly, about 120 geometry changes per second, as a stand-in for a drag of the
+// window's corner. Templated by the script; not used anywhere else.
+import QtQuick
+import org.kde.kwin
+
+Item {
+    id: root
+    property var win: null
+    property real t: 0
+    property real bx: 0
+    property real by: 0
+
+    function findWin() {
+        const list = Workspace.stackingOrder;
+        for (let i = 0; i < list.length; ++i) {
+            const w = list[i];
+            if (w.pid == @PID@ && (w.resourceClass == "net.axonworks.axion.m0_window" ||
+                                   w.caption == "AXION m0_window"))
+                return w;
+        }
+        return null;
+    }
+
+    function findOutput() {
+        const outputs = Workspace.screens;
+        for (let i = 0; i < outputs.length; ++i) {
+            if (outputs[i].name == "@OUTPUT@")
+                return outputs[i];
+        }
+        return null;
+    }
+
+    Timer {
+        interval: 8
+        repeat: true
+        running: true
+        onTriggered: {
+            if (root.win == null) {
+                const w = root.findWin();
+                const o = root.findOutput();
+                if (w == null || o == null)
+                    return;
+                Workspace.sendClientToScreen(w, o);
+                root.bx = o.geometry.x + 120;
+                root.by = o.geometry.y + 120;
+                w.frameGeometry = Qt.rect(root.bx, root.by, 800, 500);
+                root.win = w;
+                return;
+            }
+            if (@RESIZE@) {
+                root.t += 0.008;
+                const width = 800 + 300 * Math.sin(root.t * 2.1);
+                const height = 500 + 160 * Math.sin(root.t * 1.3);
+                root.win.frameGeometry = Qt.rect(root.bx, root.by, Math.round(width), Math.round(height));
+            }
+        }
+    }
+}
