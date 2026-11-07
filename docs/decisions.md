@@ -38,6 +38,7 @@ new entry that points back to the old one.
 | 22  | Threading failures and debug checks                      | Implementation |
 | 23  | Emscripten CI toolchain                                  | Implementation |
 | 24  | `AX_MAX_ALIGN` instead of `max_align_t`                  | Deviation      |
+| 25  | No condition-variable waits without threads              | Approved       |
 
 ---
 
@@ -202,6 +203,8 @@ part of M0's exit criterion. A timeout is not an error.
 addition.
 
 ## 10. Single-threaded web build
+
+> Superseded in part by decision 25: condition-variable waits are usage errors without threads.
 
 **Decision.**
 - **Which implementation:** Emscripten without `-pthread` uses `thread_single.c`. CMake chooses it
@@ -404,3 +407,20 @@ demanding scalar types (`long long`, `long double`, `double`, object and functio
 code uses it wherever it would have used `_Alignof(max_align_t)`.
 
 **Status.** Deviation, forced by MSVC's C11 support.
+
+## 25. No condition-variable waits without threads
+
+**Supersedes part of** decisions 9 and 10.
+
+**Context.** Decision 10 had `ax_cond_wait_timeout` return false at once in the single-threaded
+web build. That broke decision 9's guarantee that false means at least `timeout_ns` elapsed.
+
+**Decision.** Without threads, condition-variable waits do not exist: no other thread could
+ever signal.
+- `ax_cond_wait_timeout` is a usage error, exactly like `ax_cond_wait`: debug builds assert.
+- Release builds return as a spurious wakeup would. `ax_cond_wait_timeout` returns true, which
+  callers already handle and which never claims a timeout that did not happen.
+- `ax_thread.h` documents it, and code shared with the single-threaded build checks
+  `ax_threads_supported()` before waiting.
+
+**Status.** Approved by the owner.
