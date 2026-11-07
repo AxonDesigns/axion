@@ -11,8 +11,12 @@
  *                  mailbox; it never waits for the render thread, only for requests
  *
  * The main thread pumps events and the app thread publishes hit regions, as for shm.c.
+ *
+ * AX_RW_LINEAR_BLEND=1 sets the renderer's unsupported diagnostic option that blends in linear
+ * light, to compare with the default sRGB-space blending (decision 58).
  */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "axion/ax_base.h"
@@ -170,6 +174,10 @@ int m0_ir_draw_thread(void *arg)
     wd.adapter = (ax_gpu_adapter_kind)s->opt.adapter;
     wd.pacing = s->opt.pacing;
     wd.present_mode = s->opt.present_mode;
+    /* Diagnostic only (unsupported, decision 58): compare with blending in linear light. */
+    if (getenv("AX_RW_LINEAR_BLEND") != NULL && strcmp(getenv("AX_RW_LINEAR_BLEND"), "1") == 0) {
+        wd.diagnostic_flags = AX_RENDER_WGPU_DIAG_LINEAR_BLEND;
+    }
     memset(&rd, 0, sizeof rd);
     rd.struct_size = sizeof rd;
     rd.next = &wd.chain;
@@ -195,11 +203,12 @@ int m0_ir_draw_thread(void *arg)
         ax_gpu_get_info(ax_render_wgpu_gpu(r), &info);
         sinfo.struct_size = sizeof sinfo;
         ax_gpu_surface_get_info(ax_render_wgpu_gpu_surface(r, s->surface), &sinfo);
-        printf("ir: ax_render_wgpu on %s | %s | %s | pacing %s | present mode %s%s\n",
+        printf("ir: ax_render_wgpu on %s | %s | %s | pacing %s | present mode %s%s%s\n",
                info.implementation, info.adapter_name, info.driver,
                sinfo.pacing == AX_GPU_PACING_DRIVER ? "driver" : "compositor",
                present_mode_name(sinfo.effective_present_mode),
-               sinfo.present_mode_supported ? "" : " (fallback)");
+               sinfo.present_mode_supported ? "" : " (fallback)",
+               wd.diagnostic_flags != 0 ? " | blend linear (diagnostic)" : "");
         fflush(stdout);
     }
 

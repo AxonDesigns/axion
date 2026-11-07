@@ -37,9 +37,21 @@ typedef struct ax_render_wgpu_desc {
     /* An existing ax_gpu to render with (not owned), or NULL to create one with `adapter`. */
     ax_gpu *gpu;
     ax_gpu_adapter_kind adapter;
-    int pacing;       /* ax_gpu_pacing for attached surfaces; 0 = the default */
-    int present_mode; /* WGPUPresentMode for attached surfaces; 0 = the pacing's own */
+    int pacing;                /* ax_gpu_pacing for attached surfaces; 0 = the default */
+    int present_mode;          /* WGPUPresentMode for attached surfaces; 0 = the pacing's own */
+    uint32_t diagnostic_flags; /* AX_RENDER_WGPU_DIAG_*; 0 in anything but a diagnostic */
 } ax_render_wgpu_desc;
+
+/*
+ * Diagnostic options. UNSUPPORTED: for comparing renderings during development only. They may
+ * change meaning or disappear in any version, nothing outside this module's own tests may rely on
+ * them, and an application must never set them.
+ *
+ * AX_RENDER_WGPU_DIAG_LINEAR_BLEND: blend in linear light instead of sRGB space (decision 58).
+ * Colors are uploaded in linear light; window surfaces render through the swapchain's sRGB view
+ * (ax_gpu_surface_desc.srgb_view), and ax_render_wgpu_draw_ir expects an sRGB-format target.
+ */
+#define AX_RENDER_WGPU_DIAG_LINEAR_BLEND 0x1u
 
 typedef struct ax_render_wgpu_stats {
     uint32_t struct_size;       /* set by the caller */
@@ -54,7 +66,8 @@ typedef struct ax_render_wgpu_stats {
 typedef struct ax_render_wgpu_draw {
     uint32_t struct_size; /* set by the caller */
     WGPUTextureView target;
-    WGPUTextureFormat format; /* the view's format: 8-bit unorm (sRGB-encoded content) */
+    WGPUTextureFormat format; /* the view's format: 8-bit unorm (sRGB-encoded content), or its
+                               * sRGB counterpart with AX_RENDER_WGPU_DIAG_LINEAR_BLEND */
     uint32_t width, height;   /* pixels */
     float scale;              /* device pixels per logical unit */
     ax_color background;      /* used when ir is NULL */

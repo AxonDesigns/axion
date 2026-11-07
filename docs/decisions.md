@@ -1771,3 +1771,55 @@ recording for hidden windows.
 
 **Status.** Approved (the bound and the rule for hidden windows were the owner's adjustments;
 the bound's value is pending the exit-criterion measurements).
+
+## 58. Roping of thin rotated lines: a known limitation of sRGB-space blending
+
+**Context.** Reviewing `m0_window --renderer=ir` on both monitors, the owner saw beads along the
+turning hairline fan (0.5 units, 0.66 px at scale 1.325) and the thin rects rotated by 3 degrees:
+the line looks brighter and dimmer in turn, repeating about every 19 px at 3 degrees.
+
+**Cause.** It is the roping of antialiasing blended in sRGB space, not a coverage fault. The
+coverage is the exact pixel area (decision 55; within 1/255 of the reference, decision 56):
+- A line 0.66 px wide centred on a pixel covers 66% of it. Straddling two pixels, it covers 33%
+  of each. The light added is the same only if the blend is linear.
+- In sRGB space, one pixel at 66% emits about 2.3 times the light of two pixels at 33% (light on
+  dark), so the line beads as it crosses pixel columns. Dark on light beads too, in the opposite
+  phase, so no correction of the coverage alone fixes both.
+
+**Measured** with `tools/diag/roping_sim.py`: the light the line adds per scanline, max/min over
+the scanlines (1.00 is even), for a line rotated 3 degrees, #E8ECF4 on #1E2129:
+
+| Width (px) | Box, sRGB (default) | Box, linear | Tent 1 px, sRGB |
+| --- | --- | --- | --- |
+| 0.33 | 1.48 | 1.05 | 1.29 |
+| 0.66 | 1.71 | 1.02 | 1.28 |
+| 1.325 | 1.27 | 1.01 | 1.07 |
+| 1.99 | 1.30 | 1.01 | 1.04 |
+
+The blending space causes nearly all of it. A wider filter only halves it and softens every edge
+to a 2 px ramp.
+
+**Decision.**
+- **sRGB-space blending stays the default**, as the document and decision 53 say. The roping is a
+  known limitation, the same browsers show. It shrinks with line width and display density.
+- **The exit criterion's "no jaggies when turning" means the staircase of aliasing**, which the
+  exact area coverage removes and the owner confirmed by eye on both monitors. The beads of
+  roping are a different artifact, accepted here.
+- **Diagnostic option** to compare both spaces: `ax_render_wgpu_desc.diagnostic_flags` with
+  `AX_RENDER_WGPU_DIAG_LINEAR_BLEND`.
+  - It is **unsupported**: for development comparisons only. It may change or disappear in any
+    version, and no application may set it.
+  - Colors are uploaded in linear light. Window surfaces render through the swapchain's sRGB view
+    (`ax_gpu_surface_desc.srgb_view`, decision 53), and `ax_render_wgpu_draw_ir` expects an
+    sRGB-format target.
+  - The library reads no environment variable. `examples/m0_window` sets the option when
+    `AX_RW_LINEAR_BLEND=1`.
+  - Test: `render_wgpu.coverage.the_linear_blend_diagnostic_mixes_in_linear_light` (translucent
+    colors and half coverage give 188, not 128).
+- **The blending space is to be decided together with text rendering:** issue #4
+  (AxonDesigns/axion). It holds this table, the consequences of blending in linear light
+  (translucency unlike CSS; edge and text weight depending on contrast; no hybrid in one pass
+  without reading the destination), and text engines' luminance-based contrast corrections as a
+  starting point.
+
+**Status.** Approved (the owner chose to keep sRGB-space blending and record the limitation).

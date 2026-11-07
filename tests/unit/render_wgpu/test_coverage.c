@@ -42,29 +42,32 @@
 static const WGPUTextureFormat k_format = WGPUTextureFormat_RGBA8Unorm;
 
 typedef struct env {
+    WGPUTextureFormat format;
     ax_gpu *gpu;
     ax_render_wgpu *r;
     ax_ir_builder b;
 } env;
 
 /* 1: ready; 0: skip (no adapter); -1: failed (reported). */
-static int env_init(env *e)
+static int env_init_ex(env *e, WGPUTextureFormat format, uint32_t diagnostic_flags)
 {
     ax_render_wgpu_desc d;
     int g;
     memset(e, 0, sizeof *e);
+    e->format = format;
     g = axt_gpu_create(NULL, &e->gpu);
     if (g <= 0) {
         return g;
     }
     memset(&d, 0, sizeof d);
     d.gpu = e->gpu;
+    d.diagnostic_flags = diagnostic_flags;
     if (ax_render_wgpu_create(NULL, &d, &e->r) != AX_OK) {
         ax_test_fail(__FILE__, __LINE__, "ax_render_wgpu_create: %s", ax_last_error()->message.ptr);
         ax_gpu_destroy(e->gpu);
         return -1;
     }
-    if (!ax__render_wgpu_test_wait_ready(e->r, k_format, 30ull * 1000000000ull)) {
+    if (!ax__render_wgpu_test_wait_ready(e->r, format, 30ull * 1000000000ull)) {
         ax_test_fail(__FILE__, __LINE__, "the pipeline did not become ready");
         ax_render_wgpu_destroy(e->r);
         ax_gpu_destroy(e->gpu);
@@ -72,6 +75,11 @@ static int env_init(env *e)
     }
     ax_ir_builder_init(&e->b, ax_default_allocator());
     return 1;
+}
+
+static int env_init(env *e)
+{
+    return env_init_ex(e, k_format, 0);
 }
 
 static void env_deinit(env *e)
@@ -82,9 +90,9 @@ static void env_deinit(env *e)
     ax_gpu_destroy(e->gpu);
 }
 
-#define ENV_INIT(e)                                                                    \
+#define ENV_INIT_EX(e, init)                                                           \
     do {                                                                               \
-        int axt__e = env_init(e);                                                      \
+        int axt__e = (init);                                                           \
         if (axt__e == 0) {                                                             \
             AX_SKIP("no WebGPU adapter (set AX_TEST_GPU_ADAPTER=software and install " \
                     "a software Vulkan driver)");                                      \
@@ -93,6 +101,7 @@ static void env_deinit(env *e)
             return;                                                                    \
         }                                                                              \
     } while (0)
+#define ENV_INIT(e) ENV_INIT_EX(e, env_init(e))
 
 /* Renders ir into a fresh texture and reads it back (width * height * 4 bytes, RGBA). */
 static uint8_t *render(env *e, const ax_render_ir *ir, uint32_t w, uint32_t h, float scale,
@@ -107,13 +116,13 @@ static uint8_t *render(env *e, const ax_render_ir *ir, uint32_t w, uint32_t h, f
     td.size.width = w;
     td.size.height = h;
     td.size.depthOrArrayLayers = 1;
-    td.format = k_format;
+    td.format = e->format;
     tex = wgpuDeviceCreateTexture(ax_gpu_device(e->gpu), &td);
     view = wgpuTextureCreateView(tex, NULL);
     memset(&draw, 0, sizeof draw);
     draw.struct_size = sizeof draw;
     draw.target = view;
-    draw.format = k_format;
+    draw.format = e->format;
     draw.width = w;
     draw.height = h;
     draw.scale = scale;
@@ -402,6 +411,45 @@ AX_TEST(blending_is_in_srgb_space_with_premultiplied_alpha)
         free(got);
     }
     check_scene(&e, "blending", ir, 32, 16, 1.0f, NULL);
+    env_deinit(&e);
+}
+
+/* The unsupported diagnostic option (decision 58): the same scene mixes in linear light. */
+AX_TEST(the_linear_blend_diagnostic_mixes_in_linear_light)
+{
+    env e;
+    const ax_render_ir *ir;
+    uint8_t *got;
+    ax_frame_status status;
+    ENV_INIT_EX(
+        &e, env_init_ex(&e, WGPUTextureFormat_RGBA8UnormSrgb, AX_RENDER_WGPU_DIAG_LINEAR_BLEND));
+    ax_ir_builder_begin(&e.b, 32, 24, 0, ax_color_make(0, 0, 0, 1));
+    ax_ir_rect(&e.b, ax_rect_make(0, 0, 16, 16), ax_color_from_srgb8(0x80FFFFFFu));
+    ax_ir_rect(&e.b, ax_rect_make(16, 0, 16, 16), ax_color_from_srgb8(0xFFFF0000u));
+    ax_ir_rect(&e.b, ax_rect_make(16, 0, 16, 16), ax_color_from_srgb8(0x800000FFu));
+    /* Below them, a half-covered pixel column: x = 8.25 at scale 2 puts the edge through pixel 16's
+     * middle. */
+    ax_ir_rect(&e.b, ax_rect_make(8.25f, 18, 4, 4), white());
+    ir = finish(&e);
+    if (ir == NULL) {
+        env_deinit(&e);
+        return;
+    }
+    got = render(&e, ir, 64, 48, 2.0f, &status, NULL);
+    if (got != NULL) {
+        const uint8_t *a = got + (8 * 64 + 8) * 4;
+        const uint8_t *b = got + (8 * 64 + 40) * 4;
+        const uint8_t *c = got + (40 * 64 + 16) * 4;
+        AX_CHECK_EQ_U(status, AX_FRAME_PRESENTED);
+        /* 50% of linear 1 is 0.5, encoded 188 (sRGB-space blending gives 128). */
+        AX_CHECK(a[0] >= 186 && a[0] <= 190);
+        AX_CHECK(b[0] >= 186 && b[0] <= 190);
+        AX_CHECK_EQ_U(b[1], 0);
+        AX_CHECK(b[2] >= 186 && b[2] <= 190);
+        /* Coverage blends in linear light too: half a pixel of white over black is 188. */
+        AX_CHECK(c[0] >= 186 && c[0] <= 190);
+        free(got);
+    }
     env_deinit(&e);
 }
 

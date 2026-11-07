@@ -100,6 +100,7 @@ static ax_result vt_attach(void *self, ax_surface surface)
     sd.struct_size = sizeof sd;
     sd.pacing = (ax_gpu_pacing)r->pacing;
     sd.present_mode = (WGPUPresentMode)r->present_mode;
+    sd.srgb_view = r->linear_blend;
     res = ax_gpu_surface_create(r->gpu, surface, &sd, &s->gs);
     if (res != AX_OK) {
         return res;
@@ -108,7 +109,7 @@ static ax_result vt_attach(void *self, ax_surface surface)
     info.struct_size = sizeof info;
     ax_gpu_surface_get_info(s->gs, &info);
     s->surface = surface;
-    s->format = info.view_format;
+    s->format = r->linear_blend ? info.srgb_view_format : info.view_format;
     s->attach_ns = ax_time_monotonic_ns();
     s->stats.struct_size = sizeof s->stats;
     r->surface_count++;
@@ -138,6 +139,7 @@ static ax_result vt_render(void *self, ax_surface surface, const ax_render_ir *i
     ax_render_wgpu_draw draw;
     ax_gpu_frame f;
     ax_frame_status status = AX_FRAME_NOTHING;
+    WGPUTextureView srgb_view = NULL;
     ax_result res;
 
     if (s == NULL) {
@@ -177,12 +179,25 @@ static ax_result vt_render(void *self, ax_surface surface, const ax_render_ir *i
     memset(&draw, 0, sizeof draw);
     draw.struct_size = sizeof draw;
     draw.target = f.view;
+    if (r->linear_blend) {
+        /* Diagnostic: blend in linear light through the sRGB view of the same texture. */
+        WGPUTextureViewDescriptor vd = WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
+        vd.format = s->format;
+        vd.dimension = WGPUTextureViewDimension_2D;
+        vd.mipLevelCount = 1;
+        vd.arrayLayerCount = 1;
+        srgb_view = wgpuTextureCreateView(f.texture, &vd);
+        draw.target = srgb_view;
+    }
     draw.format = s->format;
     draw.width = f.width;
     draw.height = f.height;
     draw.scale = f.target.scale;
     draw.background = r->initial_background;
     res = ax_render_wgpu_draw_ir(r, &draw, ir, &status, &out->counts);
+    if (srgb_view != NULL) {
+        wgpuTextureViewRelease(srgb_view);
+    }
     if (res != AX_OK) {
         /* Still present (the clear went out, or nothing): the configure must be answered. */
         status = AX_FRAME_CLEARED;

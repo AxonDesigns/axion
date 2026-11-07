@@ -62,6 +62,7 @@ struct ax_render_wgpu {
     uint32_t ring_generation;
     ax_arena scratch; /* per-frame encoding memory */
 
+    bool linear_blend;   /* AX_RENDER_WGPU_DIAG_LINEAR_BLEND (unsupported, decision 58) */
     uint32_t test_flags; /* RW_TEST_* (render/wgpu/src/rw_testing.h) */
 
     rw_surface *surfaces; /* window surfaces (surface.c), NULL without the platform module */

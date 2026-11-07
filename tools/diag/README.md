@@ -7,6 +7,7 @@ linked into an AXION library or example, or shipped.
 | --- | --- |
 | `wl_read_trace.c` | LD_PRELOAD library counting libwayland read and dispatch calls per thread, to see which threads read the display fd (decision 49). Built with `-DAX_BUILD_DIAG_TOOLS=ON`. |
 | `measure_m0.py` | Runs `examples/m0_window` across renderer, pacing, decorations, monitor and quiet/resize on KDE Plasma, and prints a summary table (decision 49). |
+| `roping_sim.py` | Simulates the roping of thin rotated lines for box and tent filters blended in sRGB space or linear light, and prints the table of decision 58. Needs numpy. |
 | `kwin_place_m0.qml.in` | KWin declarative script template `measure_m0.py` uses to move the window to a monitor and resize it about 120 times per second. |
 
 ```sh

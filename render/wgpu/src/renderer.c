@@ -40,6 +40,7 @@ ax_result ax_render_wgpu_create(const ax_allocator *allocator, const ax_render_w
     if (desc != NULL) {
         r->pacing = desc->pacing;
         r->present_mode = desc->present_mode;
+        r->linear_blend = (desc->diagnostic_flags & AX_RENDER_WGPU_DIAG_LINEAR_BLEND) != 0;
     }
     if (desc != NULL && desc->gpu != NULL) {
         r->gpu = desc->gpu;
@@ -393,7 +394,10 @@ static ax_result encode(ax_render_wgpu *r, const ax_render_ir *ir, uint32_t widt
                 counts->invalid_items++;
                 continue;
             }
-            enc = ax_color_to_srgb_premultiplied(ax_color_scale(color, s->opacity));
+            enc = ax_color_scale(color, s->opacity);
+            if (!r->linear_blend) {
+                enc = ax_color_to_srgb_premultiplied(enc);
+            }
             enc.a = clampf(enc.a, 0.0f, 1.0f);
             enc.r = clampf(enc.r, 0.0f, enc.a);
             enc.g = clampf(enc.g, 0.0f, enc.a);
@@ -479,7 +483,10 @@ ax_result ax_render_wgpu_draw_ir(ax_render_wgpu *r, const ax_render_wgpu_draw *d
         }
     }
 
-    bg = ax_color_to_srgb_premultiplied(ir != NULL ? ir->background : draw->background);
+    bg = ir != NULL ? ir->background : draw->background;
+    if (!r->linear_blend) {
+        bg = ax_color_to_srgb_premultiplied(bg);
+    }
     color.view = draw->target;
     color.loadOp = WGPULoadOp_Clear;
     color.storeOp = WGPUStoreOp_Store;
