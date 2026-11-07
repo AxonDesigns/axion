@@ -1325,12 +1325,43 @@ present or hit a protocol error.
   NVIDIA, so nothing suggests Mesa needs a different default.
   - **Pending validation with Mesa on real hardware (AMD or Intel).** The choice was measured
     with NVIDIA 615.78 only.
-- **Exit-criterion comparison with shm:**
-  - Quiet, and resizing on the 72 Hz monitor: the GPU path measures the same.
-  - Resizing at 260 Hz: it misses 0-6 vblanks per second (one second had 13), where shm misses
-    none. Each configure recreates the swapchain, about 1.5 ms (max 5.3 ms) of a 3.85 ms frame;
-    shm reuses its buffers.
-  - Recorded as a known gap, not hidden. The owner decides whether to close it before merging.
+- **Exit-criterion comparison with shm:** quiet, and resizing on the 72 Hz monitor, the GPU path
+  measures the same as shm. The owner validated the example by eye on both monitors.
+- **Known limitation: resizing at 260 Hz.**
+  - The GPU path misses 0 to 6 vblanks per second while resizing, and shm misses none. One second
+    reached 13, during a 5.3 ms recreation.
+  - Cause: every configure with a new size recreates the swapchain, 1.5 ms mean and 5.3 ms max on
+    NVIDIA 615.78, out of a 3.85 ms frame. shm reuses its buffers.
+  - Accepted by the owner for this step. Tracked in a GitHub issue, to be reviewed when M0's exit
+    criterion (smooth resize at the display's refresh rate) is measured.
+- **Future work: a swapchain reserved in sizes rounded up, cropped with the viewport's source.**
+  - The swapchain would be allocated at the configure's pixel size rounded up to a bucket, for
+    example the next multiple of 128 or 256 px, or with headroom over the current size.
+  - Frames render only the configured region. `wp_viewport.set_source` crops the buffer to it,
+    and `set_destination` keeps mapping that region to the logical size.
+  - The swapchain is recreated only when a configure leaves the bucket, not on every configure.
+  - **This changes the contract of decisions 34 and 38.** Today the buffer committed with an
+    acknowledgement measures exactly the acknowledged pixel size. With buckets, the attached
+    buffer is larger, and the viewport's source rectangle carries the exact size instead.
+    - Decision 34's rule becomes "the acknowledgement, a source rectangle of the configured size
+      and the matching destination land in one commit".
+    - Decision 38's step 2 (the swapchain extent equals the frame's pixel size) becomes "the
+      extent contains it".
+    - The presentation tests' check that every texture equals the configured size would compare
+      the source rectangle instead.
+  - **Other considerations:**
+    - Memory: up to a bucket's worth of extra pixels per image.
+    - Every frame must set the source rectangle.
+    - `set_source` is part of wp_viewporter, which KWin and weston implement; still to check with
+      GPU (dmabuf) buffers on each.
+    - Still to validate: no stretching while the bucket changes.
+  - **Windows equivalent** for when the Win32 backend lands:
+    - DXGI's `IDXGISwapChain2::SetSourceSize(width, height)` sets the region of the back buffers
+      that is presented. That is an effective resize without the more expensive
+      `ResizeBuffers`.
+    - The region must fit within the buffers' size (from creation or the last `ResizeBuffers`), so
+      the same bucketing applies, with `ResizeBuffers` only when a size leaves the bucket.
+    - Check the exact requirements against the DXGI documentation when that backend is designed.
 - **Risk 2, who reads the socket:** measured with `tools/diag/wl_read_trace.c` (LD_PRELOAD,
   3-second runs on KWin).
   - Mesa (lavapipe): reads the display fd from the presenter thread, inside acquire and present,
