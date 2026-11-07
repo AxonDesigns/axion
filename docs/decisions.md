@@ -62,6 +62,7 @@ new entry that points back to the old one.
 | 46  | Device-lost detection and recovery                       | Approved       |
 | 47  | Failed commits after prepare_commit                      | Approved       |
 | 48  | GPU surfaces, swapchain resizes and the FIFO queue       | Approved       |
+| 49  | Pacing default and who reads the socket (measured)       | Approved       |
 
 ---
 
@@ -1254,7 +1255,99 @@ choice of risk 1 are in decision 49, risk 4 in decision 47; risk 6 stays open.
 - **An environment quirk, not ours:** FIFO on weston 15 headless runs at about 6 fps with Mesa.
   vkcube is just as slow (120 frames in 19 s with FIFO, 148 ms with MAILBOX). The FIFO tests check
   correctness, never rates.
-- **Still to confirm (step 7):** whether KWin applies acknowledgements the same way, with NVIDIA's
-  WSI and with lavapipe on the owner's desktop. The result will be recorded here.
+- **KWin (checked on the owner's desktop, KWin 6.8.2):**
+  - The standalone reproduction that weston 15 rejects runs on KWin without a protocol error
+    (3 of 3). KWin announces wp_fifo_v1.
+  - NVIDIA's WSI (615.78) on KWin with FIFO makes one commit per present: wp_fifo_v1 barriers,
+    explicit sync, no commit-timing.
+  - In a resize traced with `WAYLAND_DEBUG`, every frame that acknowledged a configure did so in
+    the same commit as the buffer of the new size (for example 825x480 logical, a 1093x636 buffer
+    at scale 1.325). 167 acknowledgements, no protocol error.
+  - With lavapipe on KWin, both pacings ran the whole measurement matrix without errors
+    (decision 49).
+  - The drain stays: weston needs it, and it costs nothing when nothing is queued.
 
 **Status.** Approved (the drain and its rules were approved by the owner).
+
+## 49. Pacing default and who reads the socket (measured)
+
+**Context.** Decision 38's risk 1 (double throttling) and risk 2 (who reads the socket) needed
+measurements on the owner's desktop:
+- KDE Plasma 6.8.2 (KWin, Wayland);
+- NVIDIA GeForce GTX 1650 with the proprietary driver 615.78, so the Vulkan WSI is NVIDIA's,
+  closed;
+- HDMI-A-1 at 71.91 Hz (scale 1) and DP-2 at 260 Hz (scale 1.325).
+
+The owner asked for the choice to be made from NVIDIA's numbers only, since no GPU on this
+machine presents through Mesa.
+
+**Method.** `tools/diag/measure_m0.py` (development only) runs `examples/m0_window --stats`
+across the matrix:
+- renderer: shm, GPU with compositor pacing, GPU with driver pacing, plus the same two on
+  lavapipe (Mesa's WSI on KWin, software rendering);
+- decorations: native, none;
+- monitor: both;
+- state: quiet, or resized by a KWin script (`tools/diag/kwin_place_m0.qml.in`) about 120 times a
+  second.
+
+Each run measures 6 s after a 3 s warm-up; the table below averages per second. A first full run
+was discarded: KWin refused the script ("File name case mismatch"), so windows were neither placed
+nor resized by the script.
+
+**Results** (Hz presented; missed vblanks and discarded frames per second; configure-to-screen
+latency mean / max; swapchain resizes per second and their cost mean / max):
+
+| Renderer | Monitor | Quiet | Resizing |
+| --- | --- | --- | --- |
+| shm | 72 Hz | 71.9 Hz, 0 missed, 0 discarded | 71.9 Hz, 0 missed, 22.8 / 29.2 ms |
+| shm | 260 Hz | 260.0 Hz, 0, 0 | 260.0 Hz, 0 missed, 11.9 / 14.8 ms |
+| GPU, compositor pacing (MAILBOX) | 72 Hz | 71.9 Hz, 0, 0 | 71.9 Hz, 0 missed, 22.3 / 28.3 ms; 72 resizes/s, 1.6 / 4.7 ms |
+| GPU, compositor pacing | 260 Hz | 260.0 Hz, 0, 0 | 257.2 Hz, 2.8 missed/s, 11.5 / 17.9 ms; 124 resizes/s, 1.5 / 5.3 ms |
+| GPU, driver pacing (FIFO) | 72 Hz | 71.9 Hz, 0, 0 | 24.0 Hz, 46 missed/s, 57 / 62 ms |
+| GPU, driver pacing | 260 Hz | 260.0 Hz, 0, 0 (0.14 in one run) | 63.6 Hz, 193 missed/s, 26 / 38 ms |
+| lavapipe, compositor | 72 / 260 Hz | 71.9 / 260.0 Hz, 0, 0 | 71.9 Hz, 0 missed / 223 Hz, 37 missed/s (software rendering at 260 Hz) |
+| lavapipe, driver | 72 / 260 Hz | 71.9 / 260.0 Hz, 0, 0 | 24.0 Hz / 56 Hz, the same collapse as NVIDIA |
+
+Both decoration modes gave the same numbers (within 0.2 missed/s). No run lost a frame, failed a
+present or hit a protocol error.
+
+**Decision.**
+- **Risk 1, pacing:** the default is compositor pacing (MAILBOX, paced by frame callbacks and the
+  frame clock), on every driver.
+  - Quiet, both pacings reach the refresh rate with nothing missed. With FIFO, the frames block
+    in the driver instead: acquire up to 15 ms.
+  - Resizing separates them. With FIFO, every frame that acknowledges a configure first waits for
+    the swapchain's queue to drain plus two refreshes (decision 48), so resizes run at a third of
+    the refresh rate. That is the jitter the owner saw on the 72 Hz monitor.
+  - Driver pacing stays selectable (`AX_GPU_PACING_DRIVER`, `m0_window --pacing=driver`).
+- **Per-driver choice:** `default_pacing()` in `gpu/src/surface.c` is the only place the default
+  is chosen, with the adapter's vendor and driver available. lavapipe follows the same pattern as
+  NVIDIA, so nothing suggests Mesa needs a different default.
+  - **Pending validation with Mesa on real hardware (AMD or Intel).** The choice was measured
+    with NVIDIA 615.78 only.
+- **Exit-criterion comparison with shm:**
+  - Quiet, and resizing on the 72 Hz monitor: the GPU path measures the same.
+  - Resizing at 260 Hz: it misses 0-6 vblanks per second (one second had 13), where shm misses
+    none. Each configure recreates the swapchain, about 1.5 ms (max 5.3 ms) of a 3.85 ms frame;
+    shm reuses its buffers.
+  - Recorded as a known gap, not hidden. The owner decides whether to close it before merging.
+- **Risk 2, who reads the socket:** measured with `tools/diag/wl_read_trace.c` (LD_PRELOAD,
+  3-second runs on KWin).
+  - Mesa (lavapipe): reads the display fd from the presenter thread, inside acquire and present,
+    with libwayland's `prepare_read` protocol: 28 reads in 3 s with MAILBOX, 1471 with FIFO (every
+    frame).
+  - NVIDIA 615.78: the presenter reads 47 times in 3 s in both modes, all of them setup
+    roundtrips; it does not read per frame. It throttles with explicit sync
+    (`wp_linux_drm_syncobj`) and wp_fifo_v1.
+  - No driver creates a thread of its own that reads the connection.
+  - This is safe. The main thread holds a prepared read while it polls, so a WSI read on the
+    presenter thread blocks until the main thread reads too (libwayland's last reader reads), and
+    no event is lost. The main thread wakes presenters after every read, and `wait_frame`
+    dispatches the presenter queue before sleeping, so events another thread read are handled.
+  - `wait_frame` does not need to poll the fd itself.
+  - Cost: a WSI read on the presenter can wait for the main thread to be scheduled; a stalled main
+    thread would stall a presenter inside acquire. Recorded, not a problem today.
+- **Risk 6 (commit-timing)** stays for later.
+
+**Status.** Approved (the owner set the method and the rule to choose from NVIDIA's numbers);
+pending validation with Mesa on AMD or Intel hardware.

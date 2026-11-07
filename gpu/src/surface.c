@@ -56,6 +56,14 @@ static bool is_srgb(WGPUTextureFormat f)
     return f == WGPUTextureFormat_BGRA8UnormSrgb || f == WGPUTextureFormat_RGBA8UnormSrgb;
 }
 
+/*
+ * The pacing used when the caller asks for AX_GPU_PACING_DEFAULT (decision 49): the compositor's,
+ * on every driver measured. With FIFO (driver pacing) a resize drops to a third of the refresh
+ * rate on KWin, because each frame that acknowledges a configure must first wait for the
+ * swapchain's queue to drain (decision 48). Measured with NVIDIA 615.78 on KWin 6.8; lavapipe
+ * (Mesa's WSI) behaves the same, but Mesa on real AMD or Intel hardware is still to be validated.
+ * Per-driver choices go here: the adapter's vendor and driver are in ax_gpu_get_info.
+ */
 static ax_gpu_pacing default_pacing(ax_gpu *gpu)
 {
     (void)gpu;
