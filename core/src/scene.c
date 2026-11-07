@@ -278,77 +278,6 @@ static size_t value_size(ax_value_type type)
     return 0;
 }
 
-static bool all_finite(const float *f, int n)
-{
-    int i;
-    for (i = 0; i < n; ++i) {
-        if (!isfinite(f[i])) {
-            return false;
-        }
-    }
-    return true;
-}
-
-static ax_result check_value(const ax_prop_desc *d, ax_value_type type, const ax_value *v)
-{
-    if (type != d->type) {
-        return ax_set_error(AX_ERR_INVALID_ARGUMENT,
-                            "property %s: wrong value type %d (expects %d)", d->name, (int)type,
-                            (int)d->type);
-    }
-    switch (type) {
-    case AX_VALUE_F32:
-        if (!isfinite(v->f32) || v->f32 < d->min_value || v->f32 > d->max_value) {
-            return ax_set_error(AX_ERR_INVALID_ARGUMENT,
-                                "property %s: %g is not finite or outside [%g, %g]", d->name,
-                                (double)v->f32, (double)d->min_value, (double)d->max_value);
-        }
-        break;
-    case AX_VALUE_DIMENSION:
-        switch (v->dimension.unit) {
-        case AX_UNIT_AUTO:
-            break;
-        case AX_UNIT_POINTS:
-            if (!isfinite(v->dimension.value) || v->dimension.value < d->min_value ||
-                v->dimension.value > d->max_value) {
-                return ax_set_error(AX_ERR_INVALID_ARGUMENT,
-                                    "property %s: %g points is not finite or outside [%g, %g]",
-                                    d->name, (double)v->dimension.value, (double)d->min_value,
-                                    (double)d->max_value);
-            }
-            break;
-        case AX_UNIT_PERCENT:
-            return ax_set_error(AX_ERR_UNSUPPORTED,
-                                "property %s: percentages need layout, which is not implemented",
-                                d->name);
-        default:
-            return ax_set_error(AX_ERR_INVALID_ARGUMENT, "property %s: unknown unit %u", d->name,
-                                (unsigned)v->dimension.unit);
-        }
-        break;
-    case AX_VALUE_VEC2:
-        if (!all_finite(&v->vec2.x, 2)) {
-            return ax_set_error(AX_ERR_INVALID_ARGUMENT, "property %s: not finite", d->name);
-        }
-        break;
-    case AX_VALUE_COLOR:
-        if (!all_finite(&v->color.r, 4)) {
-            return ax_set_error(AX_ERR_INVALID_ARGUMENT, "property %s: color not finite", d->name);
-        }
-        break;
-    case AX_VALUE_TRANSFORM2D:
-        if (!all_finite(&v->transform2d.a, 6)) {
-            return ax_set_error(AX_ERR_INVALID_ARGUMENT, "property %s: transform not finite",
-                                d->name);
-        }
-        break;
-    case AX_VALUE_U32:
-    case AX_VALUE_BOOL:
-        break;
-    }
-    return AX_OK;
-}
-
 ax_result ax_scene_check_value(const ax_scene *scene, ax_prop prop, ax_value_type type,
                                const ax_value *value)
 {
@@ -356,7 +285,7 @@ ax_result ax_scene_check_value(const ax_scene *scene, ax_prop prop, ax_value_typ
     if (d == NULL) {
         return ax_set_error(AX_ERR_INVALID_ARGUMENT, "unknown property 0x%x", (unsigned)prop);
     }
-    return check_value(d, type, value);
+    return ax_prop_check_value(d, type, value);
 }
 
 /* Address of a built-in property's value in its hot column. */
@@ -422,7 +351,7 @@ ax_result ax_scene_set(ax_scene *scene, ax_node node, ax_prop prop, ax_value_typ
     if (d == NULL) {
         return ax_set_error(AX_ERR_INVALID_ARGUMENT, "unknown property 0x%x", (unsigned)prop);
     }
-    r = check_value(d, type, value);
+    r = ax_prop_check_value(d, type, value);
     if (r != AX_OK) {
         return r;
     }

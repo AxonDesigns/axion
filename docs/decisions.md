@@ -78,6 +78,9 @@ new entry that points back to the old one.
 | 62  | Node store: rows, slots, links and side components       | Implementation |
 | 63  | Property system: ids, types, registry and validation     | Implementation |
 | 64  | Dirty propagation and relayout boundaries                | Implementation |
+| 65  | Transaction queue: a linked SPSC queue, not a ring       | Deviation      |
+| 66  | Handle reservation on the app thread                     | Implementation |
+| 67  | The world, the transaction API and its encoding          | Implementation |
 
 ---
 
@@ -2273,5 +2276,140 @@ root list).
   - the shorthand marks like its longhands.
 
 What a rejected transaction leaves in these flags is decided and tested with the transactions.
+
+**Status.** Implementation, pending the owner's approval.
+
+## 65. Transaction queue: a linked SPSC queue, not a ring
+
+**Context.** "Queues" says lock-free single-producer rings carry transactions from the app thread to
+the scene thread. A fixed ring can fill when the scene thread stalls (the case the architecture is
+built for: the app keeps committing while the scene catches up). The app thread would then have to
+hold commits back and resend them on a later call, and a commit followed by no further call would
+never be delivered.
+
+**Decision.** Approved by the owner: committed transactions go through a **wait-free
+single-producer single-consumer linked queue with a stub node**, whose nodes are the transaction
+objects themselves.
+- The producer (app thread) clears the object's link, stores it into the tail's link with release
+  order, and makes it the tail. The consumer (scene thread) follows the head's link with acquire
+  order. Neither side loops or waits; the queue is unbounded and allocates nothing.
+- The object the scene thread last took stays as the dummy head until the next take: only then is
+  it certain that the producer will not touch its link again. The take that replaces it hands the
+  old dummy back to the app thread. A world therefore keeps one extra transaction object alive.
+- Everything else between the threads uses fixed rings (`ax_spsc_ring`, new in base's internal
+  SDK): objects coming back, recycled handles and rejections. Overflow cannot lose anything that
+  matters there:
+  - objects and recycled handles the rings cannot take wait in scene-side backlogs, flushed on the
+    next take (out of memory there loses an object or a slot, never correctness);
+  - rejection records beyond 64 are counted and reported as dropped (decision 67).
+- **Not the MPSC variant.** The owner asked for the single-producer form, not Vyukov's
+  multi-producer queue: one app thread commits per world.
+- Tests: `base.spsc_ring` (wrapping, and 200 000 records across two threads, untorn and in order);
+  `core.txn.the_queue_carries_transactions_between_two_threads` (20 000 transactions, each command
+  derived from its sequence, one in ten rejected, under TSan, also pinned to one CPU).
+
+**Status.** Deviation from "rings carry transactions", chosen by the owner.
+
+## 66. Handle reservation on the app thread
+
+**Context.** `ax_txn_create` returns the node's handle at once, before the scene thread has seen
+the transaction, and the app thread must never wait. Only the scene thread may touch the node store.
+
+**Decision.** The **app thread is the only party that hands out handles**; the **scene thread only
+returns slots**.
+- **Fresh slots:** a counter only the app thread touches; a fresh slot starts at generation 1. The
+  store opens slots it has not seen when a create names them (decision 62's external mode).
+- **Recycled slots:** when the scene destroys a node, the store reports the slot's next handle
+  (generation + 1), and the scene thread sends it back through a ring. The app thread hands
+  recycled handles out first (LIFO), then fresh slots. A slot comes back only after its node's
+  destruction has been applied, so a handle still in flight can never match a new node (no ABA).
+- **Creates that never happen:** when a transaction is aborted, fails to record, or is rejected by
+  the scene, the app thread recycles each handle it created at the next generation itself, without
+  telling the scene. The store accepts the skipped generation when the slot is next used (the
+  owner's change to decision 62).
+  - For a rejected transaction this happens when the object comes back to the app thread. The
+    scene's rollback destroys the nodes it had created without reporting their slots, so each slot
+    comes back exactly once.
+- **Retirement:** a handle at generation `UINT32_MAX` is never handed out again, by the app thread
+  as by the store.
+- If the app thread's list of recycled handles cannot grow, the slot is retired instead: lost, never
+  reused, never wrong.
+- Tests (`core.txn`): fresh handles, aborted creates coming back one generation later in LIFO order,
+  recycled and retired handles, a rejected transaction's create recycled once the object returns.
+
+**Status.** Implementation, pending the owner's approval.
+
+## 67. The world, the transaction API and its encoding
+
+**Context.** "Transactions" gives the API (`ax_txn_begin`, `create`, `set_*`, `append_child`,
+`commit`). The owner asked for:
+- `remove`;
+- `set_animated` and `set_transition` recorded without effect until animations exist;
+- a compact command buffer without an allocation per command;
+- a sequence number per transaction;
+- errors that reach the app thread;
+- an injectable clock for commit times and apply deadlines.
+
+**Decision.**
+- **The world** (`ax_world.h`, stable): a handle, like `ax_app`, from a table of 16 worlds claimed
+  with compare-and-swap. It owns one scene (decision 64) and the queues between threads.
+  - `ax_world_desc`: `struct_size` and `next`, the allocator (called from the app and scene
+    threads, so it must be thread-safe), and the clock (`ax_clock_fn` plus a user pointer;
+    by default base's monotonic clock).
+  - `ax_world_now` reads that clock. Commit times and apply deadlines use it, so a headless host
+    can drive time by hand and the frame pipeline can compare deadlines with the vsync's predicted
+    present time.
+  - Threads: the creator is the app thread and the scene thread until the scene thread takes over
+    (`ax_world_bind_scene_thread`, internal SDK, which also binds the node store; tests call it
+    from their scene thread, and the next step's scene thread will). `ax_world_bind_app_thread`
+    exists for bindings whose VM thread is not the creator. Debug builds assert the role on entry;
+    `ax_txn_begin` and `ax_txn_commit` also return `AX_ERR_WRONG_THREAD` in release builds
+    (decision 32's rule), and the functions without a result assert only.
+- **Transactions** (`ax_txn.h`, stable). `ax_txn *` is a pointer, as in the document: a
+  short-lived app-thread object, not a shared one.
+  - `begin`, `create`, `set_f32` / `set_dimension` / `set_vec2` / `set_color` / `set_transform` /
+    `set_u32` / `set_bool`, `append_child`, `insert_before`, `remove`, `set_animated`,
+    `set_transition`, `commit` and `abort`.
+  - Strings (`set_str`, value type 8) wait for the first string property.
+  - `ax_rgba_from_srgb` and `ax_rgba_from_srgb8` convert CSS-style colors to the stored form
+    (decision 50).
+  - **`remove`** destroys the node and its subtree when the transaction applies; later commands of
+    the same transaction that name it fail as stale.
+  - **`ax_transition`** has `struct_size`, `next`, a kind (none, timing, spring), delay, duration,
+    a Bezier curve and a bounce. It is validated and recorded, with no effect yet. Its fields may
+    still change with animations, before the ABI is frozen. A transition on a shorthand is
+    recorded once per longhand (the owner's rule for `CORNER_RADIUS`).
+- **Recording errors are sticky**, as in the Render IR builder (decision 51).
+  - What can be checked without the scene is checked when recording: null handles, inserting a
+    node into or before itself, an unknown node kind, and for core properties the type and the
+    value (`ax_prop_check_value`, which needs no scene and is safe on any thread). Run-time
+    properties are checked when applied.
+  - The first error is kept with its command index; later calls do nothing, and `ax_txn_commit`
+    returns the error (`ax_last_error`: "transaction command N: ...") and queues nothing.
+- **Encoding:** one byte buffer per transaction object.
+  - Each command is a header `{u16 op, u16 flags, u32 size}` and its fields, 8-byte aligned:
+    create, set (the value inline), insert (append is insert before null), remove, transition.
+  - The buffer grows geometrically and stays with the object, and objects are recycled, so a warm
+    transaction of any size allocates nothing (tested over 1000 commands with the tracking
+    allocator).
+  - Readers check each command's op and size against the buffer (`ax_txn_cmd_valid`) before using
+    it.
+- **Sequence numbers** are given at commit, from 1, in commit order, which is the queue's order.
+  The commit time comes from the world's clock.
+- **Results on the app thread:**
+  - `ax_world_poll_txn_error` returns rejections (sequence, result, failing command, message) in
+    order. At most `AX_TXN_ERROR_QUEUE` (64) wait; beyond that they are counted and reported as
+    dropped, so a scene that rejects a flood never blocks or allocates.
+  - Successful transactions produce no record. `ax_world_last_applied_seq` is the newest sequence
+    applied or rejected.
+  - The mirror and `ax_txn_on_presented` arrive in later steps.
+- **The scene thread's side** (`ax_world_sdk.h`): `peek`, `take`, `finish` (the outcome, and the
+  rejection record), `recycle_handle`, and the command reader. Applying transactions builds on them
+  in the next step.
+- Tests (`core.txn`): the world's handle and clock, `struct_size` checks, the sRGB conversion,
+  every command's fields in order with the shorthand's transitions expanded, sequences, each kind
+  of recording error, handle reservation (decision 66), a warm transaction without allocations,
+  rejections reaching the app thread (and the 64-record limit), teardown with queued and open
+  transactions, and the two-thread stress of decision 65.
 
 **Status.** Implementation, pending the owner's approval.

@@ -5,10 +5,12 @@
  * The property registry: the built-in table and properties registered at run time.
  */
 #include <float.h>
+#include <math.h>
 #include <stddef.h>
 #include <string.h>
 
 #include <axion/base/ax_assert.h>
+#include <axion/base/ax_error_set.h>
 #include <axion/base/ax_memory.h>
 #include <axion/core/ax_prop_registry.h>
 
@@ -268,6 +270,84 @@ ax_result ax_prop_registry_register(ax_prop_registry *reg, ax_node_store *store,
     reg->dynamic_count++;
     if (out_id != NULL) {
         *out_id = d.id;
+    }
+    return AX_OK;
+}
+
+const ax_prop_desc *ax_prop_builtin(ax_prop id)
+{
+    return search(BUILTINS, BUILTIN_COUNT, id);
+}
+
+/* ---- Validation ---- */
+
+static bool all_finite(const float *f, int n)
+{
+    int i;
+    for (i = 0; i < n; ++i) {
+        if (!isfinite(f[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+ax_result ax_prop_check_value(const ax_prop_desc *d, ax_value_type type, const ax_value *v)
+{
+    if (type != d->type) {
+        return ax_set_error(AX_ERR_INVALID_ARGUMENT,
+                            "property %s: wrong value type %d (expects %d)", d->name, (int)type,
+                            (int)d->type);
+    }
+    switch (type) {
+    case AX_VALUE_F32:
+        if (!isfinite(v->f32) || v->f32 < d->min_value || v->f32 > d->max_value) {
+            return ax_set_error(AX_ERR_INVALID_ARGUMENT,
+                                "property %s: %g is not finite or outside [%g, %g]", d->name,
+                                (double)v->f32, (double)d->min_value, (double)d->max_value);
+        }
+        break;
+    case AX_VALUE_DIMENSION:
+        switch (v->dimension.unit) {
+        case AX_UNIT_AUTO:
+            break;
+        case AX_UNIT_POINTS:
+            if (!isfinite(v->dimension.value) || v->dimension.value < d->min_value ||
+                v->dimension.value > d->max_value) {
+                return ax_set_error(AX_ERR_INVALID_ARGUMENT,
+                                    "property %s: %g points is not finite or outside [%g, %g]",
+                                    d->name, (double)v->dimension.value, (double)d->min_value,
+                                    (double)d->max_value);
+            }
+            break;
+        case AX_UNIT_PERCENT:
+            return ax_set_error(AX_ERR_UNSUPPORTED,
+                                "property %s: percentages need layout, which is not implemented",
+                                d->name);
+        default:
+            return ax_set_error(AX_ERR_INVALID_ARGUMENT, "property %s: unknown unit %u", d->name,
+                                (unsigned)v->dimension.unit);
+        }
+        break;
+    case AX_VALUE_VEC2:
+        if (!all_finite(&v->vec2.x, 2)) {
+            return ax_set_error(AX_ERR_INVALID_ARGUMENT, "property %s: not finite", d->name);
+        }
+        break;
+    case AX_VALUE_COLOR:
+        if (!all_finite(&v->color.r, 4)) {
+            return ax_set_error(AX_ERR_INVALID_ARGUMENT, "property %s: color not finite", d->name);
+        }
+        break;
+    case AX_VALUE_TRANSFORM2D:
+        if (!all_finite(&v->transform2d.a, 6)) {
+            return ax_set_error(AX_ERR_INVALID_ARGUMENT, "property %s: transform not finite",
+                                d->name);
+        }
+        break;
+    case AX_VALUE_U32:
+    case AX_VALUE_BOOL:
+        break;
     }
     return AX_OK;
 }

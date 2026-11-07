@@ -87,6 +87,18 @@ AX_API const ax_prop_desc *ax_prop_registry_find(const ax_prop_registry *reg, ax
 /* By name (exact match), or NULL. */
 AX_API const ax_prop_desc *ax_prop_registry_find_by_name(const ax_prop_registry *reg, ax_str name);
 
+/* A built-in property's descriptor, or NULL. Needs no registry: callable from any thread. */
+AX_API const ax_prop_desc *ax_prop_builtin(ax_prop id);
+
+/*
+ * Checks a value against a descriptor: the type must be the property's, numbers finite and in
+ * the property's range, units known. AX_ERR_INVALID_ARGUMENT, or AX_ERR_UNSUPPORTED for a
+ * percentage until layout exists; records ax_last_error with the property's name. Pure: callable
+ * from any thread.
+ */
+AX_API ax_result ax_prop_check_value(const ax_prop_desc *desc, ax_value_type type,
+                                     const ax_value *value);
+
 /* The built-in descriptors, sorted by id (for tests and tools). */
 AX_API const ax_prop_desc *ax_prop_registry_builtins(uint32_t *out_count);
 
