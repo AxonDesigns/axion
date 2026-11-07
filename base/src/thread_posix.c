@@ -6,6 +6,9 @@
  * -pthread).
  */
 #define _POSIX_C_SOURCE 200809L
+#if defined(__linux__)
+#    define _GNU_SOURCE /* sched_getaffinity, CPU_COUNT */
+#endif
 #if defined(__APPLE__)
 #    define _DARWIN_C_SOURCE /* pthread_cond_timedwait_relative_np, clock_gettime */
 #endif
@@ -99,7 +102,20 @@ void ax_thread_yield(void)
 
 uint32_t ax_cpu_count(void)
 {
-    long n = sysconf(_SC_NPROCESSORS_ONLN);
+    long n;
+#if defined(__linux__)
+    /* The processors this process may run on: respects taskset and container cpusets. */
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    if (sched_getaffinity(0, sizeof set, &set) == 0) {
+        n = CPU_COUNT(&set);
+        if (n >= 1) {
+            return (uint32_t)n;
+        }
+    }
+    /* Fails with more processors than a cpu_set_t holds (1024); fall back to the online count. */
+#endif
+    n = sysconf(_SC_NPROCESSORS_ONLN);
     if (n < 1) {
         return 1;
     }

@@ -418,7 +418,8 @@ AX_TEST(idle_workers_steal_from_an_unbalanced_deque)
     for (i = 0; i <= AX_JOBS_MAX_WORKERS; ++i) {
         uint32_t n = ax_atomic_load_u32(&ctx.ran_on[i], AX_MO_RELAXED);
         total += n;
-        if (i != ctx.root_worker && n > 0) {
+        /* Workers other than the root's: the test thread's entry does not count. */
+        if (i < AX_JOBS_MAX_WORKERS && i != ctx.root_worker && n > 0) {
             other_workers++;
         }
     }

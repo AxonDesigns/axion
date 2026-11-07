@@ -1950,8 +1950,11 @@ waiters that run pending jobs instead of sleeping and a single-threaded mode wit
 **Decision.** `base/include/axion/base/ax_jobs.h`, `base/src/jobs.c`.
 - **Pool:** `ax_jobs_desc.worker_count` threads, or by default `ax_cpu_count()` minus
   `reserved_threads` (4: main, app, scene and render), at least 1, at most 64.
-  - `ax_cpu_count()` is new in base (`sysconf`, `GetActiveProcessorCount`, 1 without threads).
-    It ignores affinity masks and container quotas, which is why the count can be overridden.
+  - `ax_cpu_count()` is new in base. On Linux it counts the affinity mask
+    (`sched_getaffinity` + `CPU_COUNT`), so taskset and container cpusets are respected, with
+    `sysconf(_SC_NPROCESSORS_ONLN)` as the fallback; elsewhere it is the online processors
+    (`sysconf`, `GetActiveProcessorCount`), and 1 without threads. CPU quotas (cgroup `cpu.max`)
+    are not counted, which is one reason the count can be overridden.
 - **Deques:** one Chase-Lev deque per worker, of fixed capacity (default 1024).
   - The owner pushes and pops at the bottom; other threads steal from the top.
   - It is the C11 formulation of Lê et al., except that the two standalone seq_cst fences are
@@ -2001,9 +2004,31 @@ waiters that run pending jobs instead of sleeping and a single-threaded mode wit
     zero aborts (death test);
   - full deque and full injection queue;
   - a waiter with nothing to run sleeps and is woken when the counter reaches zero;
-  - three threads submitting and waiting at once (stress).
+  - three threads submitting and waiting at once (stress);
+  - `ax_cpu_count()` follows the affinity mask (Linux: pinned to one CPU it returns 1).
 
   Locally: 400 runs under TSan, 100 more pinned to one CPU, 1000 Release runs, plus ASan, all
   clean.
 
-**Status.** Approved (part of the approved plan; the bounded sleep was the owner's adjustment).
+**Known limitation: a waiter runs any pending job.** If the scene thread waits (parallel relayout
+boundaries) and steals a long job (decoding an image, rasterizing glyphs), it misses its frame.
+This must be resolved before the scene thread uses the job system, with one of:
+- **Two priorities**, frame and background. Threads that are not workers (the scene thread) run
+  only frame jobs while they wait; workers run both, frame jobs first.
+- **Waiters run only their own counter's jobs.** The waiter takes only jobs whose counter is the
+  one it waits on (its children), and otherwise sleeps.
+
+Neither is implemented yet.
+
+**Pending for the threaded web build** (`AX_WEB_THREADS`, not built in CI): creating the workers
+from the browser's main thread needs Emscripten's `PTHREAD_POOL_SIZE` (a pthread created there
+cannot start until the main thread returns to the event loop), and condition-variable waits on
+the browser's main thread are restricted (`Atomics.wait` is not allowed there; Emscripten busy-waits
+instead). To be resolved with the web target. The single-threaded web build uses inline mode and
+is not affected.
+
+**Measuring later.** `notify` broadcasts on every submit while anyone sleeps. It stays as is until
+the benchmarks of this milestone's seventh step measure it.
+
+**Status.** Approved (part of the approved plan; the bounded sleep was the owner's adjustment;
+the owner reviewed the commit and asked for the limitation and the web note above).

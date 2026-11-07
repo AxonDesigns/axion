@@ -2,6 +2,11 @@
  * Copyright 2026 Axon Works
  * SPDX-License-Identifier: Apache-2.0
  */
+#if defined(__linux__)
+#    define _GNU_SOURCE /* sched_setaffinity, CPU_SET */
+#    include <sched.h>
+#endif
+
 #include "ax_test.h"
 #include "axion/ax_error.h"
 #include "axion/base/ax_error_set.h"
@@ -331,4 +336,29 @@ AX_TEST(try_lock_by_owner_fails_without_aborting)
     AX_CHECK(!ax_mutex_try_lock(&m));
     ax_mutex_unlock(&m);
     ax_mutex_deinit(&m);
+}
+
+/* ---- ax_cpu_count ---------------------------------------------------------------------------- */
+
+AX_TEST(cpu_count_follows_the_affinity_mask)
+{
+#if defined(__linux__)
+    cpu_set_t saved;
+    cpu_set_t one;
+    int cpu = 0;
+    AX_CHECK(ax_cpu_count() >= 1);
+    AX_REQUIRE(sched_getaffinity(0, sizeof saved, &saved) == 0);
+    while (cpu < CPU_SETSIZE && !CPU_ISSET(cpu, &saved)) {
+        cpu++;
+    }
+    AX_REQUIRE(cpu < CPU_SETSIZE);
+    CPU_ZERO(&one);
+    CPU_SET(cpu, &one);
+    AX_REQUIRE(sched_setaffinity(0, sizeof one, &one) == 0);
+    AX_CHECK_EQ_U(ax_cpu_count(), 1);
+    AX_REQUIRE(sched_setaffinity(0, sizeof saved, &saved) == 0);
+    AX_CHECK_EQ_U(ax_cpu_count(), (uint32_t)CPU_COUNT(&saved));
+#else
+    AX_CHECK(ax_cpu_count() >= 1);
+#endif
 }
