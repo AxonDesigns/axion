@@ -55,6 +55,7 @@ new entry that points back to the old one.
 | 39  | Hit-test move/resize and cursors (first version)         | Approved       |
 | 40  | Pace configures by frame callbacks; held targets         | Implementation |
 | 41  | Sanitizers must not abort inside death tests             | Approved       |
+| 42  | Marshalled calls when the main thread stops              | Approved       |
 
 ---
 
@@ -602,6 +603,8 @@ inside the pump.
 
 ## 32. Main-thread calls are marshalled; thread tags
 
+> Amended by decision 42: waiting calls fail instead of hanging when `ax_app_run` returns or the app is destroyed; the command stack is LIFO and must become a FIFO queue if calls ever become asynchronous.
+
 **Context.** The document puts window creation on the main thread (required on macOS, iOS and
 Android), but app code, the C# binding included, runs on the app thread.
 
@@ -907,3 +910,44 @@ then count as a pass.
 
 **Status.** Approved by the owner.
 
+## 42. Marshalled calls when the main thread stops
+
+**Amends** decision 32.
+
+**Context.** A thread blocked in an any->main call when the main thread leaves `ax_app_run`
+waited forever. If the app was destroyed, the woken caller still touched the app's mutex after
+its memory was freed.
+
+**Decision.**
+- **Closing the stack:** the command stack has a closed state, a sentinel value in its head.
+  Swapping it in takes every queued command atomically, so a call can never end up queued on a
+  closed stack.
+- **When `ax_app_run` returns:** queued calls are completed with `AX_ERR_UNSUPPORTED` ("the
+  app's main thread is not pumping events (ax_app_run returned); the call did not run"), and new
+  calls are refused the same way until the next `ax_app_run` or `ax_app_pump` reopens the stack.
+- **Before the pump starts:** calls made before the pump first starts are accepted and wait for
+  it. That is the normal start-up race.
+- **On `ax_app_destroy`:**
+  - The stack is closed for good and waiting calls fail with `AX_ERR_UNSUPPORTED` ("the ax_app
+    was destroyed").
+  - A counter of threads inside marshalled calls lets destroy wait until every caller has left
+    before freeing the app.
+  - A call that starts on another thread while destroy runs remains a use after destroy, and is
+    documented as such.
+- **Tests:**
+  - `wayland.window.waiting_calls_fail_when_run_returns_and_new_ones_are_refused`
+  - `wayland.window.waiting_calls_fail_when_the_app_is_destroyed`
+
+  Both were repeated 50 times under ASan and TSan.
+- **Command order today:** the command stack is a LIFO Treiber stack. The main thread takes the
+  whole stack at once and reverses that batch, so commands run in submission order.
+  - Today every call blocks its thread, so a thread has at most one command in flight, and calls
+    from different threads have no order to keep.
+- **Command order if calls become asynchronous:** a thread could then queue several commands,
+  and their order would matter.
+  - Batch reversal happens to preserve a single thread's order, but it is an accident of the
+    implementation rather than a guarantee.
+  - The stack must then become a FIFO queue (multi-producer, single-consumer, bounded, with no
+    allocation), so ordering is a property of the structure.
+
+**Status.** Approved by the owner.

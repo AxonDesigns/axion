@@ -61,26 +61,45 @@ bool ax__app_on_main(const ax_app_impl *app)
         }                                                                                          \
     } while (0)
 
+/* Head of the command stack while the main thread does not accept calls: after ax_app_run returned
+ * (until the next ax_app_run / ax_app_pump) and from ax_app_destroy on (decision 42). Swapping it
+ * in takes every queued command atomically, so a call can never be queued on a closed stack. */
+static const char ax_commands_closed_tag = 0;
+#define AX_COMMANDS_CLOSED ((void *)(uintptr_t)&ax_commands_closed_tag)
+
+static const char ax_msg_not_pumping[] =
+    "the app's main thread is not pumping events (ax_app_run returned); the call did not run";
+static const char ax_msg_destroyed[] = "the ax_app was destroyed; the call did not run";
+
 ax_result ax__app_call(ax_app_impl *app, ax_result (*fn)(void *ctx), void *ctx)
 {
     ax_command cmd;
     void *head;
+    ax_result result;
 
     if (ax__app_on_main(app)) {
         return fn(ctx);
     }
+    /* Counted for the whole call, so ax_app_destroy can wait for blocked callers to leave before
+     * freeing the app. (A call that starts concurrently with ax_app_destroy is a use-after-destroy
+     * and stays undefined; one already waiting is completed with an error.) */
+    ax_atomic_fetch_add_u32(&app->callers, 1, AX_MO_SEQ_CST);
     cmd.fn = fn;
     cmd.ctx = ctx;
     cmd.result = AX_OK;
     cmd.message[0] = '\0';
     ax_atomic_init_u32(&cmd.done, 0);
 
-    /* Push onto the lock-free stack (Treiber). */
-    head = ax_atomic_load_ptr(&app->commands, AX_MO_RELAXED);
+    /* Push onto the lock-free stack (Treiber), unless the main thread stopped accepting calls. */
+    head = ax_atomic_load_ptr(&app->commands, AX_MO_ACQUIRE);
     do {
+        if (head == AX_COMMANDS_CLOSED) {
+            ax_atomic_fetch_add_u32(&app->callers, (uint32_t)-1, AX_MO_SEQ_CST);
+            return ax_set_error(AX_ERR_UNSUPPORTED, "%s", ax_msg_not_pumping);
+        }
         cmd.next = (ax_command *)head;
     } while (
-        !ax_atomic_compare_exchange_ptr(&app->commands, &head, &cmd, AX_MO_RELEASE, AX_MO_RELAXED));
+        !ax_atomic_compare_exchange_ptr(&app->commands, &head, &cmd, AX_MO_RELEASE, AX_MO_ACQUIRE));
     app->ops->wake(app);
 
     ax_mutex_lock(&app->cmd_lock);
@@ -88,39 +107,47 @@ ax_result ax__app_call(ax_app_impl *app, ax_result (*fn)(void *ctx), void *ctx)
         ax_cond_wait(&app->cmd_cond, &app->cmd_lock);
     }
     ax_mutex_unlock(&app->cmd_lock);
+    result = cmd.result;
+    ax_atomic_fetch_add_u32(&app->callers, (uint32_t)-1, AX_MO_SEQ_CST); /* last touch of app */
 
     /* The error detail was recorded on the main thread; re-record it on the caller's. */
-    if (cmd.result != AX_OK) {
-        ax_set_error(cmd.result, "%s", cmd.message);
+    if (result != AX_OK) {
+        ax_set_error(result, "%s", cmd.message);
     }
-    return cmd.result;
+    return result;
 }
 
-/* Completes every queued command with `result` without running it (app shutting down). */
-static void finish_commands(ax_app_impl *app, bool run, ax_result result)
+/* Takes the whole stack, replacing it with `replacement` (NULL or AX_COMMANDS_CLOSED), and returns
+ * the taken commands in submission order: the stack is LIFO, so the batch is reversed. */
+static ax_command *take_commands(ax_app_impl *app, void *replacement)
 {
-    void *head = ax_atomic_load_ptr(&app->commands, AX_MO_RELAXED);
+    void *head = ax_atomic_load_ptr(&app->commands, AX_MO_ACQUIRE);
     ax_command *list;
     ax_command *fifo = NULL;
-    ax_command *c;
-    bool any = false;
 
-    if (head == NULL) {
-        return;
-    }
-    /* Take the whole stack, then reverse it into submission order. */
-    while (!ax_atomic_compare_exchange_ptr(&app->commands, &head, NULL, AX_MO_ACQUIRE,
-                                           AX_MO_RELAXED)) {
-    }
-    list = (ax_command *)head;
+    do {
+        if (head == replacement || (head == AX_COMMANDS_CLOSED && replacement == NULL)) {
+            return NULL; /* nothing to take (or closed: running commands never reopens it) */
+        }
+    } while (!ax_atomic_compare_exchange_ptr(&app->commands, &head, replacement, AX_MO_ACQ_REL,
+                                             AX_MO_ACQUIRE));
+    list = head == AX_COMMANDS_CLOSED ? NULL : (ax_command *)head;
     while (list != NULL) {
-        c = list;
+        ax_command *c = list;
         list = list->next;
         c->next = fifo;
         fifo = c;
     }
+    return fifo;
+}
+
+/* Runs the commands, or completes them with `failure` and `message` when run is false. */
+static void complete_commands(ax_app_impl *app, ax_command *fifo, bool run, ax_result failure,
+                              const char *message)
+{
+    bool any = fifo != NULL;
     while (fifo != NULL) {
-        c = fifo;
+        ax_command *c = fifo;
         fifo = fifo->next; /* read before completion: the command lives on the caller's stack */
         if (run) {
             ax_clear_error();
@@ -133,12 +160,13 @@ static void finish_commands(ax_app_impl *app, bool run, ax_result result)
                 c->message[n] = '\0';
             }
         } else {
-            c->result = result;
-            static const char gone[] = "the ax_app was destroyed before the call could run";
-            memcpy(c->message, gone, sizeof gone);
+            size_t n = strlen(message);
+            n = n < sizeof c->message - 1 ? n : sizeof c->message - 1;
+            c->result = failure;
+            memcpy(c->message, message, n);
+            c->message[n] = '\0';
         }
         ax_atomic_store_u32(&c->done, 1, AX_MO_RELEASE);
-        any = true;
     }
     if (any) {
         ax_mutex_lock(&app->cmd_lock);
@@ -149,9 +177,24 @@ static void finish_commands(ax_app_impl *app, bool run, ax_result result)
 
 void ax__app_run_commands(ax_app_impl *app)
 {
-    if (ax_atomic_load_ptr(&app->commands, AX_MO_RELAXED) != NULL) {
-        finish_commands(app, true, AX_OK);
+    void *head = ax_atomic_load_ptr(&app->commands, AX_MO_RELAXED);
+    if (head != NULL && head != AX_COMMANDS_CLOSED) {
+        complete_commands(app, take_commands(app, NULL), true, AX_OK, NULL);
     }
+}
+
+/* Stops accepting calls and fails every queued one. */
+static void close_commands(ax_app_impl *app, const char *message)
+{
+    complete_commands(app, take_commands(app, AX_COMMANDS_CLOSED), false, AX_ERR_UNSUPPORTED,
+                      message);
+}
+
+/* Accepts calls again (no effect if already open). */
+static void open_commands(ax_app_impl *app)
+{
+    void *expected = AX_COMMANDS_CLOSED;
+    ax_atomic_compare_exchange_ptr(&app->commands, &expected, NULL, AX_MO_ACQ_REL, AX_MO_RELAXED);
 }
 
 void ax__app_wake_presenters(ax_app_impl *app)
@@ -232,7 +275,8 @@ ax_result ax_app_create(const ax_app_desc *desc, ax_app *out_app)
     ax_cond_init(&app->cmd_cond);
     ax_mutex_init(&app->wake_lock);
     ax_cond_init(&app->wake_cond);
-    ax_atomic_init_ptr(&app->commands, NULL);
+    ax_atomic_init_ptr(&app->commands, NULL); /* open: calls made before the pump starts wait */
+    ax_atomic_init_u32(&app->callers, 0);
     ax_atomic_init_u32(&app->quit, 0);
     ax_atomic_init_u64(&app->wake_gen, 0);
     ax_atomic_init_u32(&app->presenters_waiting, 0);
@@ -307,8 +351,12 @@ ax_result ax_app_destroy(ax_app app)
         }
     }
     ax_atomic_store_ptr(&g_apps[impl->slot], NULL, AX_MO_RELEASE);
-    /* Callers blocked on a command must not hang. */
-    finish_commands(impl, false, AX_ERR_INVALID_HANDLE);
+    /* Callers blocked in a marshalled call must not hang: fail them, refuse new ones, and wait
+     * until every one has left before the app's memory goes away. */
+    close_commands(impl, ax_msg_destroyed);
+    while (ax_atomic_load_u32(&impl->callers, AX_MO_SEQ_CST) != 0) {
+        ax_thread_yield();
+    }
     impl->ops->app_shutdown(impl);
     free_app(impl);
     return AX_OK;
@@ -324,24 +372,27 @@ ax_result ax_app_pump(ax_app app, uint64_t timeout_ns)
         return invalid_app("ax_app_pump");
     }
     AX_REQUIRE_MAIN(impl, "ax_app_pump");
+    open_commands(impl);
     return impl->ops->pump(impl, timeout_ns);
 }
 
 ax_result ax_app_run(ax_app app)
 {
     ax_app_impl *impl = ax__app_from_handle(app);
+    ax_result r = AX_OK;
     if (impl == NULL) {
         return invalid_app("ax_app_run");
     }
     AX_REQUIRE_MAIN(impl, "ax_app_run");
-    while (ax_atomic_load_u32(&impl->quit, AX_MO_ACQUIRE) == 0) {
-        ax_result r = impl->ops->pump(impl, UINT64_MAX);
-        if (r != AX_OK) {
-            return r;
-        }
+    open_commands(impl);
+    while (r == AX_OK && ax_atomic_load_u32(&impl->quit, AX_MO_ACQUIRE) == 0) {
+        r = impl->ops->pump(impl, UINT64_MAX);
     }
+    /* Nobody pumps any more: calls waiting for the main thread fail instead of hanging, and new
+     * ones are refused until the next ax_app_run or ax_app_pump. */
+    close_commands(impl, ax_msg_not_pumping);
     ax_atomic_store_u32(&impl->quit, 0, AX_MO_RELAXED);
-    return AX_OK;
+    return r;
 }
 
 ax_result ax_app_quit(ax_app app)

@@ -15,7 +15,10 @@
  *             AX_ERR_WRONG_THREAD);
  *   any->main from any thread; the work runs on the main thread. Called on another thread, the
  *             call is handed to the main thread and waits for it, so the main thread must be
- *             pumping (inside ax_app_run or ax_app_pump) for the call to complete;
+ *             pumping (inside ax_app_run or ax_app_pump) for the call to complete. Calls made
+ *             before the pump first starts wait for it. Once ax_app_run returns, or when the
+ *             app is destroyed, waiting calls fail with AX_ERR_UNSUPPORTED instead of hanging,
+ *             and new ones are refused the same way until the next ax_app_run / ax_app_pump;
  *   consumer  from the one thread that consumes events (one at a time);
  *   presenter from the one thread presenting a surface (one at a time; see axion/platform/).
  */
@@ -84,10 +87,15 @@ typedef struct ax_app_desc {
  */
 AX_API ax_result ax_app_create(const ax_app_desc *desc, ax_app *out_app);
 
-/* Closes the connection; every window must have been destroyed. thread: main */
+/* Destroys the windows still open and closes the connection. Calls from other threads still
+ * waiting for the main thread fail with AX_ERR_UNSUPPORTED; destroy returns once they have all
+ * returned. A call that starts on another thread while destroy runs is a use after destroy.
+ * thread: main */
 AX_API ax_result ax_app_destroy(ax_app app);
 
-/* Pumps events until ax_app_quit is called. thread: main */
+/* Pumps events until ax_app_quit is called. On return, calls from other threads still waiting
+ * for the main thread fail with AX_ERR_UNSUPPORTED, and new ones are refused until the next
+ * ax_app_run or ax_app_pump. thread: main */
 AX_API ax_result ax_app_run(ax_app app);
 
 /* Runs one iteration of the pump, waiting at most timeout_ns for something to do. For hosts that

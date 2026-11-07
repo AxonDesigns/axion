@@ -137,8 +137,10 @@ struct ax_app_impl {
     ax_window_impl *windows;
     uint32_t max_windows;
 
-    /* commands from other threads: a lock-free stack, completions signalled under cmd_lock */
+    /* commands from other threads: a lock-free stack (its head is AX_COMMANDS_CLOSED while the
+     * main thread is not accepting calls), completions signalled under cmd_lock */
     ax_atomic_ptr commands;
+    ax_atomic_u32 callers; /* threads inside a marshalled call; destroy waits for 0 */
     ax_mutex cmd_lock;
     ax_cond cmd_cond;
     ax_atomic_u32 quit;

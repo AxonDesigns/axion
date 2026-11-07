@@ -295,3 +295,123 @@ AX_TEST(main_only_calls_report_wrong_thread_in_release)
     AX_CHECK_EQ_U(axt_app_destroy(&t), 0);
 #endif
 }
+
+/* ---- marshalled calls when the main thread stops pumping (decision 42)
+ * ---------------------------- */
+
+#include "common/platform_internal.h"
+
+typedef struct blocked_call {
+    ax_app app;
+    ax_window window;
+    ax_result result;
+    char message[AX_ERROR_MESSAGE_CAPACITY];
+    ax_atomic_u32 returned;
+} blocked_call;
+
+static int create_window_call(void *arg)
+{
+    blocked_call *c = (blocked_call *)arg;
+    ax_window_desc d = axt_window_desc(100, 100, AX_DECORATIONS_NONE);
+    const ax_error *e;
+    c->result = ax_window_create(c->app, &d, &c->window);
+    e = ax_last_error();
+    if (c->result != AX_OK) {
+        size_t n = e->message.len < sizeof c->message - 1 ? e->message.len : sizeof c->message - 1;
+        memcpy(c->message, e->message.ptr, n);
+        c->message[n] = '\0';
+    }
+    ax_atomic_store_u32(&c->returned, 1, AX_MO_RELEASE);
+    return 0;
+}
+
+static void blocked_call_init(blocked_call *c, ax_app app)
+{
+    memset(c, 0, sizeof *c);
+    c->app = app;
+    ax_atomic_init_u32(&c->returned, 0);
+}
+
+/* Waits (without pumping) until the worker's call is queued for the main thread. */
+static bool wait_until_queued(ax_app app)
+{
+    ax_app_impl *impl = ax__app_from_handle(app);
+    uint64_t deadline = ax_time_monotonic_ns() + AXT_SECONDS(5);
+    while (ax_time_monotonic_ns() < deadline) {
+        void *head = ax_atomic_load_ptr(&impl->commands, AX_MO_ACQUIRE);
+        if (ax_atomic_load_u32(&impl->callers, AX_MO_ACQUIRE) != 0 && head != NULL) {
+            return true;
+        }
+        ax_thread_yield();
+    }
+    return false;
+}
+
+static bool call_returned(void *p)
+{
+    return ax_atomic_load_u32(&((blocked_call *)p)->returned, AX_MO_ACQUIRE) != 0;
+}
+
+AX_TEST(waiting_calls_fail_when_run_returns_and_new_ones_are_refused)
+{
+    axt_app t;
+    blocked_call first;
+    blocked_call refused;
+    blocked_call later;
+    ax_thread th;
+    AXT_REQUIRE_COMPOSITOR();
+    AX_REQUIRE(axt_app_create(&t, 0) == AX_OK);
+
+    /* A call made while nobody pumps waits for the main thread... */
+    blocked_call_init(&first, t.app);
+    AX_REQUIRE(ax_thread_create(&th, create_window_call, &first) == AX_OK);
+    AX_REQUIRE(wait_until_queued(t.app));
+    AX_CHECK(!call_returned(&first));
+    /* ...and when ax_app_run returns (here at once, quit was already requested) it fails. */
+    AX_REQUIRE(ax_app_quit(t.app) == AX_OK);
+    AX_CHECK_RESULT(ax_app_run(t.app), AX_OK);
+    ax_thread_join(&th);
+    AX_CHECK_RESULT(first.result, AX_ERR_UNSUPPORTED);
+    AX_CHECK(strstr(first.message, "not pumping") != NULL);
+    AX_CHECK(AX_HANDLE_IS_NULL(first.window));
+
+    /* New calls are refused at once while nothing pumps (the join proves it does not hang). */
+    blocked_call_init(&refused, t.app);
+    AX_REQUIRE(ax_thread_create(&th, create_window_call, &refused) == AX_OK);
+    ax_thread_join(&th);
+    AX_CHECK_RESULT(refused.result, AX_ERR_UNSUPPORTED);
+
+    /* Pumping again accepts calls again. Pump once before starting the worker: until the main
+     * thread pumps, its call would be refused, which is the documented behaviour, not the point. */
+    AX_REQUIRE(ax_app_pump(t.app, 0) == AX_OK);
+    blocked_call_init(&later, t.app);
+    AX_REQUIRE(ax_thread_create(&th, create_window_call, &later) == AX_OK);
+    AX_CHECK(axt_pump_until(t.app, call_returned, &later, AXT_SECONDS(10)));
+    ax_thread_join(&th);
+    AX_CHECK_RESULT(later.result, AX_OK);
+    AX_CHECK_RESULT(ax_window_destroy(later.window), AX_OK);
+    AX_CHECK_EQ_U(axt_app_destroy(&t), 0);
+}
+
+AX_TEST(waiting_calls_fail_when_the_app_is_destroyed)
+{
+    axt_app t;
+    blocked_call c;
+    ax_thread th;
+    AXT_REQUIRE_COMPOSITOR();
+    AX_REQUIRE(axt_app_create(&t, 0) == AX_OK);
+
+    blocked_call_init(&c, t.app);
+    AX_REQUIRE(ax_thread_create(&th, create_window_call, &c) == AX_OK);
+    AX_REQUIRE(wait_until_queued(t.app));
+    /* Destroy fails the waiting call and returns only after the caller has left the app. */
+    AX_CHECK_EQ_U(axt_app_destroy(&t), 0);
+    ax_thread_join(&th);
+    AX_CHECK_RESULT(c.result, AX_ERR_UNSUPPORTED);
+    AX_CHECK(strstr(c.message, "destroyed") != NULL);
+    /* The handle is gone now. */
+    blocked_call_init(&c, t.app);
+    AX_REQUIRE(ax_thread_create(&th, create_window_call, &c) == AX_OK);
+    ax_thread_join(&th);
+    AX_CHECK_RESULT(c.result, AX_ERR_INVALID_HANDLE);
+}
