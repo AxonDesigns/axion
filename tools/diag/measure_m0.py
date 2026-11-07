@@ -95,7 +95,8 @@ def measure(binary, cfg, decorations, output, resize, seconds, manual, log):
     if log is not None:
         log.write("==== %s %s %s %s\n%s\n" % (cfg["name"], decorations, output, "resize" if resize else "quiet", out))
         log.flush()
-    samples = [m.groupdict() for m in STATS_RE.finditer(out)][warmup - 1:]
+    # One stats line per second from launch: the first `warmup` lines are the warm-up.
+    samples = [m.groupdict() for m in STATS_RE.finditer(out)][warmup:]
     protocol_error = re.search(r"error \d+: .*", out)
     return samples, (protocol_error.group(0) if protocol_error else None), proc.returncode
 

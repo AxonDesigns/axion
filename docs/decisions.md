@@ -1866,6 +1866,32 @@ decoration modes are within the same ranges.
 - No run lost a frame, failed a present or hit a protocol error. Quiet runs never waited for the
   scene, and `ir` drew 34 instances per frame with no unknown items.
 
+**Missed vblanks with the window quiet at 260 Hz** (up to 1.0 per second, 0 in decision 49).
+The owner asked for an explanation. The per-second records of the runs above give it:
+- **All of it comes from pass 1.** Per pass, `ir` measured 0.57 and 1.0 (pass 1), 0 and 0.14
+  (pass 2) and 0 and 0 (pass 4), for native and no decorations. shm measured 0-0.14 in the same
+  passes. Without pass 1, `ir` is within shm's range.
+- **In pass 1 the misses follow long acquires, not the scene.**
+  - Every measured second with misses has an acquire maximum of 3.2-12.9 ms: time blocked in
+    NVIDIA's WSI waiting for a free swapchain image, which the compositor returns.
+  - Seconds without misses stay at 0.5-1.6 ms, with one exception at 5.6 ms. Passes 2 and 4
+    never exceed 2.7 ms.
+  - Pass 1 was also the pass with the most misses while resizing (8.4-8.7 per second).
+- **The scene is not the cause.**
+  - The renderer's work does not depend on the animation's phase: 34 instances every frame, and
+    encoding at most 0.2 ms in every second, with or without misses.
+  - Each run of 7 measured seconds sweeps 315 degrees of the turning rect (45 degrees a second)
+    and 70 degrees of the hairline fan. A phase of the scene that cost a vblank would therefore
+    show in every run. Passes 2 and 4 show one miss in 28 seconds (with a 2.1 ms acquire).
+- shm draws in the CPU into its own wl_shm buffers and never goes through the WSI's acquire.
+  That fits its 0-0.14 in pass 1, against 0.57-1.0 for `ir`.
+- **Conclusion:** a disturbance of the environment during pass 1 (the compositor or the driver
+  holding swapchain images), seen only by the swapchain paths. Decision 49 measured a single pass,
+  and the minimal pipeline shared the same acquire path.
+- `measure_m0.py` dropped 2 warm-up seconds instead of the 3 it states (an off-by-one, fixed
+  after these runs). The third second, measured above, has no misses in any quiet 260 Hz run, so
+  the quiet numbers do not change. The resizing numbers include that second.
+
 **The size handshake's bound.**
 - Scene waits (time from the content mismatch to the frame that acknowledged): 14,939 over passes
   2-4. Mean 0.02-0.04 ms per run; per-second maxima above 0.5 ms in 6 of 504 seconds and above
@@ -1879,6 +1905,9 @@ decoration modes are within the same ranges.
   - At 72 Hz the bound is 6.95 ms, and no wait came near it.
   - A lower bound would only add forced acknowledgements: waits are 0.03 ms, and the bound acts
     on the tail. M1's scenes will record more than this one, which argues against lowering it.
+  - **To be measured again in M1, with real layout and text.** This scene records 34 instances in
+    at most 0.28 ms; scenes with layout and shaped text will take longer to record, and the
+    bound must cover their tail.
 
 **Issue #2 (misses while resizing at 260 Hz).**
 - The gap to shm persists. It varies more between runs than in decision 49 (1.1 to 8.7 missed
@@ -1899,5 +1928,11 @@ decoration modes are within the same ranges.
   - Option (b) is a contract change across backends. It belongs with M1's render thread, which
     takes over swapchain ownership from the M0 scaffolding (decision 57).
 
-**Status.** Measurements and proposals for the owner's review: the bound's value, and the
-recommendation on issue #2 (option (b) is not implemented without the owner's approval).
+- **Acceptance criterion for M1 (issue #2):** resizing at 260 Hz with the renderer within shm's
+  range, at most 1 missed vblank per second on average.
+- The blending space (issue #4, decision 58) is decided in M1, where the document places Latin
+  text (shaping and atlas).
+
+**Status.** Approved by the owner: the bound (default kept, to be measured again in M1), the
+recommendation on issue #2 (M0 closes with the limitation; option (b) in M1 with the criterion
+above), and the blending space in M1.
