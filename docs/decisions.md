@@ -83,6 +83,8 @@ new entry that points back to the old one.
 | 67  | The world, the transaction API and its encoding          | Approved       |
 | 68  | Applying transactions atomically; rejection              | Approved       |
 | 69  | The app thread's mirror                                  | Implementation |
+| 70  | Reference benchmarks: core and jobs                      | Implementation |
+| 71  | The IDL: `.axidl`, and the line between ABI and SDK      | Implementation |
 
 ---
 
@@ -2561,5 +2563,116 @@ the channel for layout results in place.
     - a mutation check (publishing after each set, inside a transaction) makes it fail at the
       first read;
     - repeated 20 times under TSan, 10 pinned to one CPU, and 100 Release runs, without a failure.
+
+**Status.** Implementation, pending the owner's approval.
+
+## 70. Reference benchmarks: core and jobs
+
+**Context.** The owner asked for reference benchmarks without a CI gate: creating 10 000 nodes and
+applying a transaction of 1000 changes. Decision 60 also left the job system's per-submit
+broadcast to be measured here before changing it.
+
+**Decision.** `tests/bench/bench_core.c` builds with the tests (so it keeps compiling on every CI
+job) but is never registered with ctest. Run `build/<release preset>/tests/bench/bench_core` by
+hand. Each case runs 15 times; the tables give the median and, in parentheses, the minimum.
+
+**Measured** (`gcc-release`, AMD Ryzen 5 3400G, 4 cores and 8 threads, Linux; two runs agree
+within 15%):
+
+| Create 10 000 nodes appended to one root, cold world | Median (min) |
+| --- | --- |
+| Record and commit the transaction (app thread) | 0.12 ms (0.11) |
+| Apply it (scene thread) | 0.89-1.0 ms (0.76) |
+| Publish the mirror | 0.43-0.45 ms (0.30) |
+| The same directly in the scene, no transaction | 0.63-0.78 ms (0.57) |
+
+| 1000 changes on 10 000 nodes in 100 fixed-size groups, warm | Median (min) |
+| --- | --- |
+| Record and commit | 0.05 ms (0.03) |
+| Apply (moves, widths, colors, the shorthand, opacities) | 0.08-0.09 ms (0.07) |
+| Publish the mirror | 0.14-0.16 ms (0.11) |
+
+| Job system, empty jobs | 4 workers | Inline |
+| --- | --- | --- |
+| Submit 1 job and wait, per job (the waiter runs it) | 1.1 us | 0.03 us |
+| Submit 1 job with every worker asleep (the broadcast) | 4.8-5.3 us (2.5) | - |
+| 100 000 jobs from a thread that is not a worker | 11.4 ms | 1.9 ms |
+| 100 000 jobs fanned out from one worker | 7.5 ms | 1.8 ms |
+
+**Reading.**
+- **Transactions are cheap on both sides.** Applying is about 1.4 times the direct scene calls for
+  creation (validation and the undo log), and a 1000-change transaction applies in under 0.1 ms,
+  about 1% of a 120 Hz frame.
+- **Publishing the mirror costs more than applying a typical transaction.** Its scan over every
+  slot (decision 69) dominates at 10 000 nodes: 0.15 ms for 1000 changes. That is acceptable for
+  M1. If larger trees need it, keep per-publication lists of changed slots and scan only when a
+  copy is too far behind.
+- **The broadcast.** A submit that finds the workers asleep costs about 5 us, against about 1 us for
+  a whole submit-and-wait round when it does not wake them. That is a few microseconds per wake-up,
+  not per job, and the frame's parallel layout will submit a handful of batches per frame.
+  **Recommendation: keep the broadcast.** Revisit it (wake only as many sleepers as jobs) if the
+  frame pipeline's profiles show it.
+- **Many tiny jobs from outside the pool pay for the injection queue's mutex.** 11 ms per 100 000
+  is about 110 ns a job, against about 75 ns fanned out from a worker into its own deque. Jobs are
+  meant to be much larger (a relayout boundary, a glyph run). The pattern for many small items is
+  one job per batch, or a root job that fans out on a worker.
+- No gate: these numbers depend on the machine and are for comparisons over time.
+
+**Status.** Implementation, pending the owner's approval.
+
+## 71. The IDL: `.axidl`, and the line between ABI and SDK
+
+**Context.** "One interface description" generates the C headers, the API docs and the four
+bindings from a small `.axidl` file or annotated JSON, and every function is tagged with its
+thread. The owner asked, before fixing the transaction API, how it will be described in the IDL
+(the generator arrives in M2), and what is stable ABI and what internal SDK.
+
+**Decision.**
+- **Format: `.axidl`**, a small language of its own, not annotated JSON.
+  - Easier to read and review, with comments and one declaration per line, so it diffs cleanly.
+  - It is short where JSON would repeat keys on every parameter.
+  - The M2 generator parses it into a JSON model, which other tools (docs, the MCP schema, editors)
+    read, so JSON remains the interchange form without being the authoring form.
+- **The draft** is `bindings/idl/core.axidl`. It describes the stable ABI of this milestone
+  exactly: handles, the opaque transaction, enums and flags, value structs, the property table,
+  and every function. No tool reads it yet; until the generator exists, the hand-written headers
+  are the source of truth, and the draft is updated with them.
+- **Constructs:**
+  - `handle` (a generational 64-bit handle; a class in bindings);
+  - `opaque` (a pointer to a short-lived single-thread object);
+  - `enum` and `flags` with fixed values, and `struct`;
+  - `[extensible]` structs: the generator adds `struct_size` and `next` and the size check;
+  - `[provisional]`: may change before the ABI freezes (`ax_transition` today);
+  - `[lifetime(...)]` for borrowed strings;
+  - `props { ... }`: each property's id, name, type, effect class, flags, range, shorthand
+    expansion and origin. It generates the `AX_PROP_*` enum, the registry's built-in rows and
+    typed accessors in bindings;
+  - `fn` with attributes:
+    - `thread(any|app|scene|render)`: checked on entry in debug builds;
+    - `sticky(t)`: the error is recorded in t and reported by its commit;
+    - `consumes(t)`: the object is invalid afterwards;
+    - `setter` / `getter`: they fold into typed property access in bindings;
+  - `out` parameters, which become return values in bindings; `result` becomes an exception or an
+    error value with `ax_last_error()`'s message; `?` marks nullable values.
+- **Stable ABI** (`core/include/axion/`, in the IDL):
+  - `ax_node.h`: the node handle and kinds;
+  - `ax_prop.h`: property ids and their ranges, value types and structs, effect classes and flags;
+  - `ax_world.h`: the world, its description and clock;
+  - `ax_txn.h`: transactions, transitions, colors and rejections;
+  - `ax_mirror.h`: the app thread's reads.
+
+  Everything a binding or an app needs, and nothing that exposes a layout the runtime may change.
+- **Internal SDK** (`core/include/axion/core/` and `base/include/axion/base/`, never in the IDL):
+  - the node store, side components and the scene (dirty flags, values by id);
+  - the property registry and run-time registration, which the plugin ABI will wrap in M3;
+  - the world's scene-thread side: thread binding, the queue's take, finish and recycle, apply,
+    publish and touch;
+  - the encoded command format;
+  - base's job system and SPSC ring.
+
+  These are embeddable structs or scene-thread internals that runtime modules (the frame pipeline,
+  layout, kit's C components, headless) use directly, and may change in any release.
+- **Thread tags** in the C headers keep decision 32's comment form (`thread: app`) until the
+  generator writes them from the IDL.
 
 **Status.** Implementation, pending the owner's approval.

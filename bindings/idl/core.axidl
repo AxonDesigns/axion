@@ -1,0 +1,135 @@
+// Copyright 2026 Axon Works
+// SPDX-License-Identifier: Apache-2.0
+//
+// AXION interface description: the core module's stable ABI (draft, M1).
+//
+// No tool reads this file yet. The generator arrives in M2 with the C# binding; until then the C
+// headers in core/include/axion/ are written by hand and this file is kept in step with them, as
+// the specification the generator will start from. Decision 71 describes the format.
+//
+// Only the stable ABI is described here. The internal SDK (core/include/axion/core/: node store,
+// scene, registry, the scene thread's side of the queue, apply and publish) is hand-written C that
+// no binding ever sees.
+
+axidl 0.1;
+
+module core {
+    import base;  // result, str, allocator, handle
+
+    // ---- Objects ------------------------------------------------------------------------------
+
+    handle world;  // C: AX_DECLARE_HANDLE(ax_world). Bindings: a class whose methods check the
+    handle node;   // generation; a stale handle raises instead of touching freed memory.
+    opaque txn;    // C: struct ax_txn *. Short-lived, owned by one thread, ended by consumes().
+
+    // ---- Values -------------------------------------------------------------------------------
+
+    enum node_kind : u32 { view = 1; }
+    enum unit : u32 { auto = 0; points = 1; percent = 2; }
+    enum value_type : u32 { f32 = 1; dimension = 2; vec2 = 3; color = 4; transform2d = 5;
+                            u32 = 6; bool = 7; /* 8 reserved: str */ }
+    enum effect_class : u32 { layout = 1; paint = 2; composite = 3; }
+    enum transition_kind : u32 { none = 1; timing = 2; spring = 3; }
+    flags prop_flags : u32 { inherited = 0x1; animatable = 0x2; shorthand = 0x4; }
+
+    struct dimension { f32 value; unit unit; }
+    struct vec2f { f32 x, y; }
+    struct rgba { f32 r, g, b, a; }               // linear light, premultiplied (decision 50)
+    struct transform2d { f32 a, b, c, d, tx, ty; } // CSS matrix() order
+    struct rectf { f32 x, y, w, h; }
+
+    // [extensible]: the generator prepends `u32 struct_size` and `const void *next`, and checks
+    // struct_size on entry (AX_ERR_ABI_MISMATCH). Fields are only ever appended.
+    [extensible]
+    struct world_desc {
+        allocator? allocator;   // thread-safe: used by the app and the scene threads
+        clock_fn? clock;        // fn(user) -> u64 nanoseconds
+        ptr clock_user;
+    }
+
+    [extensible, provisional]   // fields may change with animations, before the ABI freezes
+    struct transition {
+        transition_kind kind;
+        f32 delay, duration;
+        f32[4] curve;
+        f32 bounce;
+    }
+
+    struct txn_error {
+        u64 seq;
+        result result;
+        u32 command;
+        [lifetime(next_call_on(world))] str message;
+    }
+
+    // ---- Properties ---------------------------------------------------------------------------
+    // Each row generates the C enum value (AX_PROP_<NAME>), the registry's built-in row (type,
+    // flags, effect, range, storage) and, in bindings, a typed accessor on transactions and the
+    // mirror: `t.Set(card, Prop.Width, 120.Points())` or `card.Width = 120.Points()` in a builder.
+    // Ids are fixed forever; core ids stay below 0x8000, kit ids come from kit's own .axidl files
+    // in 0x8000-0xFFFF, plugins register theirs at run time.
+
+    props {
+        // id      name                          type         effect     flags        range
+        0x0101  width                        : dimension   layout     [animatable] min(0);
+        0x0102  height                       : dimension   layout     [animatable] min(0);
+        0x0103  left                         : dimension   layout     [animatable];
+        0x0104  top                          : dimension   layout     [animatable];
+        0x0201  background_color             : color       paint      [animatable];
+        0x0202  corner_radius_top_left       : f32         paint      [animatable] min(0);
+        0x0203  corner_radius_top_right      : f32         paint      [animatable] min(0);
+        0x0204  corner_radius_bottom_right   : f32         paint      [animatable] min(0);
+        0x0205  corner_radius_bottom_left    : f32         paint      [animatable] min(0);
+        0x0206  corner_radius                : f32         paint      [animatable]
+                shorthand(corner_radius_top_left, corner_radius_top_right,
+                          corner_radius_bottom_right, corner_radius_bottom_left);
+        0x0301  opacity                      : f32         composite  [animatable] range(0, 1);
+        0x0302  transform                    : transform2d composite  [animatable]
+                origin(center);  // about the frame's center (decision 63)
+    }
+
+    // ---- Functions ----------------------------------------------------------------------------
+    // [thread(...)]  where it may run: any, app, scene, render. Debug builds check it on entry.
+    // [sticky(t)]    records into t; an error is kept in t and reported by its commit.
+    // [consumes(t)]  ends t; bindings invalidate the object.
+    // out params     become return values in bindings; a `result` becomes an exception or an error
+    //                value, with ax_last_error()'s message.
+    // `?`            may be null / optional.
+
+    [thread(any)]  fn world_create(world_desc? desc, out world world) -> result;
+    [thread(app)]  fn world_destroy(world world) -> result;
+    [thread(any)]  fn world_now(world world) -> u64;
+
+    [thread(any)]  fn rgba_from_srgb(f32 r, f32 g, f32 b, f32 a) -> rgba;
+    [thread(any)]  fn rgba_from_srgb8(u8 r, u8 g, u8 b, u8 a) -> rgba;
+
+    [thread(app)]                      fn txn_begin(world world) -> txn?;
+    [thread(app), sticky(t)]           fn txn_create(txn t, node_kind kind) -> node;
+    [thread(app), sticky(t), setter]   fn txn_set_f32(txn t, node node, prop prop, f32 value);
+    [thread(app), sticky(t), setter]   fn txn_set_dimension(txn t, node node, prop prop, dimension value);
+    [thread(app), sticky(t), setter]   fn txn_set_vec2(txn t, node node, prop prop, vec2f value);
+    [thread(app), sticky(t), setter]   fn txn_set_color(txn t, node node, prop prop, rgba value);
+    [thread(app), sticky(t), setter]   fn txn_set_transform(txn t, node node, prop prop, transform2d value);
+    [thread(app), sticky(t), setter]   fn txn_set_u32(txn t, node node, prop prop, u32 value);
+    [thread(app), sticky(t), setter]   fn txn_set_bool(txn t, node node, prop prop, bool value);
+    [thread(app), sticky(t)]           fn txn_append_child(txn t, node parent, node child);
+    [thread(app), sticky(t)]           fn txn_insert_before(txn t, node parent, node child, node? before);
+    [thread(app), sticky(t)]           fn txn_remove(txn t, node node);
+    [thread(app), sticky(t)]           fn txn_set_animated(txn t, bool animated);
+    [thread(app), sticky(t)]           fn txn_set_transition(txn t, node node, prop prop, transition transition);
+    [thread(app), consumes(t)]         fn txn_commit(txn t, out u64? seq) -> result;
+    [thread(app), consumes(t)]         fn txn_abort(txn t);
+
+    [thread(app)]  fn world_poll_txn_error(world world, out txn_error error, out u32? dropped) -> bool;
+    [thread(app)]  fn world_last_applied_seq(world world) -> u64;
+    const u32 txn_error_queue = 64;
+
+    [thread(app)]          fn world_mirror_sync(world world) -> u64;
+    [thread(app)]          fn mirror_is_live(world world, node node) -> bool;
+    [thread(app)]          fn mirror_parent(world world, node node) -> node?;
+    [thread(app), getter]  fn mirror_get_f32(world world, node node, prop prop, out f32 value) -> result;
+    [thread(app), getter]  fn mirror_get_dimension(world world, node node, prop prop, out dimension value) -> result;
+    [thread(app), getter]  fn mirror_get_color(world world, node node, prop prop, out rgba value) -> result;
+    [thread(app), getter]  fn mirror_get_transform(world world, node node, prop prop, out transform2d value) -> result;
+    [thread(app)]          fn mirror_get_frame(world world, node node, out rectf frame) -> result;
+}
