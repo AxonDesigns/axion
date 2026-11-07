@@ -412,6 +412,11 @@ AX_TEST(idle_workers_steal_from_an_unbalanced_deque)
     root.arg = &ctx;
     ax_jobs_submit(js, &root, 1, &done);
     wait_until_a_worker_takes_it(js, 0);
+    /* Wait without running jobs: this thread would steal leaves too, and on a runner with few
+     * CPUs it could take all of them before the other workers wake (seen on macOS). */
+    while (ax_atomic_load_u32(&done.pending, AX_MO_ACQUIRE) != 0) {
+        ax_thread_yield();
+    }
     ax_jobs_wait(js, &done);
 
     AX_REQUIRE(ctx.root_worker < 4);
