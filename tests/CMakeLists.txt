@@ -14,6 +14,15 @@ else()
     set(AX_TESTS_HAVE_ASSERTS OFF)
 endif()
 
+# A death test passes by aborting, so a sanitizer report must not abort inside one or it would pass
+# for the wrong reason (macOS sanitizers abort by default). These settings make a report end the
+# process with the sanitizer's non-zero exit code instead, failing the test (decision 41). They
+# replace the test presets' sanitizer options for death tests only.
+set(AX_DEATH_TEST_ENVIRONMENT
+    "ASAN_OPTIONS=abort_on_error=0:halt_on_error=1:strict_string_checks=1"
+    "UBSAN_OPTIONS=abort_on_error=0:halt_on_error=1:print_stacktrace=1"
+    "TSAN_OPTIONS=abort_on_error=0:halt_on_error=1")
+
 # ax_add_unit_test(<module> <source>)
 #   <source> is relative to the calling CMakeLists.txt.
 #   Builds one executable per test file and registers each AX_TEST(<case>) in it as the ctest
@@ -83,7 +92,8 @@ int main(int argc, char **argv)
             endif()
             add_test(NAME "${_suite}.${_case}" COMMAND ${_exe} ${_case})
             set_tests_properties("${_suite}.${_case}" PROPERTIES
-                LABELS "${module};death" TIMEOUT 60 SKIP_RETURN_CODE 77)
+                LABELS "${module};death" TIMEOUT 60 SKIP_RETURN_CODE 77
+                ENVIRONMENT "${AX_DEATH_TEST_ENVIRONMENT}")
         else()
             add_test(NAME "${_suite}.${_case}" COMMAND ${_exe} ${_case})
             set_tests_properties("${_suite}.${_case}" PROPERTIES
@@ -92,6 +102,7 @@ int main(int argc, char **argv)
     endforeach()
 endfunction()
 
+add_subdirectory(unit/harness)
 add_subdirectory(unit/base)
 if(AX_BUILD_PLATFORM)
     add_subdirectory(unit/platform)

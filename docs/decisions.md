@@ -54,6 +54,7 @@ new entry that points back to the old one.
 | 38  | Notes: prepare_commit and the Vulkan WSI                 | Notes          |
 | 39  | Hit-test move/resize and cursors (first version)         | Approved       |
 | 40  | Pace configures by frame callbacks; held targets         | Implementation |
+| 41  | Sanitizers must not abort inside death tests             | Approved       |
 
 ---
 
@@ -488,6 +489,8 @@ code built against 0.3.
 
 ## 28. Death tests, skipped tests and thread ids
 
+> Amended by decision 41: death tests run with sanitizers set not to abort, so a sanitizer report fails them.
+
 **Context.** Misuse checks that abort (decision 27, and the platform module's thread checks)
 need tests that expect the process to die. Wayland tests need to skip cleanly where no
 compositor is available. Thread-affinity checks need a cheap, comparable thread id.
@@ -868,3 +871,39 @@ showed that the animated bar ran faster while the window was being resized. Two 
   configure at a time. The burst is checked by hand on a desktop.
 
 **Status.** Implementation, prompted by the owner's report.
+
+## 41. Sanitizers must not abort inside death tests
+
+**Amends** decision 28.
+
+**Context.** A death test passes by aborting. Decision 28 noted the caveat that a sanitizer
+report also ends in `abort()` when the sanitizer is set to abort, which the test presets do for
+ASan and which sanitizers on macOS do by default. Inside a death test, a real memory error would
+then count as a pass.
+
+**Decision.**
+- **Environment for death tests:** CMake registers every death test with ctest's `ENVIRONMENT`
+  property:
+  - `ASAN_OPTIONS=abort_on_error=0:halt_on_error=1:strict_string_checks=1`
+  - `UBSAN_OPTIONS=abort_on_error=0:halt_on_error=1:print_stacktrace=1`
+  - `TSAN_OPTIONS=abort_on_error=0:halt_on_error=1`
+
+  A report then ends the process with the sanitizer's non-zero exit code, without `SIGABRT`, and
+  the test fails. TSan also halts on the first report, because the harness's `_Exit(0)` would
+  otherwise skip TSan's end-of-run report. These settings replace the test presets' sanitizer
+  options for death tests only.
+- **Harness self-tests** (`tests/unit/harness/test_death.c`, independent of the active
+  sanitizer):
+  - `sanitizers_are_told_not_to_abort` aborts, and so passes, only if the registration gave it
+    that environment.
+  - `exiting_without_abort_fails` exits with code 1, as a sanitizer report does; registered with
+    `WILL_FAIL`.
+  - `returning_fails` returns normally; registered with `WILL_FAIL`.
+
+  Together they pin the rule that only `abort()` passes a death test.
+- **Manual check** (not committed): a heap overflow inside a death test, under ASan.
+  - With the old options (`abort_on_error=1`) the test passed (exit 0).
+  - With the new environment it fails.
+
+**Status.** Approved by the owner.
+
