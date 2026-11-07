@@ -39,6 +39,7 @@ new entry that points back to the old one.
 | 23  | Emscripten CI toolchain                                  | Implementation |
 | 24  | `AX_MAX_ALIGN` instead of `max_align_t`                  | Deviation      |
 | 25  | No condition-variable waits without threads              | Approved       |
+| 26  | Pre-1.0 versions require an exact minor                  | Approved       |
 
 ---
 
@@ -240,6 +241,8 @@ addition.
 
 ## 12. Version encoding and single source of truth
 
+> The compatibility rule is superseded by decision 26: while the major is 0, the minor must match.
+
 **Decision.**
 - `ax_version()` returns a `uint32_t` packing major (10 bits), minor (10 bits) and patch (12 bits),
   so packed versions compare with `<`.
@@ -422,5 +425,27 @@ ever signal.
   callers already handle and which never claims a timeout that did not happen.
 - `ax_thread.h` documents it, and code shared with the single-threaded build checks
   `ax_threads_supported()` before waiting.
+
+**Status.** Approved by the owner.
+
+## 26. Pre-1.0 versions require an exact minor
+
+**Supersedes** the compatibility rule in decision 12.
+
+**Context.** Decision 12 accepted any runtime with the same major and a minor at least the
+header's. Before 1.0 nothing is promised stable, so a 0.4 runtime cannot be trusted to serve
+code built against 0.3.
+
+**Decision.**
+- `ax_version_compatible(required, provided)` in `ax_version.h` implements the rule. It is a
+  `static inline` function, so bindings and plugins can call it before trusting any other
+  symbol of the runtime.
+- The rule:
+  - the major must match;
+  - while the major is 0, the minor must also match exactly;
+  - from 1.0 on, the runtime minor must be at least the required minor.
+- The patch never matters.
+- Decision 12 described the old rule but no code implemented it; this is the first
+  implementation, with tests.
 
 **Status.** Approved by the owner.

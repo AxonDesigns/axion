@@ -28,3 +28,31 @@ AX_TEST(packed_versions_order)
     AX_CHECK(AX_MAKE_VERSION(1, 2, 0) > AX_MAKE_VERSION(1, 1, 4095));
     AX_CHECK(AX_MAKE_VERSION(1, 2, 3) > AX_MAKE_VERSION(1, 2, 2));
 }
+
+AX_TEST(compatible_with_itself)
+{
+    AX_CHECK(ax_version_compatible(AX_VERSION, ax_version()));
+}
+
+AX_TEST(pre_1_0_requires_exact_minor)
+{
+    AX_CHECK(ax_version_compatible(AX_MAKE_VERSION(0, 3, 0), AX_MAKE_VERSION(0, 3, 9)));
+    AX_CHECK(ax_version_compatible(AX_MAKE_VERSION(0, 3, 9), AX_MAKE_VERSION(0, 3, 0)));
+    AX_CHECK(!ax_version_compatible(AX_MAKE_VERSION(0, 3, 0), AX_MAKE_VERSION(0, 4, 0)));
+    AX_CHECK(!ax_version_compatible(AX_MAKE_VERSION(0, 4, 0), AX_MAKE_VERSION(0, 3, 0)));
+}
+
+AX_TEST(post_1_0_allows_newer_minor)
+{
+    AX_CHECK(ax_version_compatible(AX_MAKE_VERSION(1, 2, 0), AX_MAKE_VERSION(1, 2, 0)));
+    AX_CHECK(ax_version_compatible(AX_MAKE_VERSION(1, 2, 0), AX_MAKE_VERSION(1, 5, 1)));
+    AX_CHECK(!ax_version_compatible(AX_MAKE_VERSION(1, 5, 0), AX_MAKE_VERSION(1, 2, 0)));
+    AX_CHECK(ax_version_compatible(AX_MAKE_VERSION(1, 2, 7), AX_MAKE_VERSION(1, 2, 0)));
+}
+
+AX_TEST(major_must_match)
+{
+    AX_CHECK(!ax_version_compatible(AX_MAKE_VERSION(1, 0, 0), AX_MAKE_VERSION(2, 0, 0)));
+    AX_CHECK(!ax_version_compatible(AX_MAKE_VERSION(2, 0, 0), AX_MAKE_VERSION(1, 9, 0)));
+    AX_CHECK(!ax_version_compatible(AX_MAKE_VERSION(0, 1, 0), AX_MAKE_VERSION(1, 1, 0)));
+}
