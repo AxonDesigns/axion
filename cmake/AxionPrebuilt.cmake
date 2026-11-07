@@ -19,9 +19,9 @@ function(ax_fetch_prebuilt out_var name url sha256)
     set(_dir "${AX_DEPS_DIR}/${name}")
     set(_stamp "${_dir}/.ax-sha256")
 
-    file(MAKE_DIRECTORY "${AX_DEPS_DIR}")
+    file(MAKE_DIRECTORY "${AX_DEPS_DIR}/.locks")
     # Two build trees configured at once must not unpack into the same directory.
-    file(LOCK "${AX_DEPS_DIR}/${name}.lock" GUARD FUNCTION TIMEOUT 1200)
+    file(LOCK "${AX_DEPS_DIR}/.locks/${name}" GUARD FUNCTION TIMEOUT 1200)
 
     if(EXISTS "${_stamp}")
         file(READ "${_stamp}" _recorded)

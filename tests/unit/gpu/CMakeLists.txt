@@ -4,6 +4,7 @@
 # gpu/ tests that need no window. Tests that need an adapter skip themselves when none exists.
 
 set(_ax_gpu_unit_tests
+    test_device.c
     test_webgpu_link.c)
 
 foreach(_t IN LISTS _ax_gpu_unit_tests)
@@ -12,7 +13,7 @@ foreach(_t IN LISTS _ax_gpu_unit_tests)
     string(REGEX REPLACE "^test_" "" _n "${_n}")
     target_sources(test_gpu_${_n} PRIVATE gpu_test_util.c)
     target_include_directories(test_gpu_${_n} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-    target_link_libraries(test_gpu_${_n} PRIVATE ax_webgpu ${CMAKE_DL_LIBS})
+    target_link_libraries(test_gpu_${_n} PRIVATE ax_gpu ${CMAKE_DL_LIBS})
 endforeach()
 
 # GPU drivers leak process-lifetime allocations; LeakSanitizer ignores the ones in driver modules

@@ -58,12 +58,14 @@ jobs:
         uses: lukka/get-cmake@latest
 
       # The platform module (Linux only for now) needs libwayland and wayland-scanner; weston
-      # runs headless for the Wayland integration tests.
-      - name: Wayland development packages
+      # runs headless for the Wayland integration tests. The runners have no GPU: gpu/ tests run on
+      # Mesa's software Vulkan driver (lavapipe, in mesa-vulkan-drivers).
+      - name: Wayland and Vulkan packages
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libwayland-dev libwayland-bin weston
+          sudo apt-get install -y --no-install-recommends libwayland-dev libwayland-bin weston \
+            libvulkan1 mesa-vulkan-drivers
 
       # Pinned prebuilt WebGPU packages (gpu/third_party/webgpu_deps.cmake), unpacked into .deps/.
       # CMake verifies each archive's checksum when it downloads one; a cache hit was verified
@@ -82,13 +84,20 @@ jobs:
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }} -- -k 0
 
+      # gpu/ tests fail instead of skipping when no adapter exists (macOS runners have Metal).
       - name: Test
         if: runner.os != 'Linux'
+        env:
+          AX_REQUIRE_GPU_TESTS: "1"
         run: ctest --preset ${{ matrix.preset }} ${{ matrix.test_args }}
 
       # Linux also runs the Wayland integration tests against a headless weston.
+      # gpu/ tests use the software adapter (lavapipe) and fail instead of skipping without it.
       - name: Test (with headless weston)
         if: runner.os == 'Linux'
+        env:
+          AX_TEST_GPU_ADAPTER: software
+          AX_REQUIRE_GPU_TESTS: "1"
         run: tools/ci/with-weston.sh ctest --preset ${{ matrix.preset }} ${{ matrix.test_args }}
 
   emscripten:

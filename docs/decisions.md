@@ -58,6 +58,7 @@ new entry that points back to the old one.
 | 42  | Marshalled calls when the main thread stops              | Approved       |
 | 43  | Dawn and wgpu-native as pinned official binaries         | Approved       |
 | 44  | GPU driver leaks under LeakSanitizer                     | Implementation |
+| 45  | ax_gpu lifecycle, adapters and waiting                   | Approved       |
 
 ---
 
@@ -1032,3 +1033,51 @@ process-lifetime state and never free it, which LeakSanitizer reports in ASan bu
 
 **Status.** Implementation, following the owner's rule for sanitizers and uninstrumented
 libraries.
+
+## 45. ax_gpu lifecycle, adapters and waiting
+
+**Context.** ax_gpu's lifecycle (instance, adapter, device, queue) on both WebGPU implementations,
+with an option that forces a software adapter for CI.
+
+**Decision.**
+- **API:** `gpu/include/axion/gpu/ax_gpu.h`, internal SDK only.
+  - `ax_gpu_create` / `ax_gpu_destroy`.
+  - Handle getters for the instance, adapter, device and queue.
+  - `ax_gpu_device_generation`, which counts device creations.
+  - `ax_gpu_get_info`, `ax_gpu_poll`, `ax_gpu_wait` and `ax_gpu_wait_idle`.
+  - `ax_gpu_uncaptured_error_count`.
+- **Threads:** the thread that creates an ax_gpu owns it. Every function is tagged
+  `thread: presenter` and asserts in debug builds that it runs there (death test
+  `gpu.device.use_from_another_thread_asserts`); only `ax_gpu_uncaptured_error_count` is
+  `thread: any`.
+  - Every WebGPU callback is registered with `WGPUCallbackMode_AllowProcessEvents`, so it runs on
+    the owner thread inside `ax_gpu_poll` or `ax_gpu_wait`.
+  - The exception is the uncaptured-error callback, which webgpu.h may call on any thread: it only
+    increments an atomic counter and prints the message.
+- **Adapter selection:**
+  - `AX_GPU_ADAPTER_DEFAULT`: high-performance power preference, restricted to the platform's
+    primary backend (Vulkan on Linux, Metal on Apple), so no GL drivers are probed.
+  - `AX_GPU_ADAPTER_SOFTWARE`: the standard `forceFallbackAdapter` request where it can return a
+    CPU adapter (wgpu-native finds lavapipe). Dawn treats only SwiftShader as a fallback, and its
+    packages lack it, so there the adapter of the default request is accepted only if its type is
+    CPU.
+    - Dawn always prefers a GPU, even with the low-power preference, so on a machine with a GPU
+      its software mode needs the Vulkan loader restricted to the software driver
+      (`VK_DRIVER_FILES=.../lvp_icd.json`); the error message says so.
+    - CI runners have no GPU, so lavapipe is the only adapter there.
+- **Waiting:** wgpu-native v29 implements neither `wgpuInstanceWaitAny` nor
+  `wgpuHasInstanceFeature` (both panic).
+  - `ax_gpu_wait` therefore takes the future and a `done` flag set by its callback.
+  - Dawn waits on the future (instance feature `TimedWaitAny`).
+  - wgpu-native polls (`wgpuInstanceProcessEvents`, then `wgpuDevicePoll`) until the flag is set.
+  - This and the instance options are the only implementation-specific code (`gpu/src/impl_*.c`
+    behind `webgpu_impl.h`), along with forcing a device loss (decision 46).
+- **Tests** (`tests/unit/gpu/test_device.c`): device creation and adapter info; clearing a 64x64
+  texture and reading it back; the software adapter; the thread assertion.
+  - They run on the default adapter. `AX_TEST_GPU_ADAPTER=software` selects the software one.
+  - `AX_REQUIRE_GPU_TESTS=1` turns a missing adapter into a failure instead of a skip.
+  - CI sets both on Linux (lavapipe from `mesa-vulkan-drivers`), and the second on macOS (Metal).
+  - Checked locally: Dawn and wgpu-native on the GTX 1650 and on lavapipe.
+
+**Status.** Approved (part of the approved plan); the software-adapter rule for Dawn is an
+implementation detail.

@@ -8,6 +8,39 @@
 
 #include "gpu_test_util.h"
 
+#include <stdlib.h>
+#include <string.h>
+
+#include "axion/ax_error.h"
+
+static bool env_is(const char *name, const char *value)
+{
+    const char *v = getenv(name);
+    return v != NULL && strcmp(v, value) == 0;
+}
+
+int axt_gpu_create(const ax_allocator *allocator, ax_gpu **out_gpu)
+{
+    ax_gpu_desc desc = {sizeof desc, NULL, AX_GPU_ADAPTER_DEFAULT};
+    ax_result r;
+
+    axt_gpu_pin_drivers();
+    desc.allocator = allocator;
+    if (env_is("AX_TEST_GPU_ADAPTER", "software")) {
+        desc.adapter = AX_GPU_ADAPTER_SOFTWARE;
+    }
+    r = ax_gpu_create(&desc, out_gpu);
+    if (r == AX_OK) {
+        return 1;
+    }
+    if (r == AX_ERR_UNSUPPORTED && !env_is("AX_REQUIRE_GPU_TESTS", "1")) {
+        return 0;
+    }
+    ax_test_fail(__FILE__, __LINE__, "ax_gpu_create: %s: %s", ax_result_name(r),
+                 ax_last_error()->message.ptr);
+    return -1;
+}
+
 #if defined(__linux__)
 #    include <dlfcn.h>
 #    include <stddef.h>
