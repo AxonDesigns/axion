@@ -95,7 +95,7 @@ static int script_main(void *arg)
     ax_frame_target t;
     uint64_t target_before;
     uint64_t t0;
-    int i;
+    uint64_t deadline;
 
     memset(&native, 0, sizeof native);
     native.struct_size = sizeof native;
@@ -108,7 +108,10 @@ static int script_main(void *arg)
     wl_surface = (struct wl_surface *)native.u.wayland.surface;
 
     /* 1. The first frame, committed normally and shown. */
-    for (i = 0; i < 250; ++i) {
+    /* Loops are bounded by time, not iterations: a pending commit request makes wait_frame
+     * return at once, while the configure needs a compositor roundtrip. */
+    deadline = ax_time_monotonic_ns() + AXT_SECONDS(5);
+    while (ax_time_monotonic_ns() < deadline) {
         if (!begin(s, &t)) {
             fail(s, "begin");
             break;
@@ -117,6 +120,7 @@ static int script_main(void *arg)
             break;
         }
         ax_surface_wait_frame(s->surface, 20u * 1000000u, NULL);
+        ax_thread_yield();
     }
     if (!t.ready || ax_surface_prepare_commit(s->surface, &t) != AX_OK ||
         !axt_shm_commit(&shm, wl_surface, t.pixel_width, t.pixel_height, 0xFF102030u) ||
@@ -132,7 +136,8 @@ static int script_main(void *arg)
         fail(s, "main thread");
         goto done;
     }
-    for (i = 0; i < 250; ++i) {
+    deadline = ax_time_monotonic_ns() + AXT_SECONDS(5);
+    while (ax_time_monotonic_ns() < deadline) {
         if (!begin(s, &t)) {
             fail(s, "begin");
             goto done;
@@ -141,6 +146,7 @@ static int script_main(void *arg)
             break;
         }
         ax_surface_wait_frame(s->surface, 20u * 1000000u, NULL);
+        ax_thread_yield();
     }
     s->failed_frame_acked = t.acks_configure;
     s->failed_frame_requested = t.commit_requested;
