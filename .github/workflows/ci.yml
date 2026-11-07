@@ -1,0 +1,87 @@
+# Copyright 2026 Axon Works
+# SPDX-License-Identifier: Apache-2.0
+#
+# Every job runs the same three commands a developer runs locally:
+#   cmake --preset <p> && cmake --build --preset <p> && ctest --preset <p>
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: "Windows / MSVC / Debug",        os: windows-latest, preset: msvc-debug }
+          - { name: "Windows / MSVC / Release",      os: windows-latest, preset: msvc-release }
+          - { name: "macOS / Clang / ASan+UBSan",    os: macos-latest,   preset: clang-asan }
+          - { name: "macOS / Clang / Release",       os: macos-latest,   preset: clang-release }
+          - { name: "Linux / GCC / ASan+UBSan",      os: ubuntu-latest,  preset: gcc-asan }
+          - { name: "Linux / GCC / Release",         os: ubuntu-latest,  preset: gcc-release }
+          - { name: "Linux / Clang / ASan+UBSan",    os: ubuntu-latest,  preset: clang-asan }
+          - { name: "Linux / Clang / Release",       os: ubuntu-latest,  preset: clang-release }
+    steps:
+      - uses: actions/checkout@v4
+
+      # Load the MSVC environment first, so the CMake and Ninja installed next take precedence
+      # over the copies bundled with Visual Studio.
+      - name: MSVC environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: CMake and Ninja
+        uses: lukka/get-cmake@latest
+
+      - name: Configure
+        run: cmake --preset ${{ matrix.preset }}
+
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }}
+
+      - name: Test
+        run: ctest --preset ${{ matrix.preset }}
+
+  emscripten:
+    name: Web / Emscripten / base only (single-threaded)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: CMake and Ninja
+        uses: lukka/get-cmake@latest
+
+      - name: Emscripten SDK
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 4.0.10
+
+      # The preset locates the toolchain file through $EMSDK; derive it from emcc's location so
+      # the build does not depend on which variables the setup action exports.
+      - name: Locate EMSDK
+        shell: bash
+        run: |
+          emcc --version
+          echo "EMSDK=$(cd "$(dirname "$(command -v emcc)")/../.." && pwd)" >> "$GITHUB_ENV"
+
+      - name: Configure
+        run: cmake --preset emscripten
+
+      - name: Build
+        run: cmake --build --preset emscripten
