@@ -52,6 +52,7 @@ new entry that points back to the old one.
 | 36  | Restore the floating size after maximize                 | Implementation |
 | 37  | Frame targets never go backwards                         | Implementation |
 | 38  | Notes: prepare_commit and the Vulkan WSI                 | Notes          |
+| 39  | Hit-test move/resize and cursors (first version)         | Approved       |
 
 ---
 
@@ -795,3 +796,35 @@ own frame callbacks (FIFO throttling), or uses `wp_fifo_v1` plus `wp_commit_timi
    its own.
 
 **Status.** Notes for the GPU step, requested by the owner.
+
+## 39. Hit-test move/resize and cursors (first version)
+
+**Decision.** The first version of hit-test driven move and resize (Windowing API), for windows
+without server decorations:
+- **Input handled:** only pointer position and the left button, on the main thread. The full
+  input model is M2.
+- **On press:** the main thread reads the window's newest published map (a triple buffer of at
+  most 64 regions, so it never waits for the publishing thread), and the last region containing
+  the point wins.
+  - `AX_REGION_CAPTION` starts `xdg_toplevel.move`.
+  - A resize edge or corner starts `xdg_toplevel.resize`, only for resizable windows.
+  - The `AX_EDGE_*` bits are chosen to match `xdg_toplevel.resize_edge`.
+- **Not acted on yet:**
+  - MINIMIZE, MAXIMIZE and CLOSE are accepted and behave as CLIENT.
+  - Double-click on the caption: Wayland exposes no user preference for it.
+- **When regions apply:** the map applies whatever the decoration mode, since a server-decorated
+  window may still draw a caption inside its content.
+- **Cursors:**
+  - The cursor follows the region under the pointer. It is set on every pointer enter, because
+    the cursor is undefined until a client sets it.
+  - wp-cursor-shape-v1 is used where available (KDE, GNOME 46+, recent weston).
+  - Otherwise images come from the cursor theme through libwayland-cursor (decision 33). Names
+    are tried newest spelling first ("n-resize", then "top_side"). Theme cursors are loaded at
+    scale 1 for now; HiDPI theme cursors come with the input work in M2.
+- **Seat listener timing:** the `wl_seat` listener is attached at bind time, so the capabilities
+  event, which arrives right after the bind, is never missed.
+- **Testing:** headless weston has no input devices, so tests cover publishing and reading maps
+  (concurrently, no torn or stale maps) and the lookup itself. The press path is validated on a
+  desktop with `examples/m0_window --decorations=none`.
+
+**Status.** Approved (part of the approved plan).

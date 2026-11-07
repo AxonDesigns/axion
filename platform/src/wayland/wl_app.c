@@ -91,6 +91,9 @@ static void registry_global(void *data, struct wl_registry *registry, uint32_t n
         wl->seat_version = min_u32(version, AX_WL_SEAT_VERSION);
         wl->seat = (struct wl_seat *)wl_registry_bind(registry, name, &wl_seat_interface,
                                                       wl->seat_version);
+        /* Listen at once: the seat's capabilities arrive right after the bind (during the second
+         * roundtrip, when every other global is already bound). */
+        ax_wl_seat_bound(app);
     }
 }
 
@@ -225,9 +228,6 @@ static ax_result wl_init(ax_app_impl *app, const ax_app_desc *desc)
         wl_shutdown(app);
         return ax_set_error(AX_ERR_UNSUPPORTED,
                             "ax_app_create: the compositor lacks wl_compositor or xdg_wm_base");
-    }
-    if (wl->seat != NULL) {
-        ax_wl_seat_bound(app);
     }
     app->caps = compute_caps(wl);
     return AX_OK;

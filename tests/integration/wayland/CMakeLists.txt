@@ -5,6 +5,7 @@
 # which starts a headless weston; without one they are skipped (or fail, in CI).
 
 set(_ax_wayland_tests
+    test_hit_regions.c
     test_present.c
     test_window.c)
 
