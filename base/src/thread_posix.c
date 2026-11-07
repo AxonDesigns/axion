@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "axion/base/ax_assert.h"
 #include "axion/base/ax_compiler.h"
@@ -94,6 +95,15 @@ int ax_thread_join(ax_thread *thread)
 void ax_thread_yield(void)
 {
     sched_yield();
+}
+
+uint32_t ax_cpu_count(void)
+{
+    long n = sysconf(_SC_NPROCESSORS_ONLN);
+    if (n < 1) {
+        return 1;
+    }
+    return n > 0xFFFF ? 0xFFFFu : (uint32_t)n;
 }
 
 /* ---- Mutexes --------------------------------------------------------------------------------- */

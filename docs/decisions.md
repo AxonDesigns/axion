@@ -73,6 +73,7 @@ new entry that points back to the old one.
 | 57  | Render-thread frame step: bounded size handshake         | Approved       |
 | 58  | Roping of thin rotated lines with sRGB-space blending    | Approved       |
 | 59  | M0 exit criterion: measurements with the Render IR       | Approved       |
+| 60  | Job system: deques, waits and inline mode                | Approved       |
 
 ---
 
@@ -1938,3 +1939,71 @@ The owner asked for an explanation. The per-second records of the runs above giv
 **Status.** Approved by the owner: the bound (default kept, to be measured again in M1), the
 recommendation on issue #2 (M0 closes with the limitation; option (b) in M1 with the criterion
 above), and the blending space in M1.
+
+## 60. Job system: deques, waits and inline mode
+
+**Context.** "Core runtime conventions" asks for a fixed worker pool (core count minus the
+dedicated threads, minimum one) with work-stealing deques and counter-based waits, without
+fibers. M1 carries it over from M0, and the owner asked for it in base's internal SDK, with
+waiters that run pending jobs instead of sleeping and a single-threaded mode with the same API.
+
+**Decision.** `base/include/axion/base/ax_jobs.h`, `base/src/jobs.c`.
+- **Pool:** `ax_jobs_desc.worker_count` threads, or by default `ax_cpu_count()` minus
+  `reserved_threads` (4: main, app, scene and render), at least 1, at most 64.
+  - `ax_cpu_count()` is new in base (`sysconf`, `GetActiveProcessorCount`, 1 without threads).
+    It ignores affinity masks and container quotas, which is why the count can be overridden.
+- **Deques:** one Chase-Lev deque per worker, of fixed capacity (default 1024).
+  - The owner pushes and pops at the bottom; other threads steal from the top.
+  - It is the C11 formulation of Lê et al., except that the two standalone seq_cst fences are
+    folded into seq_cst operations on `top` and `bottom`. ThreadSanitizer does not model
+    standalone fences and would report the slot accesses they order.
+  - Slots are three atomic words written and read relaxed, so a thief's read that races with the
+    owner reusing the slot is not a data race. Such a read is discarded, because the thief's
+    compare-exchange on `top` fails.
+- **Other threads** (the scene thread, the app, tests) submit to a shared injection queue: a
+  mutex-protected ring of fixed capacity (default 1024), with an atomic hint so idle threads skip
+  the lock when it is empty.
+- **No allocation after creation.** When a deque or the injection queue is full, the submitting
+  thread runs the job itself, at once (counted as `ran_when_full`).
+- **Counters:** `ax_job_counter` is an atomic count of unfinished jobs. Submitting adds before
+  queueing; finishing subtracts with release order, and the waiter reads with acquire order, so
+  a job's writes are visible after the wait. Nothing touches a counter after it reaches zero, so
+  it may live on the waiter's stack.
+- **Waiting runs jobs.** `ax_jobs_wait` runs its own deque, then the injection queue, then
+  steals, until the counter is zero. Jobs may submit jobs and wait for them (nested waits).
+  - With nothing to run, the waiter backs off (64 spins, 16 yields), then sleeps on a condition
+    variable for at most `AX_JOBS_WAIT_SLEEP_NS` (1 ms) at a time, as the owner asked: it never
+    spins without end.
+  - New work and counters reaching zero wake it earlier, through a Dekker handshake like those of
+    decisions 31 and 52: the sleeper increments `sleepers` and rechecks `epoch`, and the notifier
+    increments `epoch` and checks `sleepers`, taking the mutex only when someone sleeps. The 1 ms
+    bound only limits the cost of a missed wakeup, which the handshake rules out.
+  - Idle workers sleep the same way, without a bound.
+  - A waiter may run any pending job, not only its own, so a long chain of nested waits uses
+    stack on that thread.
+- **Inline mode** (`AX_JOBS_INLINE`, forced when `ax_threads_supported()` is false): no workers.
+  `ax_jobs_submit` runs each job at once, in submission order and depth-first, and `ax_jobs_wait`
+  finds the counter already at zero. A wait on a nonzero counter in this mode could never end (a
+  job waiting on its own counter): debug builds assert, release builds return.
+- **Destroying** requires every job to have finished. A global count of outstanding jobs, which
+  `ax_jobs_wait_idle` waits on, is decremented before the job's own counter, so a waiter that
+  returns and destroys the system never sees a finishing job still counted. TSan found the
+  opposite order while the tests were written.
+- **Statistics** (`ax_jobs_get_stats`): jobs run, steals, jobs taken from the injection queue,
+  jobs run because a queue was full, and sleeps. For tests and the profiler.
+- **Tests** (`tests/unit/base/test_jobs.c`, label `base`, so the TSan job runs them):
+  - every job runs and a counter can be reused;
+  - an unbalanced load: one job pushes 2000 jobs into its own worker's deque, and the other
+    workers get them only by stealing;
+  - nested waits 8 levels deep (a tree of jobs over 16 384 elements), with results identical,
+    byte for byte, in inline mode;
+  - inline mode runs depth-first in a fixed order, and a wait on a counter that can never reach
+    zero aborts (death test);
+  - full deque and full injection queue;
+  - a waiter with nothing to run sleeps and is woken when the counter reaches zero;
+  - three threads submitting and waiting at once (stress).
+
+  Locally: 400 runs under TSan, 100 more pinned to one CPU, 1000 Release runs, plus ASan, all
+  clean.
+
+**Status.** Approved (part of the approved plan; the bounded sleep was the owner's adjustment).
