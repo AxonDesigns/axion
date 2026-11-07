@@ -14,10 +14,8 @@
 AX_TEST(a_forced_loss_is_detected_and_the_device_recreated)
 {
     ax_gpu *gpu = NULL;
-    WGPUDevice old_device;
 
     AXT_GPU_CREATE(NULL, &gpu);
-    old_device = ax_gpu_device(gpu);
     if (!ax__gpu_test_force_loss(gpu)) {
         ax_gpu_destroy(gpu);
         AX_SKIP("this WebGPU implementation cannot force a device loss");
@@ -25,8 +23,8 @@ AX_TEST(a_forced_loss_is_detected_and_the_device_recreated)
 
     AX_CHECK_EQ_U(ax_gpu_poll(gpu), AX_OK);
     AX_CHECK_EQ_U(ax_gpu_device_generation(gpu), 2);
+    /* The new device may reuse the old one's address, so only the generation tells them apart. */
     AX_CHECK(ax_gpu_device(gpu) != NULL);
-    AX_CHECK(ax_gpu_device(gpu) != old_device);
     AX_CHECK(axt_gpu_clear_and_read_back(gpu));
 
     /* Nothing further is pending: the old device's loss is not reported twice. */
