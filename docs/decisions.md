@@ -1344,6 +1344,7 @@ present or hit a protocol error.
     NVIDIA 615.78, out of a 3.85 ms frame. shm reuses its buffers.
   - Accepted by the owner for this step. Tracked in issue #2 (AxonDesigns/axion), to be reviewed when M0's exit
     criterion (smooth resize at the display's refresh rate) is measured.
+  - Measured again with the Render IR path in decision 59.
 - **Future work: a swapchain reserved in sizes rounded up, cropped with the viewport's source.**
   - The swapchain would be allocated at the configure's pixel size rounded up to a bucket, for
     example the next multiple of 128 or 256 px, or with headroom over the current size.
@@ -1741,8 +1742,8 @@ recording for hidden windows.
     whatever the scene does for hidden windows. The alternative (the scene always recording for
     hidden windows) would leave the guarantee to every future scene implementation.
   - Default bound: half a refresh, within 2-8 ms (`ax_render_frame_default_max_wait`), so a late
-    scene costs at most the frame it delays. `m0_window --max-wait-ms` overrides it. The value
-    is to be confirmed with the measurements of M0's exit criterion.
+    scene costs at most the frame it delays. `m0_window --max-wait-ms` overrides it. Confirmed
+    by the exit-criterion measurements (decision 59).
 - **Example** (`examples/m0_window --renderer=ir`, replacing the minimal pipeline of `gpu.c`):
   - main thread: pump;
   - app thread: events and hit regions;
@@ -1770,7 +1771,7 @@ recording for hidden windows.
   - after a device loss, frames are cleared until the new pipeline is ready, and content resumes.
 
 **Status.** Approved (the bound and the rule for hidden windows were the owner's adjustments;
-the bound's value is pending the exit-criterion measurements).
+the bound's value is proposed from measurements in decision 59).
 
 ## 58. Roping of thin rotated lines: a known limitation of sRGB-space blending
 
@@ -1823,3 +1824,80 @@ to a 2 px ramp.
   starting point.
 
 **Status.** Approved (the owner chose to keep sRGB-space blending and record the limitation).
+
+## 59. M0 exit criterion: measurements with the Render IR
+
+**Context.** M0's exit criterion asks for the measurement matrix of decision 49 again, with
+`m0_window --renderer=ir`, and compared with that step. It also asks for the size handshake's
+bound (decision 57) to be set from the data, and for issue #2 to be reviewed.
+
+**Method.** The desktop of decision 49 (KWin 6.8.2, NVIDIA GTX 1650 with 615.78, HDMI-A-1 at
+71.91 Hz scale 1, DP-2 at 260 Hz scale 1.325). The same tool and matrix
+(`tools/diag/measure_m0.py --with-lavapipe`), with `ir` (scene thread, mailbox, `ax_render_wgpu`,
+`ax_render_frame`) in place of the GPU step's minimal pipeline. Each run measures 6-7 s after a
+warm-up. The owner did not touch the windows.
+- Pass 1 (full matrix) found two measurement faults, both fixed before the passes used here:
+  - the frame step's wait counter included the acknowledging frame's own rendering and present
+    (fixed: it stops where that frame starts; `m0_window` prints its mean too);
+  - the frame clock, without a vblank counter (KWin sends none), locked onto a quarter of the
+    real refresh after the window moved from DP-2 to HDMI-A-1: 288 Hz measured, 213 "missed"
+    vblanks a second, predictions on quarters of the 72 Hz refresh. That is the "wrong output"
+    error the tool reported. A measurement more than 5% away from the compositor's nominal refresh
+    is now dropped and measured again (`platform.frame_clock.moving_to_*`).
+- Pass 2: full matrix with the wait fix. Pass 3: HDMI-A-1 with the frame-clock fix (pass 2's
+  "wrong output" runs there). Pass 4: DP-2 again without lavapipe, because pass 1 and pass 2
+  disagreed at 260 Hz while resizing. Ranges below cover passes 1-4 where a value is valid
+  (pass 1's waits and its HDMI-A-1 quiet native runs are not).
+
+**Results**, NVIDIA, compositor pacing (the default). Format: Hz presented; missed vblanks per
+second; configure-to-screen mean / max; swapchain resizes per second, cost mean / max. Both
+decoration modes are within the same ranges.
+
+| Monitor, state | Decision 49 (GPU step) | Render IR, this step | shm, this step |
+| --- | --- | --- | --- |
+| 72 Hz, quiet | 71.9 Hz, 0 | 71.9 Hz, 0 | 71.9 Hz, 0 |
+| 72 Hz, resizing | 71.9 Hz, 0; 22.3 / 28.3 ms; 72/s, 1.6 / 4.7 ms | 71.6-71.9 Hz, 0-0.29; 22.0-22.9 / 38.4 ms; 71-72/s, 1.6-1.9 / 8.3 ms | 71.6-71.9 Hz, 0-0.29; 22.5-28.5 / 52.9 ms |
+| 260 Hz, quiet | 260.0 Hz, 0 | 259.0-260.0 Hz, 0-1.0 | 259.9-260.0 Hz, 0-0.14 |
+| 260 Hz, resizing | 257.2 Hz, 2.8 (0-6 per second, once 13); 11.5 / 17.9 ms; 124/s, 1.5 / 5.3 ms | 251.3-258.9 Hz, 1.1-8.7 per run (mean 4.8; seconds up to 25); 9.7-11.7 / 25.7 ms; 124/s, 1.5-1.6 / 10.7 ms | 259.0-260.0 Hz, 0-1.0 (51 of 54 seconds at 0-3) |
+
+- Driver pacing (FIFO) collapses while resizing as in decision 49: 24 Hz at 72 Hz, 64 Hz at 260 Hz.
+- lavapipe with compositor pacing: 71.9 Hz with nothing missed at 72 Hz; 183-224 Hz resizing at
+  260 Hz (software rendering, 223 Hz in decision 49).
+- No run lost a frame, failed a present or hit a protocol error. Quiet runs never waited for the
+  scene, and `ir` drew 34 instances per frame with no unknown items.
+
+**The size handshake's bound.**
+- Scene waits (time from the content mismatch to the frame that acknowledged): 14,939 over passes
+  2-4. Mean 0.02-0.04 ms per run; per-second maxima above 0.5 ms in 6 of 504 seconds and above
+  1 ms in 2. One wait reached 2.22 ms at 260 Hz with driver pacing, where the bound is 2 ms: the
+  only forced acknowledgement. Recording a snapshot took at most 0.28 ms.
+- **Proposed: keep the default, half a refresh within 2-8 ms.**
+  - At 260 Hz the 2 ms floor is 2.5 times the longest wait but one. With the 1.5 ms mean
+    swapchain recreation it still fits a 3.85 ms frame, so a wait up to the bound costs no more
+    than that frame. A forced acknowledgement shows one frame of top-left-anchored content, which
+    the next frame corrects, and costs less than a missed one.
+  - At 72 Hz the bound is 6.95 ms, and no wait came near it.
+  - A lower bound would only add forced acknowledgements: waits are 0.03 ms, and the bound acts
+    on the tail. M1's scenes will record more than this one, which argues against lowering it.
+
+**Issue #2 (misses while resizing at 260 Hz).**
+- The gap to shm persists. It varies more between runs than in decision 49 (1.1 to 8.7 missed
+  per second), with single seconds up to 25.
+- The scene handshake is not the cause (0.03 ms mean). The misses follow the per-configure cost:
+  - every other frame recreates the swapchain, 1.5-1.6 ms of a 3.85 ms frame;
+  - seconds with 20-25 misses occurred with recreation maxima of 2.1 ms as well as 10.7 ms, so
+    this is the steady cost of recreating, not only its outliers;
+  - shm, which reuses its buffers, misses 0-1.
+- Option (b), the swapchain reserved in buckets and cropped with the viewport's source, removes
+  that cost from most configures. It changes the contracts of decisions 34 and 38, and needs
+  `set_source` validated with dmabuf buffers on KWin, weston and GNOME, plus a design for the
+  Win32 equivalent.
+- **Recommendation: close M0 with this as a known limitation, and keep issue #2 open for M1.**
+  - The criterion is met at 72 Hz (at most 0.29 missed per second, as shm) and quiet at both
+    rates. At 260 Hz, 98% of refreshes still get a
+    new frame while resizing.
+  - Option (b) is a contract change across backends. It belongs with M1's render thread, which
+    takes over swapchain ownership from the M0 scaffolding (decision 57).
+
+**Status.** Measurements and proposals for the owner's review: the bound's value, and the
+recommendation on issue #2 (option (b) is not implemented without the owner's approval).
