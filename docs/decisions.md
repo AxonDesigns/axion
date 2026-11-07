@@ -73,6 +73,18 @@ new entry that points back to the old one.
 | 57  | Render-thread frame step: bounded size handshake         | Approved       |
 | 58  | Roping of thin rotated lines with sRGB-space blending    | Approved       |
 | 59  | M0 exit criterion: measurements with the Render IR       | Approved       |
+| 60  | Job system: deques, waits and inline mode                | Approved       |
+| 61  | `AX_ERR_INVALID_ARGUMENT`; the Render IR uses it         | Approved       |
+| 62  | Node store: rows, slots, links and side components       | Approved       |
+| 63  | Property system: ids, types, registry and validation     | Approved       |
+| 64  | Dirty propagation and relayout boundaries                | Approved       |
+| 65  | Transaction queue: a linked SPSC queue, not a ring       | Deviation      |
+| 66  | Handle reservation on the app thread                     | Approved       |
+| 67  | The world, the transaction API and its encoding          | Approved       |
+| 68  | Applying transactions atomically; rejection              | Approved       |
+| 69  | The app thread's mirror                                  | Approved       |
+| 70  | Reference benchmarks: core and jobs                      | Approved       |
+| 71  | The IDL: `.axidl`, and the line between ABI and SDK      | Approved       |
 
 ---
 
@@ -1938,3 +1950,734 @@ The owner asked for an explanation. The per-second records of the runs above giv
 **Status.** Approved by the owner: the bound (default kept, to be measured again in M1), the
 recommendation on issue #2 (M0 closes with the limitation; option (b) in M1 with the criterion
 above), and the blending space in M1.
+
+## 60. Job system: deques, waits and inline mode
+
+**Context.** "Core runtime conventions" asks for a fixed worker pool (core count minus the
+dedicated threads, minimum one) with work-stealing deques and counter-based waits, without
+fibers. M1 carries it over from M0, and the owner asked for it in base's internal SDK, with
+waiters that run pending jobs instead of sleeping and a single-threaded mode with the same API.
+
+**Decision.** `base/include/axion/base/ax_jobs.h`, `base/src/jobs.c`.
+- **Pool:** `ax_jobs_desc.worker_count` threads, or by default `ax_cpu_count()` minus
+  `reserved_threads` (4: main, app, scene and render), at least 1, at most 64.
+  - `ax_cpu_count()` is new in base. On Linux it counts the affinity mask
+    (`sched_getaffinity` + `CPU_COUNT`), so taskset and container cpusets are respected, with
+    `sysconf(_SC_NPROCESSORS_ONLN)` as the fallback; elsewhere it is the online processors
+    (`sysconf`, `GetActiveProcessorCount`), and 1 without threads. CPU quotas (cgroup `cpu.max`)
+    are not counted, which is one reason the count can be overridden.
+- **Deques:** one Chase-Lev deque per worker, of fixed capacity (default 1024).
+  - The owner pushes and pops at the bottom; other threads steal from the top.
+  - It is the C11 formulation of Lê et al., except that the two standalone seq_cst fences are
+    folded into seq_cst operations on `top` and `bottom`. ThreadSanitizer does not model
+    standalone fences and would report the slot accesses they order.
+  - Slots are three atomic words written and read relaxed, so a thief's read that races with the
+    owner reusing the slot is not a data race. Such a read is discarded, because the thief's
+    compare-exchange on `top` fails.
+- **Other threads** (the scene thread, the app, tests) submit to a shared injection queue: a
+  mutex-protected ring of fixed capacity (default 1024), with an atomic hint so idle threads skip
+  the lock when it is empty.
+- **No allocation after creation.** When a deque or the injection queue is full, the submitting
+  thread runs the job itself, at once (counted as `ran_when_full`).
+- **Counters:** `ax_job_counter` is an atomic count of unfinished jobs. Submitting adds before
+  queueing; finishing subtracts with release order, and the waiter reads with acquire order, so
+  a job's writes are visible after the wait. Nothing touches a counter after it reaches zero, so
+  it may live on the waiter's stack.
+- **Waiting runs jobs.** `ax_jobs_wait` runs its own deque, then the injection queue, then
+  steals, until the counter is zero. Jobs may submit jobs and wait for them (nested waits).
+  - With nothing to run, the waiter backs off (64 spins, 16 yields), then sleeps on a condition
+    variable for at most `AX_JOBS_WAIT_SLEEP_NS` (1 ms) at a time, as the owner asked: it never
+    spins without end.
+  - New work and counters reaching zero wake it earlier, through a Dekker handshake like those of
+    decisions 31 and 52: the sleeper increments `sleepers` and rechecks `epoch`, and the notifier
+    increments `epoch` and checks `sleepers`, taking the mutex only when someone sleeps. The 1 ms
+    bound only limits the cost of a missed wakeup, which the handshake rules out.
+  - Idle workers sleep the same way, without a bound.
+  - A waiter may run any pending job, not only its own, so a long chain of nested waits uses
+    stack on that thread.
+- **Inline mode** (`AX_JOBS_INLINE`, forced when `ax_threads_supported()` is false): no workers.
+  `ax_jobs_submit` runs each job at once, in submission order and depth-first, and `ax_jobs_wait`
+  finds the counter already at zero. A wait on a nonzero counter in this mode could never end (a
+  job waiting on its own counter): debug builds assert, release builds return.
+- **Destroying** requires every job to have finished. A global count of outstanding jobs, which
+  `ax_jobs_wait_idle` waits on, is decremented before the job's own counter, so a waiter that
+  returns and destroys the system never sees a finishing job still counted. TSan found the
+  opposite order while the tests were written.
+- **Statistics** (`ax_jobs_get_stats`): jobs run, steals, jobs taken from the injection queue,
+  jobs run because a queue was full, and sleeps. For tests and the profiler.
+- **Tests** (`tests/unit/base/test_jobs.c`, label `base`, so the TSan job runs them):
+  - every job runs and a counter can be reused;
+  - an unbalanced load: one job pushes 2000 jobs into its own worker's deque, and the other
+    workers get them only by stealing;
+  - nested waits 8 levels deep (a tree of jobs over 16 384 elements), with results identical,
+    byte for byte, in inline mode;
+  - inline mode runs depth-first in a fixed order, and a wait on a counter that can never reach
+    zero aborts (death test);
+  - full deque and full injection queue;
+  - a waiter with nothing to run sleeps and is woken when the counter reaches zero;
+  - three threads submitting and waiting at once (stress);
+  - `ax_cpu_count()` follows the affinity mask (Linux: pinned to one CPU it returns 1).
+
+  Locally: 400 runs under TSan, 100 more pinned to one CPU, 1000 Release runs, plus ASan, all
+  clean.
+
+**Known limitation: a waiter runs any pending job.** If the scene thread waits (parallel relayout
+boundaries) and steals a long job (decoding an image, rasterizing glyphs), it misses its frame.
+This must be resolved before the scene thread uses the job system, with one of:
+- **Two priorities**, frame and background. Threads that are not workers (the scene thread) run
+  only frame jobs while they wait; workers run both, frame jobs first.
+- **Waiters run only their own counter's jobs.** The waiter takes only jobs whose counter is the
+  one it waits on (its children), and otherwise sleeps.
+
+Neither is implemented yet.
+
+**Pending for the threaded web build** (`AX_WEB_THREADS`, not built in CI): creating the workers
+from the browser's main thread needs Emscripten's `PTHREAD_POOL_SIZE` (a pthread created there
+cannot start until the main thread returns to the event loop), and condition-variable waits on
+the browser's main thread are restricted (`Atomics.wait` is not allowed there; Emscripten busy-waits
+instead). To be resolved with the web target. The single-threaded web build uses inline mode and
+is not affected.
+
+**Measuring later.** `notify` broadcasts on every submit while anyone sleeps. It stays as is until
+the benchmarks of this milestone's seventh step measure it.
+
+**Status.** Approved by the owner (part of the approved plan; the bounded sleep was the owner's
+adjustment; the owner reviewed the commit and asked for the limitation and the web note above).
+
+## 61. `AX_ERR_INVALID_ARGUMENT`; the Render IR uses it
+
+> Amends decision 51's error codes.
+
+**Context.** Decision 51 reported malformed Render IR snapshots as `AX_ERR_UNSUPPORTED`, because
+the stable ABI had no invalid-argument code and M0 did not need one. M1's transactions reject
+malformed commands (a stale reference is `AX_ERR_INVALID_HANDLE`, but a cycle in the tree, a
+property of the wrong type or a truncated record is not), and `AX_ERR_UNSUPPORTED` reads as "this
+build cannot do it", not as "this input is wrong".
+
+**Decision.**
+- `AX_ERR_INVALID_ARGUMENT = 7` is appended to `ax_result` (values are fixed forever, so it takes
+  the next number), with its name in `ax_result_name`. It means the input breaks the API's rules;
+  `ax_last_error()` says which rule.
+- **The Render IR switches to it** (pre-1.0, so no compatibility is owed):
+  - `ax_ir_validate` and `ax_ir_deserialize`: not a snapshot, truncated, malformed tree, items
+    out of range, bad sizes;
+  - the builder's misuse in release builds: a pop without a push, `end` with layers still pushed,
+    `end` without `begin` (debug builds still assert).
+- **`AX_ERR_UNSUPPORTED` stays** where the input may be valid but this build cannot handle it:
+  a big-endian host, and a layer count or item stream beyond the format's 32-bit offsets.
+- `AX_ERR_ABI_MISMATCH` stays for another major version.
+- Tests: `base.types` pins the value and the name; the Render IR's validation, corruption and
+  truncation tests now expect the new code.
+
+**Status.** Approved by the owner (the owner asked for the code; the Render IR switch is recorded
+here as the owner asked).
+
+## 62. Node store: rows, slots, links and side components
+
+**Context.** "Retained node tree" stores nodes as rows in dense component arrays: hierarchy, style
+inputs, layout outputs, transforms, paint and dirty flags as hot arrays, optional side components,
+and handles that stay stable while storage compacts. Only the scene thread touches it. The owner
+asked for the side-component mechanism only (concrete components arrive with their features), for
+the local transform to be stored rather than the world one, and for the scene-thread tag to be
+checked in debug builds.
+
+**Decision.** `core/` is a new module (library `ax_core`, depending on base only). The node store
+is in its internal SDK, `core/include/axion/core/ax_node_store.h`; the stable ABI so far has
+`ax_node.h` (the `ax_node` handle and `ax_node_kind`, with `AX_NODE_VIEW = 1`) and `ax_prop.h`
+(the value type `ax_dimension`: value plus `AX_UNIT_AUTO` (0) / `POINTS` / `PERCENT`).
+- **Rows, always dense.** One element per live node in each hot column, indexed by row:
+  - `slot_of_row`, `kind`, `dirty`, `component_mask`;
+  - `links`: parent, first and last child, previous and next sibling;
+  - `style`: the layout inputs (`width`, `height`, `left`, `top` as `ax_dimension`), where flex
+    adds its fields;
+  - `layout`: the frame in the parent's space, zero until layout exists;
+  - `paint`: background (decision 50's color) and four corner radii;
+  - `composite`: the **local** transform and opacity. The world transform is never stored; it is
+    computed when needed, so a transform change never has to touch the subtree.
+
+  Destroying a node moves the last row into its place (swap-remove). Columns grow together,
+  geometrically, all or nothing. The pointer fields are handled generically through a table of
+  offsets and `memcpy`, so no typed column pointer is accessed through a `void *` lvalue.
+- **Handles: slot and generation**, with decision 7's rules (generations from 1, increased when the
+  node is destroyed, a slot retired instead of wrapping). The slot table maps a slot to its row;
+  stale, null and unknown handles return `AX_ERR_INVALID_HANDLE` without asserting and without
+  recording `ax_last_error` (decision 6): the store is a mechanism, and the transactions built on
+  it record errors.
+- **Links hold slots, not rows**, so moving rows (swap-remove, compaction) never rewrites them.
+- **Two slot modes:**
+  - internal: `ax_node_store_create` hands out slots, recycling freed ones LIFO (tests, and any
+    scene-side node);
+  - external: `ax_node_store_create_at` creates a node at a handle reserved elsewhere, so the app
+    thread can hand out handles without waiting for the scene (designed with the transactions).
+    The store reports through `on_slot_freed` the handle each destroyed node's slot can use next
+    (generation + 1), keeping no free list.
+  - **Skipped generations** (the owner's change after review): `create_at` accepts any generation
+    at least the one the slot records (any from 1 for a slot it has not seen) and adopts it.
+    Handles of an aborted transaction, or of a create that never runs because an earlier command
+    failed, never pass through `destroy`, so the app thread must be able to skip generations
+    without telling the scene; reusing the same generation instead would be an ABA for the app's
+    old copies of the handle. A lower generation, a live slot or a retired one is
+    `AX_ERR_INVALID_HANDLE`.
+  - The party that hands out handles (the app thread) retires a slot when its generation reaches
+    `UINT32_MAX`, as the store does, so no generation is ever handed out twice.
+- **Hierarchy:** `append_child`, `insert_before` (a null anchor appends) and `detach`. A node that
+  already has a parent is moved, so reparenting and reordering children are the same operation.
+  A cycle (the parent is the child or inside its subtree) or an anchor that is not a child of the
+  parent is `AX_ERR_INVALID_ARGUMENT`, with nothing changed. `destroy` removes the whole subtree in
+  post-order without a stack, by always freeing the first leaf.
+- **Compaction:** `ax_node_store_compact` reorders the rows into pre-order (each root in current
+  row order, then its subtree depth-first), so traversals walk memory in order. Handles, links and
+  components do not change. It uses one scratch buffer and leaves the store unchanged on
+  `AX_ERR_OUT_OF_MEMORY`. When to compact (for example after many removals) is for the frame
+  pipeline to decide.
+- **Side components:** up to 32 types (a 33rd is `AX_ERR_UNSUPPORTED`) registered at run time with a size, an alignment and an
+  optional `on_remove` callback. Each type is stored dense with swap-remove, with an owner slot per
+  element and a paged sparse index from slot to element (pages of 256, allocated on demand). A
+  node's mask records its components, which are removed with the node. Element pointers are valid
+  until the next add or remove of that type.
+- **Scene thread only.** The store records its owning thread at init (`ax_thread_current_id`), and
+  every function asserts in debug builds that the caller is that thread.
+  `ax_node_store_bind_thread` hands it to the calling thread. Until the scene thread exists (next
+  step of M1), the thread that calls the world's apply function is the scene thread: the world
+  binds its store to the thread that creates it, and a test that applies from another thread binds
+  it there first.
+- **Tests** (`tests/unit/core/`, label `core`, now also run by the TSan job):
+  - default values, stale handles, LIFO recycling with a new generation, a retired slot;
+  - swap-remove keeps every other node and its data;
+  - append, insert, reorder, detach, reparent a subtree, and rejected cycles and anchors with no
+    change;
+  - destroying a subtree;
+  - compaction into pre-order with stable handles and data, over two trees with holes;
+  - external slots: reserved handles, gaps, reported next handles; skipped generations adopted,
+    earlier ones refused, the last generation retiring the slot unreported;
+  - registering a 33rd component type;
+  - side components across sparse pages, removal with their nodes, `on_remove` counts;
+  - out of memory at every allocation of create, add-component and compact, with the store
+    consistent and no leak;
+  - another thread taking ownership, and a death test for use from a thread that does not own the
+    store;
+  - `core.abi_headers`: the stable umbrella pulls in no internal header.
+
+**Status.** Approved by the owner (part of the approved plan; the local transform, the
+scene-thread tag and the skipped generations were the owner's adjustments).
+
+## 63. Property system: ids, types, registry and validation
+
+**Context.** "Property system" gives every property an id, a value type, an inherited flag, an
+animatable flag and an effect class. The owner asked for an extensible registry with ids stable
+for the ABI (plugins and the IDL will add properties), for the properties a rect needs now (size,
+position, background, a radius per corner, opacity, transform), for room for flex and text, and
+for the `CORNER_RADIUS` shorthand with a defined read and a `set_transition` that expands to the
+corners.
+
+**Decision.**
+- **Stable ABI** (`core/include/axion/ax_prop.h`):
+  - `ax_prop` is a `uint32_t`. Ranges, fixed forever: `0x0001-0x7FFF` core properties declared in
+    the header and only appended; `0x8000-0xFFFF` properties generated from the IDL (kit);
+    `0x10000` and above, properties registered at run time by name (plugins).
+  - Core ids grouped by area in the high byte, with no meaning at run time: layout `0x01xx`
+    (`WIDTH`, `HEIGHT`, `LEFT`, `TOP`; flex will start at `0x0110`), paint `0x02xx`
+    (`BACKGROUND_COLOR`, the four `CORNER_RADIUS_*` corners, the `CORNER_RADIUS` shorthand),
+    composite `0x03xx` (`OPACITY`, `TRANSFORM`), text from `0x0400`.
+  - Value types: `F32`, `DIMENSION`, `VEC2`, `COLOR`, `TRANSFORM2D`, `U32`, `BOOL`; 8 is reserved
+    for strings (class names, text content).
+  - Value structs: `ax_dimension` (decision 62), `ax_vec2f`, `ax_rgba` (decision 50's color:
+    linear light, premultiplied, extended range) and `ax_transform2d` (CSS `matrix()` order).
+    They mirror base's internal `ax_vec2`, `ax_color` and `ax_affine2` byte for byte (checked
+    with `_Static_assert`), so values cross without conversion. A conversion from sRGB comes with
+    the transaction API.
+  - Effect classes `LAYOUT`, `PAINT`, `COMPOSITE`; flags `INHERITED`, `ANIMATABLE`, `SHORTHAND`.
+- **The registry** (internal SDK, `ax_prop_registry.h`). Each descriptor holds the id, a unique
+  name (`"background-color"`), the type, flags, effect class, where the value lives, the default,
+  and an accepted range for `F32` values and `DIMENSION` values in points.
+  - **Built-in properties** are a static table sorted by id, found by binary search, needing no
+    memory. Their values live in the node store's hot columns (`style`, `paint`, `composite`) at a
+    fixed offset. Flex and text are added the same way: rows in the table, fields in `style` (flex)
+    or a text side component (text), and `INHERITED` for text properties such as font size.
+  - **Registered properties** (`ax_prop_registry_register`): an IDL property brings its fixed id,
+    a plugin property gets the next id from `0x10000`. Each one keeps its values in a side component
+    of its own holding one `ax_value`. A node that never set the property reads the default, and
+    setting the default to such a node allocates nothing. Names and ids must be unique; shorthands
+    cannot be registered. Each registered property uses one of the store's 32 component types; if
+    plugins need more, they will share a component (not needed yet).
+  - The registry belongs to one scene.
+  - **Pending for M2: a stable metadata query (`ax_prop_info`).** Built-in properties could be
+    answered from the static table on any thread, but registered properties live on the scene
+    thread, so the query needs them published to the app thread first (as the mirror publishes
+    values). Until then, metadata is internal SDK only.
+- **Validation** (`ax_scene_check_value`, also run by `ax_scene_set`). `AX_ERR_INVALID_ARGUMENT`
+  for:
+  - an unknown property or a wrong type;
+  - a value that is not finite (colors may be outside 0-1, decision 50);
+  - a value outside the property's range: `WIDTH`, `HEIGHT` and the radii at least 0, `OPACITY`
+    in 0-1. `LEFT` and `TOP` may be negative;
+  - an unknown unit.
+
+  A percentage is `AX_ERR_UNSUPPORTED` until layout exists; `AUTO` resets a dimension. Errors
+  record `ax_last_error` with the property's name.
+- **`CORNER_RADIUS` shorthand:**
+  - setting it sets the four corners (each marks dirty as itself);
+  - reading it returns the corners' value when the four are equal, and `AX_ERR_INVALID_ARGUMENT`
+    ("the longhands differ; read each of them") when they differ. The app thread's mirror will
+    follow the same rule;
+  - `set_transition` on it expands to the four corners (implemented with the transactions).
+- **`TRANSFORM`'s origin** (the owner's addition after review): the transform applies about the
+  center of the node's frame, CSS's default transform origin. The frame is translated so its
+  center is at the origin, transformed, and translated back. A `TRANSFORM_ORIGIN` property will
+  move that point later. Documented in `ax_prop.h`; the renderer follows it once the scene records
+  the Render IR from the tree.
+- **Values by id** (`ax_scene_set` / `ax_scene_get`) read and write the node's own value.
+  Inherited values are not resolved yet; that is the style pass, with layout.
+- **Tests** (`tests/unit/core/test_props.c`): the built-in table against the documented one (ids,
+  names, types, effects, flags, lookup by name); set and read every built-in property; every
+  rejection, with nothing changed and nothing marked; the shorthand's write and read rule;
+  registered IDL and plugin properties, their defaults, ranges and rejections.
+
+**Status.** Approved by the owner.
+
+## 64. Dirty propagation and relayout boundaries
+
+**Context.** "Dirty propagation" marks layout dirty up to the nearest relayout boundary (a node
+whose size does not depend on its children, such as a fixed-size box or a scroll viewport). The
+owner asked for marking by effect class, with relayout boundaries, implemented and tested before
+layout exists.
+
+**Decision.** The scene (`ax_scene.h`, internal SDK) wraps the node store, the registry and a
+dirty set. The flags are bits in the store's `dirty` column:
+`STYLE`, `LAYOUT`, `LAYOUT_CHILD`, `PAINT`, `COMPOSITE`, and `LAYOUT_ROOT` (the node is in the
+root list).
+- **Relayout boundary:** a root (no parent), or a node with `WIDTH` and `HEIGHT` both in points.
+  Scroll viewports join when scrolling exists.
+- **By effect class:**
+  - **Layout:** the node gets `LAYOUT`. Its size or position may change, so its parent and the
+    ancestors above get `LAYOUT_CHILD` up to the nearest boundary at or above the parent, which
+    is added to the list of **layout roots**. A boundary's own size change therefore makes its
+    parent's boundary the root: the boundary stops changes inside it, not changes to itself. A
+    node without parent is its own root.
+  - **Paint:** `PAINT` on the node only. **Composite:** `COMPOSITE` on the node only. The store
+    keeps the local transform (decision 62), so a transform change never touches the subtree.
+  - **Inherited properties:** `STYLE` plus the property's effect on the node and every
+    descendant.
+- **Structure:** children added, removed or reordered mark the parent `LAYOUT`. If the parent is
+  a boundary it becomes the root (its size does not depend on its children); otherwise marking
+  climbs from its parent. A moved node gets `LAYOUT` and both parents are marked. A detached node
+  becomes a root. A new node gets `STYLE | LAYOUT | PAINT | COMPOSITE` and is a root. Inserting a
+  node where it already is marks nothing.
+- **Unchanged values mark nothing:** a set that writes the same bytes is not a change.
+- **Climbing stops early** at a node already marked `LAYOUT_CHILD`: its chain is marked up to its
+  root, which is in the list. That holds because flags are only cleared all together.
+- **The root list** holds handles. Layout will run from each root over its dirty subtree, and
+  independent roots become parallel jobs (the job system, decision 60). Entries can become stale
+  within a frame (a root that gains a parent, or is destroyed); layout skips or reconciles them.
+  Marking never fails: if the list cannot grow, `roots_overflowed` tells layout to treat every root
+  as dirty.
+- **Clearing:** `ax_scene_clear_dirty` resets every flag and the list. The frame that consumes
+  them calls it, once layout and recording exist.
+- **Tests** (`tests/unit/core/test_dirty.c`, over a window / fixed panel / list / item / label
+  and a sidebar):
+  - new nodes are fully dirty roots;
+  - which nodes are boundaries (width alone is not enough);
+  - paint, composite and transform changes mark only the node;
+  - a layout change inside the fixed panel stops at the panel, a second change adds no root, the
+    panel's own size makes the window a root, and a change outside climbs to the window;
+  - setting the same value marks nothing;
+  - moving a node marks both sides, inserting into a fixed node stops there, reinserting in
+    place marks nothing, destroying marks the parent, detaching makes a root;
+  - an inherited property (a test stand-in for font size) marks its subtree and nothing else;
+  - the shorthand marks like its longhands.
+
+What a rejected transaction leaves in these flags is decided and tested with the transactions.
+
+**Status.** Approved by the owner.
+
+## 65. Transaction queue: a linked SPSC queue, not a ring
+
+**Context.** "Queues" says lock-free single-producer rings carry transactions from the app thread to
+the scene thread. A fixed ring can fill when the scene thread stalls (the case the architecture is
+built for: the app keeps committing while the scene catches up). The app thread would then have to
+hold commits back and resend them on a later call, and a commit followed by no further call would
+never be delivered.
+
+**Decision.** Approved by the owner: committed transactions go through a **wait-free
+single-producer single-consumer linked queue with a stub node**, whose nodes are the transaction
+objects themselves.
+- The producer (app thread) clears the object's link, stores it into the tail's link with release
+  order, and makes it the tail. The consumer (scene thread) follows the head's link with acquire
+  order. Neither side loops or waits; the queue is unbounded and allocates nothing.
+- The object the scene thread last took stays as the dummy head until the next take: only then is
+  it certain that the producer will not touch its link again. The take that replaces it hands the
+  old dummy back to the app thread. A world therefore keeps one extra transaction object alive.
+- Everything else between the threads uses fixed rings (`ax_spsc_ring`, new in base's internal
+  SDK): objects coming back, recycled handles and rejections. Overflow cannot lose anything that
+  matters there:
+  - objects and recycled handles the rings cannot take wait in scene-side backlogs, flushed on the
+    next take (out of memory there loses an object or a slot, never correctness);
+  - rejection records beyond 64 are counted and reported as dropped (decision 67).
+- **Not the MPSC variant.** The owner asked for the single-producer form, not Vyukov's
+  multi-producer queue: one app thread commits per world.
+- Tests: `base.spsc_ring` (wrapping, and 200 000 records across two threads, untorn and in order);
+  `core.txn.the_queue_carries_transactions_between_two_threads` (20 000 transactions, each command
+  derived from its sequence, one in ten rejected, under TSan, also pinned to one CPU).
+
+**Status.** Deviation from "rings carry transactions", chosen and approved by the owner.
+
+## 66. Handle reservation on the app thread
+
+**Context.** `ax_txn_create` returns the node's handle at once, before the scene thread has seen
+the transaction, and the app thread must never wait. Only the scene thread may touch the node store.
+
+**Decision.** The **app thread is the only party that hands out handles**; the **scene thread only
+returns slots**.
+- **Fresh slots:** a counter only the app thread touches; a fresh slot starts at generation 1. The
+  store opens slots it has not seen when a create names them (decision 62's external mode).
+- **Recycled slots:** when the scene destroys a node, the store reports the slot's next handle
+  (generation + 1), and the scene thread sends it back through a ring. The app thread hands
+  recycled handles out first (LIFO), then fresh slots. A slot comes back only after its node's
+  destruction has been applied, so a handle still in flight can never match a new node (no ABA).
+- **Creates that never happen:** when a transaction is aborted, fails to record, or is rejected by
+  the scene, the app thread recycles each handle it created at the next generation itself, without
+  telling the scene. The store accepts the skipped generation when the slot is next used (the
+  owner's change to decision 62).
+  - For a rejected transaction this happens when the object comes back to the app thread. The
+    scene's rollback destroys the nodes it had created without reporting their slots, so each slot
+    comes back exactly once.
+- **Retirement:** a handle at generation `UINT32_MAX` is never handed out again, by the app thread
+  as by the store.
+- If the app thread's list of recycled handles cannot grow, the slot is retired instead: lost, never
+  reused, never wrong.
+- Tests (`core.txn`): fresh handles, aborted creates coming back one generation later in LIFO order,
+  recycled and retired handles, a rejected transaction's create recycled once the object returns.
+
+**Status.** Approved by the owner.
+
+## 67. The world, the transaction API and its encoding
+
+**Context.** "Transactions" gives the API (`ax_txn_begin`, `create`, `set_*`, `append_child`,
+`commit`). The owner asked for:
+- `remove`;
+- `set_animated` and `set_transition` recorded without effect until animations exist;
+- a compact command buffer without an allocation per command;
+- a sequence number per transaction;
+- errors that reach the app thread;
+- an injectable clock for commit times and apply deadlines.
+
+**Decision.**
+- **The world** (`ax_world.h`, stable): a handle, like `ax_app`, from a table of 256 worlds
+  claimed with compare-and-swap (raised from 16 after review: the headless host will run many
+  instances per process for parallel tests). It owns one scene (decision 64) and the queues between threads.
+  - `ax_world_desc`: `struct_size` and `next`, the allocator (called from the app and scene
+    threads, so it must be thread-safe), and the clock (`ax_clock_fn` plus a user pointer;
+    by default base's monotonic clock).
+  - `ax_world_now` reads that clock. Commit times and apply deadlines use it, so a headless host
+    can drive time by hand and the frame pipeline can compare deadlines with the vsync's predicted
+    present time.
+  - Threads: the creator is the app thread and the scene thread until the scene thread takes over
+    (`ax_world_bind_scene_thread`, internal SDK, which also binds the node store; tests call it
+    from their scene thread, and the next step's scene thread will). `ax_world_bind_app_thread`
+    exists for bindings whose VM thread is not the creator. Debug builds assert the role on entry;
+    `ax_txn_begin` and `ax_txn_commit` also return `AX_ERR_WRONG_THREAD` in release builds
+    (decision 32's rule), and the functions without a result assert only.
+- **Transactions** (`ax_txn.h`, stable). `ax_txn *` is a pointer, as in the document: a
+  short-lived app-thread object, not a shared one.
+  - `begin`, `create`, `set_f32` / `set_dimension` / `set_vec2` / `set_color` / `set_transform` /
+    `set_u32` / `set_bool`, `append_child`, `insert_before`, `remove`, `set_animated`,
+    `set_transition`, `commit` and `abort`.
+  - Strings (`set_str`, value type 8) wait for the first string property.
+  - `ax_rgba_from_srgb` and `ax_rgba_from_srgb8` convert CSS-style colors to the stored form
+    (decision 50).
+  - **`remove`** destroys the node and its subtree when the transaction applies; later commands of
+    the same transaction that name it fail as stale.
+  - **`ax_transition`** has `struct_size`, `next`, a kind (none, timing, spring), delay, duration,
+    a Bezier curve and a bounce. It is validated and recorded, with no effect yet. Its fields may
+    still change with animations, before the ABI is frozen. A transition on a shorthand is
+    recorded once per longhand (the owner's rule for `CORNER_RADIUS`).
+- **Recording errors are sticky**, as in the Render IR builder (decision 51).
+  - What can be checked without the scene is checked when recording: null handles, inserting a
+    node into or before itself, an unknown node kind, and for core properties the type and the
+    value (`ax_prop_check_value`, which needs no scene and is safe on any thread). Run-time
+    properties are checked when applied.
+  - The first error is kept with its command index; later calls do nothing, and `ax_txn_commit`
+    returns the error (`ax_last_error`: "transaction command N: ...") and queues nothing.
+- **Encoding:** one byte buffer per transaction object.
+  - Each command is a header `{u16 op, u16 flags, u32 size}` and its fields, 8-byte aligned:
+    create, set (the value inline), insert (append is insert before null), remove, transition.
+  - The buffer grows geometrically and stays with the object, and objects are recycled, so a warm
+    transaction of any size allocates nothing (tested over 1000 commands with the tracking
+    allocator).
+  - Readers check each command's op and size against the buffer (`ax_txn_cmd_valid`) before using
+    it.
+- **Sequence numbers** are given at commit, from 1, in commit order, which is the queue's order.
+  The commit time comes from the world's clock.
+- **Results on the app thread:**
+  - `ax_world_poll_txn_error` returns rejections (sequence, result, failing command, message) in
+    order. At most `AX_TXN_ERROR_QUEUE` (64) wait; beyond that they are counted and reported as
+    dropped, so a scene that rejects a flood never blocks or allocates.
+  - Successful transactions produce no record. `ax_world_last_applied_seq` is the newest sequence
+    applied or rejected.
+  - The mirror and `ax_txn_on_presented` arrive in later steps.
+- **The scene thread's side** (`ax_world_sdk.h`): `peek`, `take`, `finish` (the outcome, and the
+  rejection record), `recycle_handle`, and the command reader. Applying transactions builds on them
+  in the next step.
+- Tests (`core.txn`): the world's handle and clock, `struct_size` checks, the sRGB conversion,
+  every command's fields in order with the shorthand's transitions expanded, sequences, each kind
+  of recording error, handle reservation (decision 66), a warm transaction without allocations,
+  rejections reaching the app thread (and the 64-record limit), teardown with queued and open
+  transactions, and the two-thread stress of decision 65.
+
+**Status.** Approved by the owner.
+
+## 68. Applying transactions atomically; rejection
+
+**Context.** The scene thread drains the transaction queue; commits that arrived before the
+deadline apply atomically and later ones wait. The owner asked for:
+- an apply function with a deadline that tests call (`ax_world_apply_pending`; the real frame
+  boundary comes with the scene thread);
+- order by sequence;
+- an invalid transaction (a stale handle, a malformed command) rejected whole, never in part,
+  with the error reaching the app thread;
+- what happens to the dirty flags of a rejected transaction (they may stay set), with a test.
+
+**Decision.** `core/src/apply.c`; `ax_world_apply_pending(world, deadline_ns)` in the internal
+SDK, on the scene thread.
+- **Deadline and order.** Transactions are taken in queue order, which is sequence order, while
+  the oldest one's commit time (world clock, decision 67) is at most the deadline (inclusive). The
+  first later one stops the drain, so a newer transaction never overtakes an older one. The call
+  returns how many were applied or rejected.
+- **Atomic by undo log.**
+  - Each command is validated against the state the previous commands left, and applied at once.
+    Validating the whole transaction first was rejected: commands depend on each other (a create
+    followed by sets and moves; cycles that only appear after earlier moves), so it would mean
+    simulating the tree.
+  - Each change records how to undo it before it happens: a create (destroy the node), a set (the
+    old value; one entry per longhand for a shorthand), a move or a removal (the old parent and old
+    next sibling).
+  - On the first failure the log is replayed backwards, which restores every value, every child
+    order and the node count exactly.
+  - The log's memory (four entries per command) is reserved before the first command, so undoing
+    never allocates and cannot fail; if that reservation fails the transaction is rejected with
+    `AX_ERR_OUT_OF_MEMORY` before anything changes.
+- **Deferred removal.** `remove` detaches the node and its subtree during the transaction and
+  destroys them only after the last command succeeded, so a removal can be undone. A later command
+  that names a node inside a removed subtree fails with `AX_ERR_INVALID_HANDLE`, as the API
+  documents (`ax_txn_remove`).
+- **What the scene validates:**
+  - every node a command names is live and not removed earlier in the transaction;
+  - a create's handle is one the app thread reserved (decision 62's `create_at`);
+  - properties exist (run-time ones included) and values pass `ax_prop_check_value`;
+  - inserts make no cycle and their anchor is the parent's child;
+  - a transition's property is animatable;
+  - each command's op and size are valid, with no bytes after the last command.
+- **Rejection reaches the app thread** through `ax_world_finish_txn` (decision 67): the sequence,
+  the result, the failing command's index and a message ("command 12: the node is stale or
+  unknown"). The handles the transaction created are recycled by the app thread at the next
+  generation once the object returns (decision 66); the rollback destroys those nodes without
+  reporting their slots, so each slot comes back once.
+- **Dirty flags of a rejected transaction stay set.** Applying and undoing both go through the
+  scene, which marks what they touch. After a rejection, values and structure are as before, but:
+  - the touched nodes keep their flags (`LAYOUT`, `LAYOUT_CHILD`, `COMPOSITE`...);
+  - the layout root list may hold a node the rollback destroyed.
+
+  Both only cost the next frame redundant work: flags are never missing, so nothing is ever left
+  stale. Restoring the flags exactly would need them in the undo log too, which the owner allowed
+  us to skip. Layout must skip root candidates that are no longer live; it already must, because
+  any transaction can destroy a root (decision 64).
+- **Tests** (`tests/unit/core/test_apply.c`):
+  - a transaction applies only at the boundary, and later ones use its handles;
+  - deadlines (inclusive) and sequence order, with a manual clock;
+  - a transaction exercising every kind of change, failing at command 12, leaves every value,
+    parent and sibling and the node count as they were; its created handle stays stale and its
+    slot comes back one generation later;
+  - each kind of scene rejection (a cycle, a node removed earlier, an unknown run-time property,
+    a transition on an unknown property, a foreign anchor, a double removal, a corrupted command
+    size), each after a valid change, each leaving the tree unchanged;
+  - the dirty flags and the stale root a rejection leaves, as described above;
+  - a removal destroys the subtree and its slots come back at the next generation;
+  - **stress, app thread against scene thread, under TSan:** 4000 transactions with random creates,
+    sets, moves, reorders and removals over eight groups. One in eight ends with a stale handle or a
+    cycle and must be rejected whole. The app thread keeps a model of the valid ones; at the end the
+    scene matches it exactly (children order, values, dead handles, node count), and the rejections
+    match the invalid transactions one for one. Repeated locally 30 times under TSan, 15 pinned to
+    one CPU, and 100 Release runs, without a failure.
+- Fixed in the same step: the two-thread test of decision 65 summed the dropped rejections only
+  from the last poll call, so it miscounted when the error queue overflowed (seen on the macOS
+  runner). Both stress tests now add every call's count.
+
+**Status.** Approved by the owner.
+
+## 69. The app thread's mirror
+
+**Context.** "The app thread keeps a cheap mirror of handles and last-published layout results, so
+it can read sizes and positions from the most recent frame without a round trip." The owner asked
+for the mirror with handles and the last published values, readable without a round trip, never
+showing an intermediate state to a reader on another thread while a transaction applies, and with
+the channel for layout results in place.
+
+**Decision.** Stable `core/include/axion/ax_mirror.h`; `core/src/mirror.c`.
+- **Three copies behind base's triple buffer** (decision 50). The scene thread writes one and the
+  app thread reads the one it latched; the buffer swaps them with an atomic exchange, so neither
+  side waits and neither touches the other's copy.
+  - A copy is indexed by slot. Each entry holds the live node's handle (0 when the slot holds
+    none), its parent, its kind, its style, paint and composite values, and its layout frame.
+  - The copy records the publication it reflects and the newest transaction it includes.
+- **Publishing is explicit, once per frame** (`ax_world_publish_mirror`, internal SDK, scene
+  thread). Applying transactions does not publish. The frame pipeline (next step) publishes after
+  transactions and layout, so the app never sees new values with an old layout. A copy therefore
+  only ever reflects the state between two frames, never part of a transaction.
+- **Incremental copies:**
+  - every change stamps its slot with the publication that will carry it: a create, a set, the
+    moved child of an insert, a removed node, and every destroyed slot through the store's report;
+  - publishing writes only the slots stamped after the publication the target copy last reflected,
+    so a copy that the app held for several frames catches up in one pass;
+  - the scan over the stamps is O(slots), the copying O(changed slots). The commit 7 benchmarks
+    measure it;
+  - if the stamp array cannot grow, the next publication copies every slot; if a copy cannot grow,
+    publishing is retried on the next frame.
+- **Reading** (app thread):
+  - `ax_world_mirror_sync` latches the newest publication and returns the newest sequence it
+    includes (0 before any). Every read until the next sync sees that same publication, so several
+    reads never mix two frames;
+  - `ax_mirror_is_live` and `ax_mirror_parent`;
+  - `ax_mirror_get_f32` / `get_dimension` / `get_color` / `get_transform`: core properties, with
+    the scene's shorthand rule (decision 63);
+  - `ax_mirror_get_frame`: **the layout channel.** Layout will write the store's `layout` column
+    and call `ax_world_touch_node` for nodes whose frame changed; the next publication carries
+    them. Zero until layout exists.
+  - Errors: a node not live in the latched publication is `AX_ERR_INVALID_HANDLE`, an unknown
+    property or wrong getter `AX_ERR_INVALID_ARGUMENT`, a property registered at run time
+    `AX_ERR_UNSUPPORTED`. Those live in side components on the scene thread and are not mirrored
+    yet; they arrive with `ax_prop_info` (M2, decision 63).
+- **Not mirrored yet:** child order (only the parent), inherited (computed) values, run-time
+  properties. Each is added when something needs it.
+- **To decide before flex (the owner's note for the layout step):** every mirror entry is copied
+  into three copies, so it must not grow with every style input. Before flex adds its fields to
+  `ax_node_style`, decide what the mirror reflects: probably the layout frame and the values the
+  app reads back, not the whole style. That may mean a mirror entry of its own instead of copying
+  the store's style struct.
+- **Tests** (`tests/unit/core/test_mirror.c`):
+  - nothing is visible before a publication and a sync;
+  - values, parents, the shorthand rule and the errors; a removal, and the slot's reuse at the next
+    generation;
+  - a copy held across ten publications, each changing different nodes, catches up exactly;
+  - the layout channel (a frame written and touched reaches the mirror);
+  - **atomicity across threads, under TSan:**
+    - 1500 transactions, each moving a node, setting 32 opacities, creating a marker node and
+      removing the previous one; one in seven ends with a stale handle and must be rejected whole;
+    - the scene thread applies one or two per frame and publishes, while the app thread syncs and
+      checks every read against the state the newest valid transaction left: every opacity, the
+      parent, the marker, no earlier and no later marker, none from a rejected transaction;
+    - a mutation check (publishing after each set, inside a transaction) makes it fail at the
+      first read;
+    - repeated 20 times under TSan, 10 pinned to one CPU, and 100 Release runs, without a failure.
+
+**Status.** Approved by the owner.
+
+## 70. Reference benchmarks: core and jobs
+
+**Context.** The owner asked for reference benchmarks without a CI gate: creating 10 000 nodes and
+applying a transaction of 1000 changes. Decision 60 also left the job system's per-submit
+broadcast to be measured here before changing it.
+
+**Decision.** `tests/bench/bench_core.c` builds with the tests (so it keeps compiling on every CI
+job) but is never registered with ctest. Run `build/<release preset>/tests/bench/bench_core` by
+hand. Each case runs 15 times; the tables give the median and, in parentheses, the minimum.
+
+**Measured** (`gcc-release`, AMD Ryzen 5 3400G, 4 cores and 8 threads, Linux; two runs agree
+within 15%):
+
+| Create 10 000 nodes appended to one root, cold world | Median (min) |
+| --- | --- |
+| Record and commit the transaction (app thread) | 0.12 ms (0.11) |
+| Apply it (scene thread) | 0.89-1.0 ms (0.76) |
+| Publish the mirror | 0.43-0.45 ms (0.30) |
+| The same directly in the scene, no transaction | 0.63-0.78 ms (0.57) |
+
+| 1000 changes on 10 000 nodes in 100 fixed-size groups, warm | Median (min) |
+| --- | --- |
+| Record and commit | 0.05 ms (0.03) |
+| Apply (moves, widths, colors, the shorthand, opacities) | 0.08-0.09 ms (0.07) |
+| Publish the mirror | 0.14-0.16 ms (0.11) |
+
+| Job system, empty jobs | 4 workers | Inline |
+| --- | --- | --- |
+| Submit 1 job and wait, per job (the waiter runs it) | 1.1 us | 0.03 us |
+| Submit 1 job with every worker asleep (the broadcast) | 4.8-5.3 us (2.5) | - |
+| 100 000 jobs from a thread that is not a worker | 11.4 ms | 1.9 ms |
+| 100 000 jobs fanned out from one worker | 7.5 ms | 1.8 ms |
+
+**Reading.**
+- **Transactions are cheap on both sides.** Applying is about 1.4 times the direct scene calls for
+  creation (validation and the undo log), and a 1000-change transaction applies in under 0.1 ms,
+  about 1% of a 120 Hz frame.
+- **Publishing the mirror costs more than applying a typical transaction.** Its scan over every
+  slot (decision 69) dominates at 10 000 nodes: 0.15 ms for 1000 changes. That is acceptable for
+  M1. If larger trees need it, keep per-publication lists of changed slots and scan only when a
+  copy is too far behind.
+- **The broadcast.** A submit that finds the workers asleep costs about 5 us, against about 1 us for
+  a whole submit-and-wait round when it does not wake them. That is a few microseconds per wake-up,
+  not per job, and the frame's parallel layout will submit a handful of batches per frame.
+  **Recommendation: keep the broadcast.** Revisit it (wake only as many sleepers as jobs) if the
+  frame pipeline's profiles show it.
+- **Many tiny jobs from outside the pool pay for the injection queue's mutex.** 11 ms per 100 000
+  is about 110 ns a job, against about 75 ns fanned out from a worker into its own deque. Jobs are
+  meant to be much larger (a relayout boundary, a glyph run). The pattern for many small items is
+  one job per batch, or a root job that fans out on a worker.
+- No gate: these numbers depend on the machine and are for comparisons over time.
+
+**Status.** Approved by the owner.
+
+## 71. The IDL: `.axidl`, and the line between ABI and SDK
+
+**Context.** "One interface description" generates the C headers, the API docs and the four
+bindings from a small `.axidl` file or annotated JSON, and every function is tagged with its
+thread. The owner asked, before fixing the transaction API, how it will be described in the IDL
+(the generator arrives in M2), and what is stable ABI and what internal SDK.
+
+**Decision.**
+- **Format: `.axidl`**, a small language of its own, not annotated JSON.
+  - Easier to read and review, with comments and one declaration per line, so it diffs cleanly.
+  - It is short where JSON would repeat keys on every parameter.
+  - The M2 generator parses it into a JSON model, which other tools (docs, the MCP schema, editors)
+    read, so JSON remains the interchange form without being the authoring form.
+- **The draft** is `bindings/idl/core.axidl`. It describes the stable ABI of this milestone
+  exactly: handles, the opaque transaction, enums and flags, value structs, the property table,
+  and every function. No tool reads it yet; until the generator exists, the hand-written headers
+  are the source of truth, and the draft is updated with them.
+- **Constructs:**
+  - `handle` (a generational 64-bit handle; a class in bindings);
+  - `opaque` (a pointer to a short-lived single-thread object);
+  - `enum` and `flags` with fixed values, and `struct`;
+  - `[extensible]` structs: the generator adds `struct_size` and `next` and the size check;
+  - `[provisional]`: may change before the ABI freezes (`ax_transition` today);
+  - `[lifetime(...)]` for borrowed strings;
+  - `props { ... }`: each property's id, name, type, effect class, flags, range, shorthand
+    expansion and origin. It generates the `AX_PROP_*` enum, the registry's built-in rows and
+    typed accessors in bindings;
+  - `fn` with attributes:
+    - `thread(any|app|scene|render)`: checked on entry in debug builds;
+    - `sticky(t)`: the error is recorded in t and reported by its commit;
+    - `consumes(t)`: the object is invalid afterwards;
+    - `setter` / `getter`: they fold into typed property access in bindings;
+  - `out` parameters, which become return values in bindings; `result` becomes an exception or an
+    error value with `ax_last_error()`'s message; `?` marks nullable values.
+- **Stable ABI** (`core/include/axion/`, in the IDL):
+  - `ax_node.h`: the node handle and kinds;
+  - `ax_prop.h`: property ids and their ranges, value types and structs, effect classes and flags;
+  - `ax_world.h`: the world, its description and clock;
+  - `ax_txn.h`: transactions, transitions, colors and rejections;
+  - `ax_mirror.h`: the app thread's reads.
+
+  Everything a binding or an app needs, and nothing that exposes a layout the runtime may change.
+- **Internal SDK** (`core/include/axion/core/` and `base/include/axion/base/`, never in the IDL):
+  - the node store, side components and the scene (dirty flags, values by id);
+  - the property registry and run-time registration, which the plugin ABI will wrap in M3;
+  - the world's scene-thread side: thread binding, the queue's take, finish and recycle, apply,
+    publish and touch;
+  - the encoded command format;
+  - base's job system and SPSC ring.
+
+  These are embeddable structs or scene-thread internals that runtime modules (the frame pipeline,
+  layout, kit's C components, headless) use directly, and may change in any release.
+- **Thread tags** in the C headers keep decision 32's comment form (`thread: app`) until the
+  generator writes them from the IDL.
+
+**Status.** Approved by the owner.

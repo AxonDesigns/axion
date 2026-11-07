@@ -11,8 +11,10 @@ set(_ax_base_tests
     test_atomic.c
     test_error.c
     test_handle.c
+    test_jobs.c
     test_pool.c
     test_math.c
+    test_spsc_ring.c
     test_thread.c
     test_triple_buffer.c
     test_types.c

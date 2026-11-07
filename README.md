@@ -6,7 +6,9 @@ for the design and [docs/decisions.md](docs/decisions.md) for the decisions made
 
 **Status:** M0 is done: `base/`, the Wayland backend in `platform/`, `gpu/` (Dawn, with
 wgpu-native kept compiling in CI), the Render IR and `ax_render_wgpu`, shown by
-`examples/m0_window`. M1, the thread split, is in progress. See the milestones in
+`examples/m0_window`. M1, the thread split, is in progress: so far the job system in `base/`, and in
+`core/` the node store, the property system with dirty propagation, transactions applied atomically
+on the scene thread, and the app thread's mirror. See the milestones in
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Building
@@ -22,12 +24,13 @@ ctest --preset gcc-debug
 
 | Host    | Presets                                                    |
 | ------- | ---------------------------------------------------------- |
-| Linux   | `gcc-debug`, `gcc-release`, `gcc-asan`, `clang-debug`, `clang-release`, `clang-asan` |
+| Linux   | `gcc-debug`, `gcc-release`, `gcc-asan`, `clang-debug`, `clang-release`, `clang-asan`, `clang-tsan` |
 | macOS   | `clang-debug`, `clang-release`, `clang-asan`               |
 | Windows | `msvc-debug`, `msvc-release` (run from a shell with `vcvars64` loaded) |
 | Web     | `emscripten` (needs `EMSDK` set; builds the libraries only) |
 
-`*-asan` presets run with AddressSanitizer and UndefinedBehaviorSanitizer. Build options:
+`*-asan` presets run with AddressSanitizer and UndefinedBehaviorSanitizer, `clang-tsan` with
+ThreadSanitizer. Build options:
 `AX_BUILD_TESTS` (on when AXION is the top-level project), `AX_SANITIZE`, and `AX_WEB_THREADS`
 (Emscripten only: build with `-pthread`).
 
@@ -37,6 +40,12 @@ Each top-level directory is one module of the layer stack described in the archi
 Modules that have no code yet contain a one-line README. Public headers live in
 `<module>/include/axion/`: the stable C ABI sits directly there, and the internal SDK shared
 between AXION's own modules sits in `axion/<module>/`. Tests live in `tests/`.
+
+## Benchmarks
+
+Reference benchmarks build with the tests but never run in CI. Run them on a Release preset, for
+example `build/gcc-release/tests/bench/bench_core`; [docs/decisions.md](docs/decisions.md) records
+the numbers (decision 70).
 
 ## License
 

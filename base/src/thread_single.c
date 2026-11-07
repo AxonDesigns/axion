@@ -59,6 +59,11 @@ void ax_thread_yield(void)
 {
 }
 
+uint32_t ax_cpu_count(void)
+{
+    return 1;
+}
+
 void ax_mutex_init(ax_mutex *mutex)
 {
     MUTEX(mutex)->locked = 0;

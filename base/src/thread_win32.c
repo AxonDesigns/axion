@@ -134,6 +134,13 @@ void ax_thread_yield(void)
     SwitchToThread();
 }
 
+uint32_t ax_cpu_count(void)
+{
+    /* Every processor group, not only the calling thread's (machines with more than 64). */
+    DWORD n = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+    return n < 1 ? 1u : (uint32_t)n;
+}
+
 /* ---- Mutexes --------------------------------------------------------------------------------- */
 
 void ax_mutex_init(ax_mutex *mutex)

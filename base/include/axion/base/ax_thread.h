@@ -71,6 +71,15 @@ AX_API int ax_thread_join(ax_thread *thread);
 AX_API void ax_thread_yield(void);
 
 /*
+ * Number of logical processors available to the process, at least 1; 1 without thread support.
+ * On Linux it is the calling thread's affinity mask (sched_getaffinity), so taskset and container
+ * cpusets count, falling back to the online processors. Elsewhere it is the online processors.
+ * CPU quotas (cgroup cpu.max) are not processors and are not counted; callers that size thread
+ * pools take an override. Thread: any.
+ */
+AX_API uint32_t ax_cpu_count(void);
+
+/*
  * A nonzero id for the calling thread, unique for the life of the process (ids are never reused,
  * unlike OS thread ids). Cheap after the first call on a thread. Used for thread-affinity checks.
  * Thread: any.

@@ -23,8 +23,10 @@ add_library(ax_base STATIC
     src/arena.c
     src/array.c
     src/error.c
+    src/jobs.c
     src/math.c
     src/pool.c
+    src/spsc_ring.c
     src/thread_common.c
     src/tracking_allocator.c
     src/types.c

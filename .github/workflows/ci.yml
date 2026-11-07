@@ -44,14 +44,14 @@ jobs:
             configure_args: "-DAX_WEBGPU=wgpu-native"
             test_args: "-L \"^(gpu|render_wgpu)$\""
             coverage: wgpu-native-lavapipe
-          # ThreadSanitizer over the code with cross-thread handoffs: base's primitives, the
+          # ThreadSanitizer over the code with cross-thread handoffs: base's primitives and jobs, the
           # platform module's queues and triple buffers, and the Render IR's mailbox. gpu/ is not
           # built: its suites run under ASan, and Dawn is not instrumented (decision 44).
-          - name: "Linux / Clang / TSan (base, platform, render IR)"
+          - name: "Linux / Clang / TSan (base, platform, render IR, core)"
             os: ubuntu-latest
             preset: clang-tsan
             configure_args: "-DAX_BUILD_GPU=OFF"
-            test_args: "-L \"^(base|platform|render_ir)$\""
+            test_args: "-L \"^(base|platform|render_ir|core)$\""
     steps:
       - uses: actions/checkout@v4
 

@@ -231,10 +231,10 @@ AX_TEST(truncated_and_corrupted_input_is_rejected)
     /* Every prefix is rejected, never read past. */
     for (n = 0; n < size; ++n) {
         memcpy(copy, bytes, n);
-        AX_REQUIRE(ax_ir_deserialize(copy, n, &arena, &back) == AX_ERR_UNSUPPORTED);
+        AX_REQUIRE(ax_ir_deserialize(copy, n, &arena, &back) == AX_ERR_INVALID_ARGUMENT);
         ax_arena_reset(&arena);
     }
-    AX_CHECK_RESULT(ax_ir_deserialize(NULL, 0, &arena, &back), AX_ERR_UNSUPPORTED);
+    AX_CHECK_RESULT(ax_ir_deserialize(NULL, 0, &arena, &back), AX_ERR_INVALID_ARGUMENT);
 
     /* Random byte corruption: either rejected, or accepted as a valid snapshot (when the bytes
      * hit floats or padding); sanitizers check nothing is read out of bounds. */
@@ -244,7 +244,7 @@ AX_TEST(truncated_and_corrupted_input_is_rejected)
         seed = seed * 1103515245u + 12345u;
         copy[(seed >> 8) % size] ^= (uint8_t)(1u << ((seed >> 4) % 8));
         r = ax_ir_deserialize(copy, size, &arena, &back);
-        AX_REQUIRE(r == AX_OK || r == AX_ERR_UNSUPPORTED || r == AX_ERR_ABI_MISMATCH);
+        AX_REQUIRE(r == AX_OK || r == AX_ERR_INVALID_ARGUMENT || r == AX_ERR_ABI_MISMATCH);
         if (r == AX_OK) {
             AX_REQUIRE(ax_ir_validate(back) == AX_OK);
             ++accepted;

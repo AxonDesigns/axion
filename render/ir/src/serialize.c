@@ -242,28 +242,29 @@ ax_result ax_ir_deserialize(const void *data, size_t size, ax_arena *arena,
         return ax_set_error(AX_ERR_UNSUPPORTED, "render IR: big-endian hosts are not supported");
     }
     if (data == NULL || size < 8 || memcmp(p, "AXIR", 4) != 0) {
-        return ax_set_error(AX_ERR_UNSUPPORTED, "render IR: not a serialized snapshot");
+        return ax_set_error(AX_ERR_INVALID_ARGUMENT, "render IR: not a serialized snapshot");
     }
     if (r_u16(p + 4) != AX_IR_VERSION_MAJOR) {
         return ax_set_error(AX_ERR_ABI_MISMATCH, "render IR: version %u.%u, this build reads %u.x",
                             r_u16(p + 4), r_u16(p + 6), AX_IR_VERSION_MAJOR);
     }
     if (size < HEADER_SIZE_1_0) {
-        return ax_set_error(AX_ERR_UNSUPPORTED, "render IR: truncated header");
+        return ax_set_error(AX_ERR_INVALID_ARGUMENT, "render IR: truncated header");
     }
     header_size = r_u32(p + 8);
     stride = r_u32(p + 68);
     if (header_size < HEADER_SIZE_1_0 || header_size > size) {
-        return ax_set_error(AX_ERR_UNSUPPORTED, "render IR: header size %u", header_size);
+        return ax_set_error(AX_ERR_INVALID_ARGUMENT, "render IR: header size %u", header_size);
     }
     if (stride < AX__IR_LAYER_SIZE_1_0 || stride % 4u != 0) {
-        return ax_set_error(AX_ERR_UNSUPPORTED, "render IR: layer stride %u", stride);
+        return ax_set_error(AX_ERR_INVALID_ARGUMENT, "render IR: layer stride %u", stride);
     }
     need = (uint64_t)header_size + (uint64_t)r_u32(p + 60) * 16u +
            (uint64_t)r_u32(p + 64) * stride + r_u32(p + 72);
     if (need != size) {
-        return ax_set_error(AX_ERR_UNSUPPORTED, "render IR: %zu bytes, the header describes %llu",
-                            size, (unsigned long long)need);
+        return ax_set_error(AX_ERR_INVALID_ARGUMENT,
+                            "render IR: %zu bytes, the header describes %llu", size,
+                            (unsigned long long)need);
     }
 
     ir = AX_ARENA_NEW(arena, ax_render_ir);

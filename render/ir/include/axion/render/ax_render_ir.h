@@ -201,7 +201,7 @@ static inline const ax_ir_item_header *ax_ir_item_next(ax_ir_item_iter *it)
 
 /* Checks the structure: version, tree shape, item ranges and record sizes, and that every known
  * item is at least as large as its record. AX_ERR_ABI_MISMATCH for another major, otherwise
- * AX_ERR_UNSUPPORTED with ax_last_error() saying what is wrong. thread: any */
+ * AX_ERR_INVALID_ARGUMENT with ax_last_error() saying what is wrong. thread: any */
 AX_API ax_result ax_ir_validate(const ax_render_ir *ir);
 
 /* ---- building ---------------------------------------------------------------------------------
@@ -280,8 +280,8 @@ AX_API void ax_ir_damage_full(ax_ir_builder *b);
 /*
  * Closes the root layer and returns the snapshot, valid until the next ax_ir_builder_begin or
  * ax_ir_builder_deinit. Every pushed layer must have been popped.
- * Errors: AX_ERR_OUT_OF_MEMORY, AX_ERR_UNSUPPORTED (unbalanced layers, a layer or stream too
- * large for 32-bit offsets).
+ * Errors: AX_ERR_OUT_OF_MEMORY, AX_ERR_INVALID_ARGUMENT (unbalanced layers, end without begin),
+ * AX_ERR_UNSUPPORTED (a layer or stream too large for 32-bit offsets).
  */
 AX_API ax_result ax_ir_builder_end(ax_ir_builder *b, const ax_render_ir **out_ir);
 
@@ -309,8 +309,9 @@ AX_API ax_result ax_ir_serialize(const ax_render_ir *ir, void *out, size_t capac
  * Reads a binary snapshot into memory from `arena`, validated (ax_ir_validate). A newer minor's
  * extra layer fields are dropped and a missing field of an older minor takes its neutral value;
  * the item stream is kept as it is.
- * Errors: AX_ERR_ABI_MISMATCH (another major), AX_ERR_UNSUPPORTED (not a snapshot, truncated or
- * malformed; ax_last_error() says why), AX_ERR_OUT_OF_MEMORY.
+ * Errors: AX_ERR_ABI_MISMATCH (another major), AX_ERR_INVALID_ARGUMENT (not a snapshot, truncated or
+ * malformed; ax_last_error() says why), AX_ERR_UNSUPPORTED (a big-endian host),
+ * AX_ERR_OUT_OF_MEMORY.
  * thread: any
  */
 AX_API ax_result ax_ir_deserialize(const void *data, size_t size, ax_arena *arena,
