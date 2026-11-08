@@ -5,6 +5,7 @@
  * ax_render_soft: the Render IR's rules, clips, group opacity, blending spaces, never stretching,
  * pixel formats and errors (decision 81).
  */
+#include <math.h>
 #include <string.h>
 
 #include "ax_test.h"
@@ -193,12 +194,12 @@ AX_TEST(invalid_items_are_counted_and_skipped)
     ax_render_counts counts;
     uint8_t *got;
     ax_ir_layer_desc d = ax_ir_layer_desc_default();
-    const float bad_radii[4] = {1.0f, 0.0f / 0.0f, 0, 0};
+    const float bad_radii[4] = {1.0f, NAN, 0, 0};
     env_init(&e, 0);
     ax_ir_builder_begin(&e.b, 16, 16, 0, ax_color_make(0, 0, 0, 1));
     ax_ir_rect(&e.b, ax_rect_make(0, 0, -4, 4), white());
-    ax_ir_rect(&e.b, ax_rect_make(0, 0, 1.0f / 0.0f, 4), white());
-    ax_ir_rect(&e.b, ax_rect_make(0, 0, 4, 4), ax_color_make(0.0f / 0.0f, 0, 0, 1));
+    ax_ir_rect(&e.b, ax_rect_make(0, 0, INFINITY, 4), white());
+    ax_ir_rect(&e.b, ax_rect_make(0, 0, 4, 4), ax_color_make(NAN, 0, 0, 1));
     ax_ir_rounded_rect(&e.b, ax_rect_make(0, 0, 4, 4), bad_radii, white());
     d.transform = ax_affine2_scale(0.0f, 1.0f); /* not invertible */
     ax_ir_push_layer(&e.b, &d);

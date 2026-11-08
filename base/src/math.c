@@ -118,7 +118,7 @@ static float exp2_det(float y)
         return 0.0f;
     }
     if (y > 127.0f) {
-        return 3.402823466e+38f * 2.0f; /* infinity */
+        return INFINITY;
     }
     n = (int32_t)(y < 0.0f ? y - 0.5f : y + 0.5f);
     z = (y - (float)n) * 0.693147181f;
