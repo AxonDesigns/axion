@@ -19,7 +19,9 @@
 #include "axion/base/ax_atomic.h"
 #include "axion/base/ax_thread.h"
 #include "axion/core/ax_world_sdk.h"
+#include "axion/render/ax_render_frame.h"
 #include "axion/render/ax_render_wgpu.h"
+#include "axion/render/ax_render_wgpu_surface.h"
 #include "axion/runtime/ax_runtime_platform.h"
 #include "gpu_test_util.h"
 #include "wayland/wl_testing.h"
@@ -307,6 +309,179 @@ static int run(app_ctx *c, app_task task, float w, float h)
         }                                                                                \
     } while (0)
 
+/* ---- The M0 loop, without a scene thread of the runtime (the baseline) ------------------------
+ */
+
+/* A scene thread as in M0 (examples/m0_window/ir.c, test_ir_present.c): it records each request
+ * into a mailbox, here a background, a card and a moving bar, like the pipeline's tree. */
+typedef struct m0_scene {
+    ax_ir_mailbox mailbox;
+    ax_mutex mutex;
+    ax_cond cond;
+    ax_scene_request request;
+    uint64_t requests;
+    bool stop;
+} m0_scene;
+
+static int m0_scene_main(void *arg)
+{
+    m0_scene *sc = (m0_scene *)arg;
+    uint64_t seen = 0;
+    for (;;) {
+        ax_scene_request q;
+        ax_ir_builder *b;
+        const float r[4] = {12, 12, 12, 12};
+        ax_mutex_lock(&sc->mutex);
+        while (sc->requests == seen && !sc->stop) {
+            ax_cond_wait_timeout(&sc->cond, &sc->mutex, 50 * MS);
+        }
+        if (sc->stop) {
+            ax_mutex_unlock(&sc->mutex);
+            return 0;
+        }
+        q = sc->request;
+        seen = sc->requests;
+        ax_mutex_unlock(&sc->mutex);
+        b = ax_ir_mailbox_begin(&sc->mailbox, q.logical_width, q.logical_height, q.frame_time_ns,
+                                ax_color_make(0.02f, 0.02f, 0.03f, 1));
+        ax_ir_rect(b, ax_rect_make(0, 0, q.logical_width, q.logical_height),
+                   ax_color_make(0.02f, 0.02f, 0.03f, 1));
+        ax_ir_rounded_rect(b, ax_rect_make(16, 16, 120, 60), r, ax_color_make(1, 1, 1, 1));
+        ax_ir_rect(b,
+                   ax_rect_make((float)((q.frame_time_ns / MS) * 400u / 1000u % 300u), 100, 24, 24),
+                   ax_color_make(0.1f, 0.2f, 1, 1));
+        if (ax_ir_mailbox_publish(&sc->mailbox) != AX_OK) {
+            return 1;
+        }
+    }
+}
+
+static void m0_on_request(void *ctx, const ax_scene_request *q)
+{
+    m0_scene *sc = (m0_scene *)ctx;
+    ax_mutex_lock(&sc->mutex);
+    sc->request = *q;
+    sc->requests++;
+    ax_cond_signal(&sc->cond);
+    ax_mutex_unlock(&sc->mutex);
+}
+
+typedef struct m0_render {
+    ax_surface surface;
+    ax_window window;
+    m0_scene *sc;
+    ax_atomic_u32 done;
+    int state;              /* 1 measured, 0 no adapter, -1 failed */
+    ax_present_stats stats; /* over the measured 500 ms */
+} m0_render;
+
+/* M0's render thread: ax_render_frame_step in a loop; 500 ms to settle, 500 ms measured. */
+static int m0_render_main(void *arg)
+{
+    m0_render *p = (m0_render *)arg;
+    const ax_renderer_vtbl *vt = ax_render_wgpu_vtbl();
+    ax_render_wgpu_desc wd;
+    ax_renderer_desc rd;
+    ax_render_frame_desc fd;
+    ax_render_frame rf;
+    void *self = NULL;
+    uint64_t start, measure_from = 0;
+    ax_result r;
+
+    memset(&wd, 0, sizeof wd);
+    wd.chain.type = AX_RENDERER_CHAIN_WGPU;
+    wd.adapter = AX_GPU_ADAPTER_SOFTWARE;
+    memset(&rd, 0, sizeof rd);
+    rd.struct_size = sizeof rd;
+    rd.next = &wd.chain;
+    rd.initial_background = ax_color_make(0, 0, 0, 1);
+    r = vt->create(&rd, &self);
+    if (r != AX_OK || vt->attach_surface(self, p->surface) != AX_OK) {
+        p->state = r == AX_ERR_UNSUPPORTED ? 0 : -1;
+        if (self != NULL) {
+            vt->destroy(self);
+        }
+        ax_atomic_store_u32(&p->done, 1, AX_MO_RELEASE);
+        return 0;
+    }
+    memset(&fd, 0, sizeof fd);
+    fd.struct_size = sizeof fd;
+    fd.vtbl = vt;
+    fd.renderer = self;
+    fd.surface = p->surface;
+    fd.window = p->window;
+    fd.mailbox = &p->sc->mailbox;
+    fd.request = m0_on_request;
+    fd.request_ctx = p->sc;
+    ax_render_frame_init(&rf, &fd);
+    start = ax_time_monotonic_ns();
+    p->state = -1;
+    for (;;) {
+        uint64_t now = ax_time_monotonic_ns();
+        r = ax_render_frame_step(&rf, true, 50 * MS, NULL);
+        if (r != AX_OK && r != AX_ERR_DEVICE_LOST) {
+            break;
+        }
+        if (measure_from == 0 && now - start >= 500 * MS) {
+            p->stats.struct_size = sizeof p->stats;
+            (void)ax_surface_get_present_stats(p->surface, &p->stats, true); /* reset */
+            measure_from = now;
+        } else if (measure_from != 0 && now - measure_from >= 500 * MS) {
+            p->stats.struct_size = sizeof p->stats;
+            (void)ax_surface_get_present_stats(p->surface, &p->stats, false);
+            p->state = 1;
+            break;
+        }
+    }
+    vt->detach_surface(self, p->surface);
+    vt->destroy(self);
+    ax_atomic_store_u32(&p->done, 1, AX_MO_RELEASE);
+    return 0;
+}
+
+/* 1 measured, 0 skip (no adapter), -1 failed. */
+static int m0_baseline(ax_present_stats *out)
+{
+    static m0_scene sc;
+    static m0_render p;
+    axt_app t;
+    ax_window_desc wdesc = axt_window_desc(320, 200, AX_DECORATIONS_NONE);
+    ax_thread scene_t, render_t;
+    ax_gpu *probe = NULL;
+    int have = axt_gpu_create(NULL, &probe);
+    if (have <= 0) {
+        return have;
+    }
+    ax_gpu_destroy(probe);
+    memset(&sc, 0, sizeof sc);
+    memset(&p, 0, sizeof p);
+    ax_ir_mailbox_init(&sc.mailbox, ax_default_allocator());
+    ax_mutex_init(&sc.mutex);
+    ax_cond_init(&sc.cond);
+    ax_atomic_init_u32(&p.done, 0);
+    p.sc = &sc;
+    if (axt_app_create(&t, 0) != AX_OK || ax_window_create(t.app, &wdesc, &p.window) != AX_OK ||
+        ax_window_get_surface(p.window, &p.surface) != AX_OK ||
+        ax_thread_create(&scene_t, m0_scene_main, &sc) != AX_OK ||
+        ax_thread_create(&render_t, m0_render_main, &p) != AX_OK) {
+        return -1;
+    }
+    axt_pump_until(t.app, flag_set, &p.done, AXT_SECONDS(30));
+    ax_thread_join(&render_t);
+    ax_mutex_lock(&sc.mutex);
+    sc.stop = true;
+    ax_cond_signal(&sc.cond);
+    ax_mutex_unlock(&sc.mutex);
+    ax_thread_join(&scene_t);
+    ax_window_destroy(p.window);
+    (void)axt_app_destroy(&t);
+    ax_cond_deinit(&sc.cond);
+    ax_mutex_deinit(&sc.mutex);
+    ax_ir_mailbox_deinit(&sc.mailbox);
+    *out = p.stats;
+    return p.state;
+}
+
 /* ---- Tests ----------------------------------------------------------------------------------- */
 
 AX_TEST(the_tree_is_presented)
@@ -363,4 +538,37 @@ AX_TEST(a_blocked_app_thread_loses_no_frame)
     AX_CHECK(presented + 2u >= ref_presented);
     AX_CHECK(shown + 2u >= ref_shown);
     AX_CHECK(missed <= ref_missed + 1u);
+}
+
+/*
+ * The baseline for the frame rate (the owner's review): M0's loop (ax_render_frame_step with a
+ * scene thread that records on request) and the M1 pipeline, 500 ms each on the same machine and
+ * compositor. The pipeline must present as often and miss no more refreshes, with the slack of
+ * the test above. Where the machine reaches every refresh both do; where it does not (GitHub's
+ * Ubuntu runners), this shows whether the pipeline adds latency of its own.
+ */
+AX_TEST(the_pipeline_presents_as_often_as_the_m0_loop)
+{
+    static app_ctx c;
+    ax_present_stats m0;
+    uint64_t ref_presented, ref_missed;
+    int r;
+    AXT_REQUIRE_COMPOSITOR();
+    memset(&m0, 0, sizeof m0);
+    r = m0_baseline(&m0);
+    if (r == 0) {
+        AX_SKIP("no software Vulkan adapter (lavapipe) for the presentation tests");
+    }
+    AX_REQUIRE(r == 1);
+    RUN_OR_SKIP(&c, TASK_BLOCK, 320, 200);
+    ref_presented = c.ref_after.presented - c.ref_before.presented;
+    ref_missed = c.ref_after.missed_vblanks - c.ref_before.missed_vblanks;
+    printf("500 ms at %.2f Hz: M0 loop: %llu presented, %llu missed vblanks; M1 pipeline: %llu "
+           "presented, %llu missed vblanks\n",
+           m0.refresh_interval_ns != 0 ? 1e9 / (double)m0.refresh_interval_ns : 0.0,
+           (unsigned long long)m0.presented, (unsigned long long)m0.missed_vblanks,
+           (unsigned long long)ref_presented, (unsigned long long)ref_missed);
+    AX_REQUIRE(m0.presented >= 5);
+    AX_CHECK(ref_presented + 2u >= m0.presented);
+    AX_CHECK(ref_missed <= m0.missed_vblanks + 1u);
 }
