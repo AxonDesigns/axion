@@ -4134,9 +4134,10 @@ approximated.
 - **Against the software reference** (decision 83's tolerance: dE p99.9 at most 0.02, mean at most
   0.002): the zone plate behind three nested rounded clips, the middle one turned, now joins the
   comparison: p99.9 **0.0082** and mean 0.00069 on Dawn and wgpu-native with NVIDIA 615.78 (GTX
-  1650), p99.9 0.0081 on Dawn with lavapipe; worst channel 3/255. A new scene with three translated
-  rect clips and two rounded ones (one turned) checks the intersection: p99.9 0.0039. CI adds
-  wgpu-native on lavapipe and Dawn on Metal. Six turned rounded clips give 2 approximated.
+  1650), p99.9 0.0081 on Dawn and wgpu-native with lavapipe (CI), p99.9 0.0047 on Dawn with
+  Metal (GitHub's macOS runner, CI); worst channel 3/255. A new scene with three translated rect
+  clips and two rounded ones (one turned) checks the intersection: p99.9 0.0035 to 0.0039. Six
+  turned rounded clips give 2 approximated.
 - **Still in M2** (decision 83): exact group opacity and linear layers.
 
 **Status.** Implementation, pending the owner's approval.
