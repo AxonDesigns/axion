@@ -45,6 +45,10 @@ typedef struct rt_surface {
     /* Acknowledgements of a removal. */
     ax_atomic_u32 scene_done;
     ax_atomic_u32 render_done;
+    /* Any thread: the surface may be woken for a frame request (ax_world_request_frame), and the
+     * root it shows (decision 95's generic wake). */
+    ax_atomic_u32 wakeable;
+    ax_atomic_u64 wake_root;
 
     /* Scene side. */
     bool scene_live;

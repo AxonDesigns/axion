@@ -504,8 +504,9 @@ ax_result ax_txn_commit(ax_txn *t, uint64_t *out_seq)
     if (out_seq != NULL) {
         *out_seq = t->seq;
     }
-    if (w->commit_hook != NULL) {
-        w->commit_hook(w->commit_hook_user);
+    {
+        const ax_node every = AX_HANDLE_NULL_INIT;
+        ax__world_wake(w, every); /* a commit is one frame request (decision 95) */
     }
     return AX_OK;
 }

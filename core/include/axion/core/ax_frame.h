@@ -130,6 +130,14 @@ AX_API ax_result ax_world_record_root(ax_world world, ax_node root, ax_ir_builde
  */
 AX_API uint32_t ax_world_retire_glyphs(ax_world world, uint64_t oldest_live_epoch);
 
+/*
+ * Glyphs rasterized at once for one snapshot before the rest go to background jobs (decision 100).
+ * AX_GLYPH_BUDGET_AUTO (the default): 1024 with a threaded job system, 256 otherwise (one thread
+ * never defers). For tests and tuning.
+ */
+#define AX_GLYPH_BUDGET_AUTO UINT32_MAX
+AX_API void ax_world_set_glyph_budget(ax_world world, uint32_t glyphs);
+
 /* Counters since the last reset, for tests and profiles. */
 typedef struct ax_frame_counters {
     uint64_t frames_changed;    /* layout: frames that changed */

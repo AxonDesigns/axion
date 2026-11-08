@@ -103,7 +103,7 @@ static void free_runtime(rt_impl *r)
     ax_mem_free(&a, r, sizeof *r);
 }
 
-static void on_commit(void *user);
+static void on_wake(void *user, ax_node root);
 
 ax_result ax_rt_create(const ax_rt_desc *desc, ax_runtime *out_runtime)
 {
@@ -192,7 +192,7 @@ ax_result ax_rt_create(const ax_rt_desc *desc, ax_runtime *out_runtime)
     if (desc->mode != AX_RUNTIME_THREADED) {
         ax_world_set_jobs(desc->world, r->jobs); /* inline: the caller is the scene thread */
     } else {
-        ax_world_set_commit_hook(desc->world, on_commit, r); /* wakes resting surfaces */
+        ax_world_set_wake_hook(desc->world, on_wake, r); /* wakes resting surfaces */
         res = ax__rt_start_threads(r);
         if (res != AX_OK) {
             ax_atomic_store_ptr(&g_runtimes[slot], NULL, AX_MO_RELEASE);
@@ -220,9 +220,11 @@ ax_result ax_runtime_create(const ax_runtime_desc *desc, ax_runtime *out_runtime
     return ax_rt_create(&d, out_runtime);
 }
 
-/* A commit while surfaces rest without frames (decision 95): each one asks for a frame. App
- * thread: the surfaces it added are its own to read. */
-static void on_commit(void *user)
+/* A frame request (decision 95: a commit, glyphs ready in the background, any other content the
+ * scene will draw): each resting surface that shows `root` (every one for a null root) asks for a
+ * frame. Any thread, under the world's wake lock: it reads only atomics and the surfaces' fixed
+ * fields, and the presenter's wake is safe on any thread. */
+static void on_wake(void *user, ax_node root)
 {
     rt_impl *r = (rt_impl *)user;
     const ax_rt_presenter_vtbl *p = r->desc.presenter;
@@ -231,8 +233,10 @@ static void on_commit(void *user)
         return;
     }
     for (i = 0; i < AX_RUNTIME_MAX_SURFACES; ++i) {
-        const rt_surface *s = &r->surfaces[i];
-        if (s->app_used && !s->removing) {
+        rt_surface *s = &r->surfaces[i];
+        if (ax_atomic_load_u32(&s->wakeable, AX_MO_ACQUIRE) != 0 &&
+            (AX_HANDLE_IS_NULL(root) ||
+             ax_atomic_load_u64(&s->wake_root, AX_MO_RELAXED) == root.h)) {
             p->wake(r->desc.presenter_self, i, s->native);
         }
     }
@@ -255,7 +259,7 @@ ax_result ax_runtime_destroy(ax_runtime runtime)
         return ax_set_error(AX_ERR_INVALID_HANDLE, "ax_runtime_destroy: invalid runtime");
     }
     if (r->desc.mode == AX_RUNTIME_THREADED && ax_world_is_valid(r->desc.world)) {
-        ax_world_set_commit_hook(r->desc.world, NULL, NULL);
+        ax_world_set_wake_hook(r->desc.world, NULL, NULL); /* waits for a wake in progress */
     }
     if (r->threads_running) {
         ax__rt_stop_threads(r); /* detaches every surface on the render thread */
@@ -355,6 +359,8 @@ ax_result ax_rt_add_surface(ax_runtime rt, ax_node root, const ax_rt_surface_des
     ax_atomic_store_u32(&s->render_done, 0, AX_MO_RELAXED);
     s->app_used = true;
     s->removing = false;
+    ax_atomic_store_u64(&s->wake_root, root.h, AX_MO_RELAXED);
+    ax_atomic_store_u32(&s->wakeable, 1, AX_MO_RELEASE);
     (void)push_cmd(&r->scene_cmds, RT_CMD_ADD, i);
     (void)push_cmd(&r->render_cmds, RT_CMD_ADD, i);
     if (r->desc.mode == AX_RUNTIME_SINGLE_THREADED) {
@@ -382,6 +388,7 @@ ax_result ax_rt_remove_surface(ax_runtime rt, uint32_t surface)
     if (s == NULL || !s->app_used) {
         return ax_set_error(AX_ERR_INVALID_ARGUMENT, "ax_rt_remove_surface: no such surface");
     }
+    ax_atomic_store_u32(&s->wakeable, 0, AX_MO_RELEASE);
     if (!s->removing) { /* a retry after a timeout queues nothing new: it waits again */
         while (!push_cmd(&r->scene_cmds, RT_CMD_REMOVE, surface)) {
             ax_thread_yield(); /* the scene drains commands at every pass */

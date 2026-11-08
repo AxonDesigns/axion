@@ -40,6 +40,7 @@ typedef struct fake_display {
     uint64_t next_due[MAX_S]; /* UINT64_MAX: resting, no frame callback pending */
     uint64_t last_seq[MAX_S];
     ax_atomic_u32 woken[MAX_S];   /* a commit asked for a frame (decision 95) */
+    ax_atomic_u32 wakes[MAX_S];   /* frame requests received, counted */
     bool commit_requested[MAX_S]; /* render thread: the next frame must present */
     /* read by the test */
     ax_atomic_u64 frames[MAX_S];
@@ -164,6 +165,7 @@ static void fd_wake(void *self, uint32_t i, uint64_t native)
 {
     fake_display *d = (fake_display *)self;
     (void)native;
+    (void)ax_atomic_fetch_add_u32(&d->wakes[i], 1u, AX_MO_RELAXED);
     ax_atomic_store_u32(&d->woken[i], 1, AX_MO_RELEASE);
 }
 
@@ -666,6 +668,47 @@ AX_TEST(a_resting_surface_presents_nothing_until_a_commit_animates_it)
     printf("at rest again: %u frames in 300 ms\n", (unsigned)(f3 - f2));
     AX_CHECK_EQ_U(f3 - f2, 0);
     AX_CHECK_RESULT(ax_runtime_destroy(rt), AX_OK);
+    AX_CHECK_RESULT(ax_world_destroy(w), AX_OK);
+    display_deinit(&d);
+}
+
+/* Decision 95's generic wake: a frame request for one root wakes only the surface showing it; a
+ * null root (a commit, glyphs from the background) wakes every surface. Any thread may ask. */
+AX_TEST(a_frame_request_wakes_the_surfaces_that_show_its_root)
+{
+    static fake_display d;
+    ax_world w;
+    ax_runtime rt;
+    ax_rt_desc rd;
+    ax_rt_surface_desc sd;
+    ax_node root0, root1;
+    uint32_t s0, s1, w0, w1;
+    ax_node every = AX_HANDLE_NULL_INIT;
+    REQUIRE_THREADS();
+    display_init(&d, 16666667u, 16666667u);
+    AX_REQUIRE(ax_world_create(NULL, &w) == AX_OK);
+    memset(&rd, 0, sizeof rd);
+    rd.world = w;
+    rd.mode = AX_RUNTIME_THREADED;
+    rd.presenter = &k_display;
+    rd.presenter_self = &d;
+    AX_REQUIRE(ax_rt_create(&rd, &rt) == AX_OK);
+    AX_REQUIRE(!AX_HANDLE_IS_NULL(make_root(w, &root0)));
+    AX_REQUIRE(!AX_HANDLE_IS_NULL(make_root(w, &root1)));
+    memset(&sd, 0, sizeof sd);
+    AX_REQUIRE(ax_rt_add_surface(rt, root0, &sd, &s0) == AX_OK);
+    AX_REQUIRE(ax_rt_add_surface(rt, root1, &sd, &s1) == AX_OK);
+    idle_for(w, 200 * MS);
+    w0 = ax_atomic_load_u32(&d.wakes[s0], AX_MO_RELAXED);
+    w1 = ax_atomic_load_u32(&d.wakes[s1], AX_MO_RELAXED);
+    ax_world_request_frame(w, root1);
+    AX_CHECK_EQ_U(ax_atomic_load_u32(&d.wakes[s0], AX_MO_RELAXED), w0);
+    AX_CHECK_EQ_U(ax_atomic_load_u32(&d.wakes[s1], AX_MO_RELAXED), w1 + 1u);
+    ax_world_request_frame(w, every);
+    AX_CHECK_EQ_U(ax_atomic_load_u32(&d.wakes[s0], AX_MO_RELAXED), w0 + 1u);
+    AX_CHECK_EQ_U(ax_atomic_load_u32(&d.wakes[s1], AX_MO_RELAXED), w1 + 2u);
+    AX_CHECK_RESULT(ax_runtime_destroy(rt), AX_OK);
+    ax_world_request_frame(w, every); /* the runtime is gone: nothing to wake, nothing breaks */
     AX_CHECK_RESULT(ax_world_destroy(w), AX_OK);
     display_deinit(&d);
 }

@@ -193,8 +193,10 @@ typedef struct world_impl {
     ax_ir_glyph_source glyph_source; /* snapshots' bitmaps: the text system's glyph cache */
     ax_atomic_u32 glyphs_arrived;    /* background glyphs became ready (any thread sets it) */
     anim_state *anim;                /* anim/animator.c: implicit animations (scene thread) */
-    void (*commit_hook)(void *user); /* app thread: after each commit */
-    void *commit_hook_user;
+    /* Frame requests (ax_world_request_frame), any thread, under wake_lock. */
+    ax_mutex wake_lock;
+    ax_world_wake_fn wake_hook;
+    void *wake_user;
     ax_atomic_u32 reduce_motion; /* ax_world_set_reduce_motion (app thread writes) */
 } world_impl;
 
@@ -215,6 +217,9 @@ static inline uint64_t ax__world_now(const world_impl *w)
 {
     return w->clock(w->clock_user);
 }
+
+/* Asks for a frame of the windows showing root (null: all); any thread. */
+void ax__world_wake(world_impl *w, ax_node root);
 
 /* text_stage.c: the style pass, then paragraphs for text leaves whose content or style changed,
  * shaped in frame jobs, with their measure functions (before layout). */

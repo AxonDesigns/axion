@@ -42,10 +42,19 @@ AX_API void ax_world_bind_scene_thread(ax_world world);
 /* The calling thread becomes the world's app thread. The previous one must not be using it. */
 AX_API void ax_world_bind_app_thread(ax_world world);
 
-/* Called on the app thread after each successful ax_txn_commit (NULL removes it): a runtime wakes
- * surfaces that rest without frames (decision 95). It must not call back into the world.
- * thread: app */
-AX_API void ax_world_set_commit_hook(ax_world world, void (*hook)(void *user), void *user);
+/*
+ * Frame requests (decision 95's generic wake). ax_world_request_frame asks for a frame of the
+ * windows that show `root` (every window for a null root): new content that comes without a
+ * transaction (glyphs rasterized in the background, decision 100; later, decoded images and loaded
+ * fonts) or a commit, which calls it with a null root. The world calls its wake hook, which a
+ * runtime sets to wake its resting surfaces (NULL removes it, waiting for a call in progress); the
+ * woken frame's tick draws what changed. Nothing happens without a hook.
+ * thread: any, for both. The hook runs under the world's wake lock: it must be quick and must not
+ * call back into the world.
+ */
+typedef void (*ax_world_wake_fn)(void *user, ax_node root);
+AX_API void ax_world_set_wake_hook(ax_world world, ax_world_wake_fn hook, void *user);
+AX_API void ax_world_request_frame(ax_world world, ax_node root);
 
 /* The job system the scene's frame stages may use for frame jobs (layout's independent relayout
  * boundaries), or NULL (the default) for one thread. It must outlive its use. thread: scene */

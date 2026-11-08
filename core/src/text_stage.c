@@ -74,7 +74,11 @@ static bool glyph_lookup(const ax_ir_glyph_source *self, uint32_t font_instance,
 static void glyphs_ready(void *user)
 {
     world_impl *w = (world_impl *)user;
+    const ax_node every = AX_HANDLE_NULL_INIT;
     ax_atomic_store_u32(&w->glyphs_arrived, 1u, AX_MO_RELEASE);
+    /* Nothing was committed: without this a resting window would never draw them (decision
+     * 95). The runs know their nodes, not their windows: every window gets one frame. */
+    ax__world_wake(w, every);
 }
 
 static void attach(world_impl *w)

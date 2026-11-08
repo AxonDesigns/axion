@@ -74,6 +74,8 @@ struct frame_state {
     uint64_t epoch;        /* the newest snapshot's resource epoch */
     float record_scale;    /* the window's scale, while a root records */
     uint32_t glyph_budget; /* glyphs rasterized at once this frame, left */
+    uint32_t glyph_budget_set; /* ax_world_set_glyph_budget (0 in a fresh state: automatic) */
+    bool glyph_budget_custom;
     ax_glyph_key *keys;    /* scratch for one run's glyph keys */
     ax_ir_glyph *glyphs;   /* scratch for one run's records */
     uint32_t scratch_capacity;
@@ -762,7 +764,9 @@ ax_result ax_world_record_root(ax_world world, ax_node root, ax_ir_builder *b)
      * glyph source lets the renderer read them. */
     f->epoch++;
     f->record_scale = r->scale;
-    f->glyph_budget = w->jobs != NULL && !ax_jobs_is_inline(w->jobs) ? 1024u : 256u;
+    f->glyph_budget = f->glyph_budget_custom ? f->glyph_budget_set
+                      : w->jobs != NULL && !ax_jobs_is_inline(w->jobs) ? 1024u
+                                                                        : 256u;
     if (w->text != NULL) {
         ax_ir_builder_set_resources(b, &w->glyph_source, f->epoch);
     }
@@ -926,4 +930,14 @@ uint32_t ax_world_retire_glyphs(ax_world world, uint64_t oldest_live_epoch)
         return 0;
     }
     return ax_text_glyphs_retire(w->text, oldest_live_epoch);
+}
+
+void ax_world_set_glyph_budget(ax_world world, uint32_t glyphs)
+{
+    world_impl *w = scene_world(world);
+    frame_state *f = w != NULL ? state(w) : NULL;
+    if (f != NULL) {
+        f->glyph_budget_custom = glyphs != AX_GLYPH_BUDGET_AUTO;
+        f->glyph_budget_set = glyphs;
+    }
 }

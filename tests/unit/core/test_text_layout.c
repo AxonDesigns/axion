@@ -12,7 +12,9 @@
 #include "ax_test.h"
 #include "axion/ax_error.h"
 #include "axion/ax_txn.h"
+#include "axion/base/ax_atomic.h"
 #include "axion/base/ax_jobs.h"
+#include "axion/base/ax_thread.h"
 #include "axion/core/ax_frame.h"
 #include "axion/core/ax_layout.h"
 #include "axion/core/ax_scene.h"
@@ -286,4 +288,100 @@ AX_TEST(glyph_runs_are_cached_with_the_node_items)
     AX_CHECK_EQ_U(c.glyph_runs, 1u);
     ax_ir_builder_deinit(&b);
     ax_world_destroy(w);
+}
+
+/* ---- Frame requests (decision 95's generic wake) ----------------------------------------------- */
+
+typedef struct wake_log {
+    ax_atomic_u32 calls;
+    ax_atomic_u64 last_root;
+} wake_log;
+
+static void on_wake(void *user, ax_node root)
+{
+    wake_log *l = (wake_log *)user;
+    ax_atomic_store_u64(&l->last_root, root.h, AX_MO_RELAXED);
+    (void)ax_atomic_fetch_add_u32(&l->calls, 1u, AX_MO_RELEASE);
+}
+
+typedef struct request_arg {
+    ax_world world;
+    ax_node root;
+} request_arg;
+
+static int request_from_thread(void *arg)
+{
+    request_arg *a = (request_arg *)arg;
+    ax_world_request_frame(a->world, a->root);
+    return 0;
+}
+
+/* Glyphs rasterized in the background commit nothing, so they wake the window themselves; the
+ * runs that waited are recorded whole at the next frame. A commit and any thread can ask too. */
+AX_TEST(background_glyphs_ask_for_a_frame_and_record_whole_runs)
+{
+    ax_world w = make_world();
+    ax_job_system *js = NULL;
+    ax_jobs_desc jd = ax_jobs_default_desc();
+    static wake_log log;
+    ax_ir_builder b;
+    ax_txn *t;
+    ax_node root, label;
+    ax_frame_counters c;
+    uint64_t start;
+    uint32_t before;
+    AX_REQUIRE(!AX_HANDLE_IS_NULL(w));
+    if (!ax_threads_supported()) {
+        ax_world_destroy(w);
+        AX_SKIP("no threads in this build (glyphs are never deferred)");
+    }
+    jd.worker_count = 2;
+    AX_REQUIRE(ax_jobs_create(&jd, &js) == AX_OK);
+    ax_world_set_jobs(w, js);
+    ax_world_set_glyph_budget(w, 0); /* every glyph in the background */
+    ax_atomic_init_u32(&log.calls, 0);
+    ax_atomic_init_u64(&log.last_root, 0);
+    ax_world_set_wake_hook(w, on_wake, &log);
+    ax_ir_builder_init(&b, ax_default_allocator());
+
+    t = ax_txn_begin(w);
+    root = ax_txn_create(t, AX_NODE_VIEW);
+    label = ax_txn_create(t, AX_NODE_VIEW);
+    text(t, label, "Rasterized on a worker, drawn whole");
+    ax_txn_append_child(t, root, label);
+    AX_REQUIRE(ax_txn_commit(t, NULL) == AX_OK);
+    AX_CHECK_EQ_U(ax_atomic_load_u32(&log.calls, AX_MO_ACQUIRE), 1u); /* the commit */
+    before = 1;
+
+    c = record_frame(w, root, &b);
+    AX_CHECK_EQ_U(c.glyph_runs, 0u);
+    AX_CHECK_EQ_U(c.glyph_runs_deferred, 1u); /* left out whole */
+    start = ax_time_monotonic_ns();
+    while (ax_atomic_load_u32(&log.calls, AX_MO_ACQUIRE) == before &&
+           ax_time_monotonic_ns() - start < 5000000000ull) {
+        ax_thread_yield();
+    }
+    AX_CHECK(ax_atomic_load_u32(&log.calls, AX_MO_ACQUIRE) > before); /* no commit: the glyphs */
+    AX_CHECK_EQ_U(ax_atomic_load_u64(&log.last_root, AX_MO_RELAXED), 0u); /* every window */
+    c = record_frame(w, root, &b);
+    AX_CHECK_EQ_U(c.glyph_runs, 1u);
+    AX_CHECK_EQ_U(c.glyph_runs_deferred, 0u);
+
+    /* Any thread may ask, for one root. */
+    {
+        ax_thread th;
+        request_arg arg;
+        before = ax_atomic_load_u32(&log.calls, AX_MO_ACQUIRE);
+        arg.world = w;
+        arg.root = root;
+        AX_REQUIRE(ax_thread_create(&th, request_from_thread, &arg) == AX_OK);
+        (void)ax_thread_join(&th);
+        AX_CHECK_EQ_U(ax_atomic_load_u32(&log.calls, AX_MO_ACQUIRE), before + 1u);
+        AX_CHECK_EQ_U(ax_atomic_load_u64(&log.last_root, AX_MO_RELAXED), root.h);
+    }
+    ax_world_set_wake_hook(w, NULL, NULL);
+    ax_ir_builder_deinit(&b);
+    ax_world_set_jobs(w, NULL);
+    ax_world_destroy(w);
+    ax_jobs_destroy(js);
 }
