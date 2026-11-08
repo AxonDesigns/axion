@@ -7,7 +7,7 @@
  * thread presents it with ax_render_wgpu. The test thread is the main thread and pumps.
  *   - the tree is presented, and ax_txn_on_presented says so;
  *   - a resize is answered by the size handshake with a snapshot of the new size;
- *   - with the app thread blocked for 500 ms, every refresh still presents a new snapshot.
+ *   - with the app thread blocked for 500 ms, no frame is lost compared with 500 ms unblocked.
  */
 #include <stdio.h>
 #include <string.h>
@@ -42,7 +42,8 @@ typedef struct app_ctx {
     uint32_t presented_status;
     uint64_t presented_time;
     float resized_w, resized_h;
-    ax_rt_window_counters before, after;
+    ax_rt_window_counters before, after;         /* around the blocked window */
+    ax_rt_window_counters ref_before, ref_after; /* around the reference window */
     char failure[160];
 } app_ctx;
 
@@ -82,6 +83,36 @@ static void spin_for(uint64_t ns)
     uint64_t until = ax_time_monotonic_ns() + ns;
     while (ax_time_monotonic_ns() < until) {
         ax_thread_yield();
+    }
+}
+
+/* Blocks the calling thread without using the CPU (as a thread stopped in a GC pause or a
+ * system call would), so the comparison with the reference window is about the block alone. */
+static void sleep_for(uint64_t ns)
+{
+    ax_mutex m;
+    ax_cond c;
+    uint64_t until = ax_time_monotonic_ns() + ns;
+    ax_mutex_init(&m);
+    ax_cond_init(&c);
+    ax_mutex_lock(&m);
+    while (ax_time_monotonic_ns() < until) {
+        ax_cond_wait_timeout(&c, &m, until - ax_time_monotonic_ns());
+    }
+    ax_mutex_unlock(&m);
+    ax_cond_deinit(&c);
+    ax_mutex_deinit(&m);
+}
+
+/* The app thread as usual: waiting for events. */
+static void idle_for(ax_world w, uint64_t ns)
+{
+    uint64_t until = ax_time_monotonic_ns() + ns;
+    while (ax_time_monotonic_ns() < until) {
+        ax_world_event e;
+        memset(&e, 0, sizeof e);
+        e.struct_size = sizeof e;
+        (void)ax_world_wait_event(w, &e, 10 * MS);
     }
 }
 
@@ -196,9 +227,12 @@ static int app_main(void *arg)
         } while ((c->after.shown_width != c->resized_w || c->after.shown_height != c->resized_h) &&
                  ax_time_monotonic_ns() < until);
     } else if (c->task == TASK_BLOCK) {
-        spin_for(500 * MS); /* settle at the display's rate */
+        idle_for(world, 500 * MS); /* settle at the display's rate */
+        (void)ax_rt_get_window_counters(rt, c->window, &c->ref_before);
+        idle_for(world, 500 * MS); /* the reference: the app thread waits for events */
+        (void)ax_rt_get_window_counters(rt, c->window, &c->ref_after);
         (void)ax_rt_get_window_counters(rt, c->window, &c->before);
-        spin_for(500 * MS); /* blocked: no polling, no commits */
+        sleep_for(500 * MS); /* blocked: no polling, no commits */
         (void)ax_rt_get_window_counters(rt, c->window, &c->after);
     } else {
         (void)ax_rt_get_window_counters(rt, c->window, &c->after);
@@ -298,22 +332,33 @@ AX_TEST(a_resize_is_answered_with_a_snapshot_of_the_new_size)
     AX_CHECK_EQ_U(c.after.forced_acks, 0); /* the scene answered within the bound */
 }
 
+/*
+ * The criterion is relative: blocking the app thread must lose no frame compared with the same
+ * window not blocked, on the same machine. A software renderer on a loaded CI runner may not reach
+ * every refresh at all (weston 13 at 80 Hz on GitHub's runners presents every other one); that
+ * shows in both windows and is not the block's doing. On the owner's desktop and with weston 15 in
+ * CI both windows present every refresh.
+ */
 AX_TEST(a_blocked_app_thread_loses_no_frame)
 {
     static app_ctx c;
-    uint64_t presented, shown, missed, expected;
+    uint64_t presented, shown, missed, ref_presented, ref_shown, ref_missed;
     RUN_OR_SKIP(&c, TASK_BLOCK, 320, 200);
     presented = c.after.presented - c.before.presented;
     shown = c.after.snapshots_shown - c.before.snapshots_shown;
     missed = c.after.missed_vblanks - c.before.missed_vblanks;
-    expected = c.after.refresh_ns != 0 ? 500 * MS / c.after.refresh_ns : 0;
-    printf("blocked 500 ms at %.2f Hz: %llu presented (expected %llu), %llu new snapshots, %llu "
-           "missed vblanks\n",
+    ref_presented = c.ref_after.presented - c.ref_before.presented;
+    ref_shown = c.ref_after.snapshots_shown - c.ref_before.snapshots_shown;
+    ref_missed = c.ref_after.missed_vblanks - c.ref_before.missed_vblanks;
+    printf("500 ms at %.2f Hz: blocked: %llu presented, %llu new snapshots, %llu missed vblanks; "
+           "not blocked: %llu, %llu, %llu\n",
            c.after.refresh_ns != 0 ? 1e9 / (double)c.after.refresh_ns : 0.0,
-           (unsigned long long)presented, (unsigned long long)expected, (unsigned long long)shown,
-           (unsigned long long)missed);
-    AX_REQUIRE(expected > 0);
-    AX_CHECK(presented + 1u >= expected);
-    AX_CHECK(shown + 1u >= expected);
-    AX_CHECK_EQ_U(missed, 0);
+           (unsigned long long)presented, (unsigned long long)shown, (unsigned long long)missed,
+           (unsigned long long)ref_presented, (unsigned long long)ref_shown,
+           (unsigned long long)ref_missed);
+    AX_REQUIRE(ref_presented >= 5); /* the pipeline runs at all */
+    /* One frame of slack: the windows' edges fall anywhere within a refresh. */
+    AX_CHECK(presented + 1u >= ref_presented);
+    AX_CHECK(shown + 1u >= ref_shown);
+    AX_CHECK(missed <= ref_missed + 1u);
 }

@@ -3242,9 +3242,12 @@ surface from one render thread. The owner asked for:
   - `tests/unit/runtime/test_threads.c` (label `runtime`, now in the TSan job): a fake
     presenter paces surfaces like displays.
     - Two surfaces at 60 and 144 Hz keep their rates while the app thread commits every 3 ms; 61
-      and 146 frames in a second locally; every `on_presented` comes, in order, as `PRESENTED`;
-      the mirror shows the last change.
-    - With the app thread blocked 500 ms: 30 frames, 30 new snapshots, none late.
+      and 144 frames in a second locally (macOS runners wake timed waits late: the check only
+      asks the 144 Hz one to be clearly faster); every `on_presented` comes, in order, as
+      `PRESENTED`; the mirror shows the last change.
+    - The app thread blocked 500 ms (asleep) against 500 ms of it waiting for events: no fewer
+      frames and new snapshots, no more late frames, with one frame of slack at the windows'
+      edges. Locally 30, 30 and 0 in both.
     - 20 surfaces added and removed while the threads run.
     - Locally 5 runs under TSan, 2 more pinned to one CPU, clean.
   - `tests/integration/gpu_wayland/test_pipeline.c` (headless weston, lavapipe), with the real
@@ -3252,9 +3255,14 @@ surface from one render thread. The owner asked for:
     - the tree is presented and `on_presented` reports it;
     - a maximize is answered with a snapshot of the new size (locally 1280x688, `scene_late` 1,
       no forced acknowledgement);
-    - with the app thread blocked 500 ms at weston's 60 Hz: 31 presentations for 30 expected,
-      31 new snapshots, 0 missed vblanks. The checks allow one fewer presentation and snapshot,
-      and require 0 missed vblanks.
+    - with the app thread blocked 500 ms, no frame is lost compared with the 500 ms before it
+      unblocked: presentations and new snapshots no fewer, missed vblanks no more, with one frame
+      of slack. Locally at weston's 60 Hz: 30 presentations, 30 snapshots and 0 missed in both.
+      **The criterion is relative** because GitHub's Ubuntu runners (weston 13 at 79.6 Hz,
+      lavapipe) present every other refresh in any window: 20 of 39, with the app thread blocked
+      or not, while weston 15 in CI and the local weston reach every refresh. That is the software
+      renderer's speed on those runners (the commit misses weston's repaint window), not the
+      block; the desktop check with `m1_nodes --block-ms=500` covers real hardware.
 
 **Status.** Deviation (the vsync), recorded as the owner asked; the rest Implementation, pending
 the owner's approval.
