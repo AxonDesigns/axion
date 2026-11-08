@@ -4,3 +4,8 @@ root = true
 insert_final_newline = true
 end_of_line = lf
 charset = utf-8
+
+# Golden images are binary and never edited by hand (decision 82); tools/ci/check_final_newline.sh
+# skips the same directory, and binary files everywhere.
+[tests/goldens/**]
+insert_final_newline = unset

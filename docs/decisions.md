@@ -107,7 +107,7 @@ new entry that points back to the old one.
 | 91  | Flex conformance against Yoga                            | Approved       |
 | 92  | Parallel boundaries, `ax_measure_sync`, benchmark        | Approved       |
 | 93  | Clips: overflow hidden, and in `ax_render_wgpu`          | Approved       |
-s
+
 ---
 
 ## 1. Base may use OS thread primitives
@@ -3403,7 +3403,7 @@ work.
   running priority is now tracked on every thread, not only on workers. Locally: 60 runs of the
   priority tests and the stress test under TSan, 30 pinned to one CPU, 300 Release runs, all clean.
 
-**Status.** Implementation, pending the owner's approval.
+**Status.** Approved by the owner.
 
 ## 81. `ax_render_soft`: the software renderer and its determinism
 
@@ -3498,7 +3498,7 @@ included; the window part comes with decision 83.
 - The scenes are shared (`tests/scenes/axt_scenes.c`, library `ax_test_scenes`) by these tests,
   the GPU renderer's comparison and the goldens, and use only deterministic math.
 
-**Status.** Implementation, pending the owner's approval.
+**Status.** Approved by the owner.
 
 ## 82. Golden images: PNG in the repository, updated only on purpose
 
@@ -3557,7 +3557,7 @@ corrupt input under ASan.
 - The web tests link with `-sNODERAWFS=1` (they read goldens and write artifacts on the host's
   file system) and `-sALLOW_MEMORY_GROWTH=1`.
 
-**Status.** Implementation, pending the owner's approval.
+**Status.** Approved by the owner.
 
 ## 83. GPU renderers against the software reference: a perceptual tolerance
 
@@ -3611,7 +3611,7 @@ ax_render_wgpu into an RGBA8 texture and with ax_render_soft, and compares the t
     (`approximated`, and linear layers blend in sRGB space), and the comparison skips the scenes
     that use them.
 
-**Status.** Implementation, pending the owner's approval.
+**Status.** Approved by the owner.
 
 ## 84. CPU presentation in platform; ax_render_soft in windows; the fallback
 
@@ -3664,7 +3664,7 @@ then software, unless the app pins one.
   runs without a Vulkan driver); argument errors of the CPU interface. Under ASan with the rest of
   the Wayland suites.
 
-**Status.** Implementation, pending the owner's approval.
+**Status.** Approved by the owner.
 
 ## 85. The headless host and its C testing API
 
@@ -3744,7 +3744,7 @@ and automation and MCP (M2, M3) are out of scope.
   - Under ASan, TSan (3 runs) and in Node: clean. `core.txn` gains the committed sequence (aborted and
     failed transactions take none) and `AX_MAX_WORLDS` worlds at once.
 
-**Status.** Implementation, pending the owner's approval.
+**Status.** Approved by the owner.
 
 ## 86. Images byte-identical on every platform: the CI job
 
@@ -3790,7 +3790,7 @@ Emscripten build.
   held more frames. The check now scales the reference to the two windows' measured lengths; the
   slack of two frames stays.
 
-**Status.** Implementation, pending the owner's approval.
+**Status.** Approved by the owner.
 
 ## 87. Reference measurements: ax_render_soft on m1_nodes' scene
 
@@ -3825,7 +3825,7 @@ frame. `bench_soft [workers]`.
 - Not optimized yet, and noted for when it matters: every frame redraws every tile (the IR's damage
   is always full), and each item is tested against every tile (no binning).
 
-**Status.** Implementation, pending the owner's approval.
+**Status.** Approved by the owner.
 
 ## 88. `AX_ERR_TIMEOUT` and `AX_ERR_IO`
 
@@ -3865,8 +3865,7 @@ with another code: `AX_ERR_UNSUPPORTED` reads as "this build cannot do it",
   frames allowed, and reading or writing a PNG in a directory that does not exist expect the new
   codes.
 
-**Status.** Implementation, pending the owner's approval (the owner asked for the codes and their
-uses).
+**Status.** Approved by the owner.
 
 
 ## 89. Layout's style storage, its properties and what the mirror reflects
@@ -3917,8 +3916,7 @@ style (decision 69's note: each entry is copied three times).
   refused); the shorthands; the mirror's refusal and its message; the atomicity test of decision 69
   now reads a corner radius as its marker.
 
-**Status.** Implementation, pending the owner's approval (Yoga's defaults, borders as layout
-properties and the mirror's change were approved in the plan).
+**Status.** Approved by the owner.
 
 ## 90. The layout engine: protocols, the cache, boundaries and rounding
 
@@ -4014,7 +4012,7 @@ protocols, flex first, so grid, stack and custom layouts enter later without tou
   33.5, 33 and 33.5), a measure function wrapping and cached, the pass reporting only changed
   frames, and the boundary and parallel tests of decision 92.
 
-**Status.** Implementation, pending the owner's approval.
+**Status.** Approved by the owner.
 
 ## 91. Flex conformance against Yoga
 
@@ -4056,7 +4054,7 @@ accepted.
 - **Checked:** a deliberate change to centring (a factor of 2.01 instead of 2) makes two fixtures
   fail; the suite runs under ASan and UBSan too.
 
-**Status.** Implementation, pending the owner's approval.
+**Status.** Approved by the owner.
 
 ## 92. Relayout boundaries in parallel, `ax_measure_sync`, and the layout benchmark
 
@@ -4125,7 +4123,7 @@ scene thread, and reference measurements for 10 000 flex nodes.
   line's height relays out the whole line, as flexbox requires. Parallel boundaries pay off from a
   hundred nodes each. No gate.
 
-**Status.** Implementation, pending the owner's approval.
+**Status.** Approved by the owner.
 
 ## 93. Clips: overflow hidden in the recording, and in `ax_render_wgpu`
 
@@ -4168,4 +4166,4 @@ approximated.
   turned rounded clips give 2 approximated.
 - **Still in M2** (decision 83): exact group opacity and linear layers.
 
-**Status.** Implementation, pending the owner's approval.
+**Status.** Approved by the owner.
