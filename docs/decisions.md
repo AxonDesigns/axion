@@ -2037,7 +2037,7 @@ This must be resolved before the scene thread uses the job system, with one of:
 - **Waiters run only their own counter's jobs.** The waiter takes only jobs whose counter is the
   one it waits on (its children), and otherwise sleeps.
 
-Neither is implemented yet.
+Neither is implemented yet. (Resolved by decision 80: two priorities.)
 
 **Pending for the threaded web build** (`AX_WEB_THREADS`, not built in CI): creating the workers
 from the browser's main thread needs Emscripten's `PTHREAD_POOL_SIZE` (a pthread created there
@@ -3322,3 +3322,57 @@ cooperative mode that runs there in CI, for example core's tests in Node.
   someone needs them on the web.
 
 **Status.** Approved by the owner.
+
+## 80. Job priorities: frame and background
+
+**Context.** Decision 60's known limitation: a waiter runs any pending job, so a scene or render
+thread waiting for its own frame work could steal a long background job (decoding an image,
+rasterizing glyphs) and miss its frame. It had to be resolved before a frame thread waits on the
+job system, which `ax_render_soft` does first (its tiles). The owner chose two priorities, and
+asked that a counter remember its jobs' priority and that frame work never wait for background
+work.
+
+**Decision.** `base/include/axion/base/ax_jobs.h`, `base/src/jobs.c`.
+- **Two priorities**, `AX_JOB_FRAME` (`ax_jobs_submit`, as before) and `AX_JOB_BACKGROUND`
+  (`ax_jobs_submit_background`). Each worker has one Chase-Lev deque per priority, and there is
+  one injection queue per priority, so taking a job never means looking inside a deque.
+- **Who runs what.** Every thread knows the priority of the job it runs (a thread-local value,
+  saved and restored around each job, so nested jobs work):
+  - an idle worker runs frame jobs first, then background ones;
+  - a **frame context** runs only frame jobs while it waits. Frame contexts are a thread that is
+    not a worker (the scene and render threads, tests) outside any job, and any thread inside a
+    frame job;
+  - inside a background job a thread runs both while it waits, frame jobs first. A thread that is
+    not a worker gets one only from `ax_jobs_wait_idle` (teardown and untracked jobs), which runs
+    both priorities.
+- **A counter remembers its jobs' priority** (`ax_job_counter.priority`, set by the submit that
+  finds it at zero). One counter never holds both: submitting jobs of the other priority while it
+  still has jobs pending asserts.
+- **Frame work never waits for background work.** `ax_jobs_wait` on a background counter from a
+  frame context asserts in debug builds: with every worker inside frame jobs, nobody would run the
+  background jobs, a deadlock. The check comes before the counter is read, so it fires whatever
+  the timing, and in inline mode too. Release builds let that waiter run background jobs as well:
+  it loses the frame instead of hanging.
+- **Why not "waiters run only their own counter's jobs"** (decision 60's other option): a
+  work-stealing deque cannot hand out a chosen job, and a job's children use other counters, so a
+  waiter could not help with its own grandchildren and would sit idle while its own work waits.
+- **Inline mode** runs both priorities at once, when submitted, so a background job submitted in
+  single-threaded mode costs its time on the spot.
+- **Statistics:** `ax_jobs_stats.background_run`.
+- **Tests** (`tests/unit/base/test_jobs.c`, label `base`, so under TSan in CI):
+  - a thread that is not a worker, with background jobs queued and the only worker busy, runs the
+    frame jobs it waits for and none of the background ones; the worker runs them afterwards;
+  - a frame job on a worker queues background jobs in its own deque and frame children, then
+    waits: it runs its children and never the background jobs beside it;
+  - an idle worker takes frame jobs before background jobs submitted earlier;
+  - a background job waits for frame jobs and for background jobs;
+  - inline mode runs background jobs at once;
+  - death tests: waiting on a background counter from a frame context, and mixing priorities on
+    one counter.
+
+  Writing the tests found a case the first version missed: `ax_jobs_wait_idle` on a thread that
+  is not a worker ran a background job whose nested wait was taken for a frame context. The
+  running priority is now tracked on every thread, not only on workers. Locally: 60 runs of the
+  priority tests and the stress test under TSan, 30 pinned to one CPU, 300 Release runs, all clean.
+
+**Status.** Implementation, pending the owner's approval.
