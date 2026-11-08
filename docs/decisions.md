@@ -85,8 +85,8 @@ new entry that points back to the old one.
 | 69  | The app thread's mirror                                  | Approved       |
 | 70  | Reference benchmarks: core and jobs                      | Approved       |
 | 71  | The IDL: `.axidl`, and the line between ABI and SDK      | Approved       |
-| 72  | Wayland layer-shell surfaces                             | Implementation |
-| 73  | Extension chains: the `next` header                      | Implementation |
+| 72  | Wayland layer-shell surfaces                             | Approved       |
+| 73  | Extension chains: the `next` header                      | Approved       |
 
 ---
 
@@ -2808,7 +2808,7 @@ gives the client no way to anchor to an edge, reserve space or stay above other 
   locker that must guarantee the session stays locked uses `ext-session-lock-v1`
   (wayland-protocols staging), which is a separate decision.
 
-**Status.** Implementation, pending the owner's approval.
+**Status.** Approved by the owner.
 
 ## 73. Extension chains: the `next` header
 
@@ -2886,4 +2886,4 @@ internal renderer interface already chains `{next, type}` (`ax_renderer_chain`, 
     descriptor's class (`WindowDesc.Layer` in C#), and the binding builds the chain when it calls
     in.
 
-**Status.** Implementation, pending the owner's approval.
+**Status.** Approved by the owner.
