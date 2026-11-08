@@ -91,6 +91,7 @@ new entry that points back to the old one.
 | 75  | Events to the app thread, `on_presented`, the clock      | Implementation |
 | 76  | Positioning, the layer rule and incremental recording    | Implementation |
 | 77  | The runtime, the frame's order and the single thread     | Implementation |
+| 78  | The scene and render threads; vsync on the render thread | Deviation      |
 
 ---
 
@@ -3164,3 +3165,92 @@ stage functions run in order on one thread through a cooperative scheduler, for 
 
 **Status.** Implementation, pending the owner's approval (part of the approved plan; the
 deadline's note on the world-wide queue was the owner's).
+
+## 78. The scene and render threads; vsync on the render thread
+
+**Context.** The threaded mode runs decision 77's stages on a scene thread and presents every
+surface from one render thread. The owner asked for:
+- M0's render loop (wait_frame, acquire and render) moved from the example into the library,
+  with several surfaces;
+- the size handshake of decision 57 asking the scene for the new size, recorded in an off-cycle
+  tick;
+- the scene thread never waiting for the app thread;
+- tests with real threads against weston: the tree presented, the resize handshake, and no lost
+  frames with the app thread blocked for 500 ms;
+- TSan over core and the pipeline;
+- recording as a Deviation that the vsync reaches the render thread, not the main thread;
+- noting continuous frames at rest as pending, with a date.
+
+**Decision.**
+- **Threads** (`runtime/src/threads.c`). `ax_runtime_create` in threaded mode starts both
+  threads and returns once the scene thread has taken the world's scene role
+  (`ax_world_bind_scene_thread`); `ax_runtime_destroy` stops them and gives the role back to the
+  app thread.
+  - **Scene thread:** runs `ax_rt_scene_step` and sleeps until woken (a Dekker handshake on a
+    counter, as in decisions 31 and 52) or for at most 100 ms. Its wakers are the render
+    thread's requests and presentation reports, the app thread's surface commands, and the
+    platform's events (`ax_app_set_event_notify`, decision 74). It takes no lock the app thread
+    holds: commands and transactions arrive through lock-free queues.
+  - **Render thread:**
+    - takes its commands (attach and detach);
+    - waits for frames on every surface at once (`presenter->wait`), at most 50 ms at a time;
+    - runs `presenter->frame` for each surface that is due;
+    - with no surface, sleeps on its own condition until a command;
+    - when it stops, detaches every surface and destroys the presenter's resources on itself.
+  - Removing a surface waits, bounded by 1 s, for both threads to acknowledge it, so the
+    window can then be destroyed.
+- **The platform presenter** (`runtime/src/platform.c`, built with the platform module):
+  - **The renderer.** It defaults to `ax_render_wgpu` when the gpu module is built. It is
+    created on the render thread at the first window. Each window gets decision 57's frame step
+    (`ax_render_frame`), now split: `ax_render_frame_present` does steps 2 and 3 after a wait the
+    caller made, and `ax_render_frame_step` keeps the old behaviour as wait plus present.
+  - **Several surfaces.** The renderer vtbl gains `wait_frames`, appended so `struct_size`
+    tells. `ax_render_wgpu` implements it with the new `ax_gpu_surfaces_wait`, which polls the
+    device once and waits with `ax_surface_wait_frames` (decision 74); a DRIVER-paced surface that
+    animates is always due.
+  - **The size handshake** is decision 57's, unchanged. The frame step's request reaches the
+    scene as a resize request. The scene ticks at once (off-cycle, counted as `resize_ticks`) with
+    the new size, and the step waits for the snapshot within its bound.
+  - **Presentation reports.** Each commit that presented a snapshot is remembered with its
+    mailbox sequence (16 per surface). When the platform reports a newer commit on screen, the
+    newest snapshot at or before it goes to the scene for `ax_txn_on_presented` (decisions 74
+    and 75).
+  - **Events.** The scene thread is the app's event consumer. It forwards window events to the
+    world (`ax_world_push_event`) with the window's root and the time on the world's clock, and
+    turns occlusion into the surface's visibility (decision 77's watermark).
+  - **Stable ABI** (`ax_runtime_window.h`): `ax_runtime_create_for_app`,
+    `ax_runtime_add_window` (it creates the window's root in a transaction of its own) and
+    `ax_runtime_remove_window`. The internal SDK (`ax_runtime_platform.h`) adds the options
+    (renderer, its desc, the handshake's bound, the examples' driver) and per-window counters.
+- **Deviation: the vsync reaches the render thread, not the main thread.** The document's table
+  of threads has the main thread forwarding the vsync to the scene. On Wayland the frame callback
+  and the presentation feedback are dispatched on the presenter's private queue (decision 34), so
+  the render thread is the first to know a frame is due. It asks the scene for frame N+1 with
+  its predicted present time as soon as it presents frame N (decision 57), and that request is
+  the scene's vsync. The main thread only reads the socket. Platforms whose vsync source belongs
+  to the main thread (CADisplayLink, Choreographer) will forward it to the render side the same
+  way. The owner updates the architecture document.
+- **Pending (2026-11-07): frames at rest.** The render thread presents every refresh while a
+  window lives (`animating` is always true, as in M0), even when nothing changes. Before M2 it
+  must drop to zero frames at rest: frames only while the scene has new content or something
+  animates, and a commit wakes the render side.
+- **Tests:**
+  - `tests/unit/runtime/test_threads.c` (label `runtime`, now in the TSan job): a fake
+    presenter paces surfaces like displays.
+    - Two surfaces at 60 and 144 Hz keep their rates while the app thread commits every 3 ms; 61
+      and 146 frames in a second locally; every `on_presented` comes, in order, as `PRESENTED`;
+      the mirror shows the last change.
+    - With the app thread blocked 500 ms: 30 frames, 30 new snapshots, none late.
+    - 20 surfaces added and removed while the threads run.
+    - Locally 5 runs under TSan, 2 more pinned to one CPU, clean.
+  - `tests/integration/gpu_wayland/test_pipeline.c` (headless weston, lavapipe), with the real
+    presenter and renderer:
+    - the tree is presented and `on_presented` reports it;
+    - a maximize is answered with a snapshot of the new size (locally 1280x688, `scene_late` 1,
+      no forced acknowledgement);
+    - with the app thread blocked 500 ms at weston's 60 Hz: 31 presentations for 30 expected,
+      31 new snapshots, 0 missed vblanks. The checks allow one fewer presentation and snapshot,
+      and require 0 missed vblanks.
+
+**Status.** Deviation (the vsync), recorded as the owner asked; the rest Implementation, pending
+the owner's approval.

@@ -16,7 +16,8 @@ endif()
 
 set(_ax_gpu_wayland_tests
     test_gpu_present.c
-    test_ir_present.c)
+    test_ir_present.c
+    test_pipeline.c)
 
 foreach(_t IN LISTS _ax_gpu_wayland_tests)
     ax_add_unit_test(gpu_wayland "${_t}")
@@ -26,7 +27,7 @@ foreach(_t IN LISTS _ax_gpu_wayland_tests)
         "${PROJECT_SOURCE_DIR}/tests/integration/wayland/wl_test_util.c"
         "${PROJECT_SOURCE_DIR}/tests/unit/gpu/gpu_test_util.c")
     target_link_libraries(test_gpu_wayland_${_n} PRIVATE ax_gpu ax_platform ax_render_wgpu
-        ax_render_frame ${CMAKE_DL_LIBS})
+        ax_render_frame ax_runtime ${CMAKE_DL_LIBS})
     target_include_directories(test_gpu_wayland_${_n} PRIVATE
         "${PROJECT_SOURCE_DIR}/platform/src"
         "${PROJECT_SOURCE_DIR}/gpu/src"

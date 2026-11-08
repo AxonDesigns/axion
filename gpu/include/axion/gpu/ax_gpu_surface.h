@@ -155,6 +155,17 @@ AX_API ax_result ax_gpu_surface_present(ax_gpu_surface *surface, ax_gpu_frame *f
 AX_API ax_result ax_gpu_surface_wait(ax_gpu_surface *surface, bool animating, uint64_t timeout_ns,
                                      ax_wake_reason *out_reason);
 
+/*
+ * ax_gpu_surface_wait over several surfaces of one ax_gpu (one render thread presenting them all,
+ * ax_surface_wait_frames): out_reasons[i] for surfaces[i]. A DRIVER-paced surface that animates
+ * is always due, and then nothing waits. Errors: AX_ERR_INVALID_ARGUMENT (no surfaces, more than
+ * AX_SURFACE_WAIT_MAX, surfaces of different ax_gpu), those of ax_surface_wait_frames.
+ * thread: presenter
+ */
+AX_API ax_result ax_gpu_surfaces_wait(ax_gpu_surface *const *surfaces, uint32_t count,
+                                      bool animating, uint64_t timeout_ns,
+                                      ax_wake_reason *out_reasons);
+
 /* thread: presenter */
 AX_API void ax_gpu_surface_get_info(ax_gpu_surface *surface, ax_gpu_surface_info *out_info);
 

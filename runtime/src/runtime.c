@@ -57,6 +57,14 @@ void ax__rt_wake_scene(rt_impl *r)
     }
 }
 
+void ax__rt_wake_render(rt_impl *r)
+{
+    ax_mutex_lock(&r->render_lock);
+    ax_atomic_fetch_add_u64(&r->render_gen, 1, AX_MO_SEQ_CST);
+    ax_cond_signal(&r->render_cond);
+    ax_mutex_unlock(&r->render_lock);
+}
+
 void ax__rt_signal_ack(rt_impl *r)
 {
     ax_mutex_lock(&r->ack_lock);
@@ -85,6 +93,8 @@ static void free_runtime(rt_impl *r)
     ax_mutex_deinit(&r->scene_lock);
     ax_cond_deinit(&r->ack_cond);
     ax_mutex_deinit(&r->ack_lock);
+    ax_cond_deinit(&r->render_cond);
+    ax_mutex_deinit(&r->render_lock);
     ax_mem_free(&a, r, sizeof *r);
 }
 
@@ -124,6 +134,9 @@ ax_result ax_rt_create(const ax_rt_desc *desc, ax_runtime *out_runtime)
     ax_cond_init(&r->scene_cond);
     ax_mutex_init(&r->ack_lock);
     ax_cond_init(&r->ack_cond);
+    ax_mutex_init(&r->render_lock);
+    ax_cond_init(&r->render_cond);
+    ax_atomic_init_u64(&r->render_gen, 0);
     ax_atomic_init_u64(&r->scene_gen, 0);
     ax_atomic_init_u32(&r->scene_sleeping, 0);
     ax_atomic_init_u32(&r->stop, 0);
@@ -206,6 +219,11 @@ ax_result ax_runtime_destroy(ax_runtime runtime)
     }
     if (r->threads_running) {
         ax__rt_stop_threads(r); /* detaches every surface on the render thread */
+        for (i = 0; i < AX_RUNTIME_MAX_SURFACES; ++i) {
+            if (r->surfaces[i].scene_live) { /* the scene role is back on this thread */
+                ax_world_remove_root(r->desc.world, r->surfaces[i].root);
+            }
+        }
     } else {
         for (i = 0; i < AX_RUNTIME_MAX_SURFACES; ++i) {
             rt_surface *s = &r->surfaces[i];
@@ -218,6 +236,12 @@ ax_result ax_runtime_destroy(ax_runtime runtime)
                 }
             }
         }
+        if (r->desc.presenter != NULL && r->desc.presenter->destroy != NULL) {
+            r->desc.presenter->destroy(r->desc.presenter_self);
+        }
+    }
+    if (r->desc.cleanup != NULL) {
+        r->desc.cleanup(r->desc.cleanup_user);
     }
     ax_atomic_store_ptr(&g_runtimes[r->slot], NULL, AX_MO_RELEASE);
     free_runtime(r);
@@ -295,6 +319,7 @@ ax_result ax_rt_add_surface(ax_runtime rt, ax_node root, const ax_rt_surface_des
         ax__rt_render_commands(r);
     } else {
         ax__rt_wake_scene(r);
+        ax__rt_wake_render(r);
     }
     if (out_surface != NULL) {
         *out_surface = i;
@@ -327,6 +352,7 @@ ax_result ax_rt_remove_surface(ax_runtime rt, uint32_t surface)
     } else {
         uint64_t until = ax_time_monotonic_ns() + 1000000000u;
         ax__rt_wake_scene(r);
+        ax__rt_wake_render(r);
         ax_mutex_lock(&r->ack_lock);
         while (!both_done(s) && ax_time_monotonic_ns() < until) {
             ax_cond_wait_timeout(&r->ack_cond, &r->ack_lock, 10000000u);

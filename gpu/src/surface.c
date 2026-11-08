@@ -512,6 +512,41 @@ ax_result ax_gpu_surface_wait(ax_gpu_surface *s, bool animating, uint64_t timeou
     return r;
 }
 
+ax_result ax_gpu_surfaces_wait(ax_gpu_surface *const *surfaces, uint32_t count, bool animating,
+                               uint64_t timeout_ns, ax_wake_reason *out_reasons)
+{
+    ax_surface handles[AX_SURFACE_WAIT_MAX];
+    bool driver_due = false;
+    ax_result r, w;
+    uint32_t i;
+
+    if (surfaces == NULL || out_reasons == NULL || count == 0 || count > AX_SURFACE_WAIT_MAX) {
+        return ax_set_error(AX_ERR_INVALID_ARGUMENT,
+                            "ax_gpu_surfaces_wait: 1 to %u surfaces and their reasons",
+                            (unsigned)AX_SURFACE_WAIT_MAX);
+    }
+    for (i = 0; i < count; ++i) {
+        if (surfaces[i]->gpu != surfaces[0]->gpu) {
+            return ax_set_error(AX_ERR_INVALID_ARGUMENT,
+                                "ax_gpu_surfaces_wait: the surfaces belong to different ax_gpu");
+        }
+        handles[i] = surfaces[i]->surface;
+        driver_due = driver_due || (surfaces[i]->pacing == AX_GPU_PACING_DRIVER && animating);
+    }
+    AX_GPU_ASSERT_THREAD(surfaces[0]->gpu);
+    r = ax_gpu_poll(surfaces[0]->gpu);
+    /* A swapchain that throttles itself is always due while animating: then only run the
+     * surfaces' listeners, as ax_gpu_surface_wait does. */
+    w = ax_surface_wait_frames(handles, count, driver_due ? 0 : timeout_ns, out_reasons);
+    for (i = 0; i < count && w == AX_OK; ++i) {
+        if (surfaces[i]->pacing == AX_GPU_PACING_DRIVER && animating &&
+            out_reasons[i] == AX_WAKE_TIMEOUT) {
+            out_reasons[i] = AX_WAKE_FRAME;
+        }
+    }
+    return r != AX_OK ? r : w;
+}
+
 void ax_gpu_surface_get_info(ax_gpu_surface *s, ax_gpu_surface_info *out)
 {
     AX_GPU_ASSERT_THREAD(s->gpu);

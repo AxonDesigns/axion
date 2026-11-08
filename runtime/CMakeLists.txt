@@ -19,3 +19,13 @@ target_include_directories(ax_runtime
     PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(ax_runtime PUBLIC ax_core ax_render_ir ax_base)
 ax_target_defaults(ax_runtime)
+
+# The platform presenter: windows presented on the render thread with a renderer (decision 78).
+if(AX_BUILD_PLATFORM)
+    target_sources(ax_runtime PRIVATE src/platform.c)
+    target_link_libraries(ax_runtime PUBLIC ax_platform ax_render_frame)
+    if(AX_BUILD_GPU)
+        target_link_libraries(ax_runtime PUBLIC ax_render_wgpu)
+        target_compile_definitions(ax_runtime PRIVATE AX_RUNTIME_HAVE_WGPU=1)
+    endif()
+endif()

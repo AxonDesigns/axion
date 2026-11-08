@@ -6,7 +6,8 @@
 # they also run in the Emscripten build.
 
 set(_ax_runtime_tests
-    test_single_thread.c)
+    test_single_thread.c
+    test_threads.c)
 
 foreach(_t IN LISTS _ax_runtime_tests)
     ax_add_unit_test(runtime "${_t}")

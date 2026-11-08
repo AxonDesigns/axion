@@ -72,6 +72,8 @@ typedef struct ax_rt_presenter_vtbl {
      * size with ax_rt_request_frame when a configure needs one), report what reached the screen
      * (ax_rt_snapshot_presented), and ask for the next frame (ax_rt_request_frame). */
     ax_result (*frame)(void *self, uint32_t surface);
+    /* The render side stops (after detaching every surface): free what it made. May be NULL. */
+    void (*destroy)(void *self);
 } ax_rt_presenter_vtbl;
 
 /* Called by the scene before positioning at each tick of a surface (examples only: it moves
@@ -90,6 +92,11 @@ typedef struct ax_rt_desc {
      * the windowing system's events (ax_world_push_event). NULL: none. */
     void (*pump_events)(void *user, ax_runtime rt);
     void *pump_user;
+    /* Called by ax_runtime_destroy on the app thread once the threads stopped. NULL: none. */
+    void (*cleanup)(void *user);
+    void *cleanup_user;
+    /* Threaded mode: how long the render thread waits for frames at a time (0: 50 ms). */
+    uint64_t render_wait_ns;
 } ax_rt_desc;
 
 /* As ax_runtime_create, with the internal options. thread: app */

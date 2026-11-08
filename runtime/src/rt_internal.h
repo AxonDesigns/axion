@@ -82,6 +82,11 @@ typedef struct rt_impl {
     ax_mutex ack_lock;
     ax_cond ack_cond;
 
+    /* The render thread's wait while it has no surface. */
+    ax_mutex render_lock;
+    ax_cond render_cond;
+    ax_atomic_u64 render_gen;
+
     ax_atomic_u32 stop;
     bool threads_running;
     ax_thread scene_thread;
@@ -95,6 +100,9 @@ rt_impl *ax__rt_from_handle(ax_runtime rt);
 
 /* Wakes the scene thread (any thread); nothing in single-threaded mode. */
 void ax__rt_wake_scene(rt_impl *r);
+
+/* Wakes the render thread when it waits for its first surface (any thread). */
+void ax__rt_wake_render(rt_impl *r);
 
 /* App thread: signals a waiter for acknowledgements (any thread). */
 void ax__rt_signal_ack(rt_impl *r);

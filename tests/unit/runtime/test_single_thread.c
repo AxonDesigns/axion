@@ -105,8 +105,8 @@ static ax_result fake_frame(void *self, uint32_t surface)
     return AX_OK;
 }
 
-static const ax_rt_presenter_vtbl k_fake = {sizeof(ax_rt_presenter_vtbl), fake_attach, fake_detach,
-                                            NULL, fake_frame};
+static const ax_rt_presenter_vtbl k_fake = {
+    sizeof(ax_rt_presenter_vtbl), fake_attach, fake_detach, NULL, fake_frame, NULL};
 
 /* ---- A pipeline in one thread ---------------------------------------------------------------- */
 
