@@ -47,22 +47,65 @@ typedef struct ax_txn ax_txn;
 
 /* ---- Transitions ----------------------------------------------------------------------------- */
 
-/* How a property animates to a new value. Recorded and validated now; it takes effect when
- * animations exist. Fields may still change before the ABI is frozen. */
+/*
+ * How a property animates to a new value (decision 94). When a transaction changes an animatable
+ * property, the scene looks up the transition: the node's own (ax_txn_set_transition), then the
+ * world's for that property (ax_txn_set_default_transition), then the built-in default of its
+ * effect: a spring (0.4 s, no bounce) for layout (the frame), transform and opacity, a short ease
+ * (0.2 s) for colors and other paint properties. Layout properties animate through the frame
+ * layout computes: a transition set on any of them, or on AX_PROP_LAYOUT, is the node's layout
+ * transition. A zero-initialized ax_transition with a kind is valid: the other fields' zeros are
+ * defaults.
+ */
 typedef enum ax_transition_kind {
     AX_TRANSITION_NONE = 1,   /* change at once */
-    AX_TRANSITION_TIMING = 2, /* duration and a cubic Bezier curve */
-    AX_TRANSITION_SPRING = 3  /* perceptual spring: duration and bounce */
+    AX_TRANSITION_TIMING = 2, /* a duration and an easing */
+    AX_TRANSITION_SPRING = 3, /* a spring: perceptual (duration, bounce) or physical */
+    AX_TRANSITION_DECAY = 4,  /* the remaining distance shrinks exponentially at `rate` */
+    AX_TRANSITION_DEFAULT = 5 /* removes an override: the next level of the lookup decides */
 } ax_transition_kind;
+
+/* TIMING's easing. */
+typedef enum ax_easing {
+    AX_EASING_CUBIC_BEZIER = 0, /* curve: CSS cubic-bezier(x1, y1, x2, y2); all 0 is linear */
+    AX_EASING_STEPS = 1,        /* CSS steps(steps, step_position) */
+    AX_EASING_LINEAR = 2        /* CSS linear() with explicit inputs: stops */
+} ax_easing;
+
+typedef enum ax_step_position {
+    AX_STEP_JUMP_END = 0, /* CSS jump-end (end) */
+    AX_STEP_JUMP_START = 1,
+    AX_STEP_JUMP_NONE = 2,
+    AX_STEP_JUMP_BOTH = 3
+} ax_step_position;
+
+/* A point of a linear() easing: the output at an input of the progress (0..1). */
+typedef struct ax_linear_stop {
+    float input, output;
+} ax_linear_stop;
+
+#define AX_TRANSITION_MAX_STOPS 16u
 
 typedef struct ax_transition {
     uint32_t struct_size; /* sizeof(ax_transition) */
     const void *next;     /* extension chain; none defined yet */
     uint32_t kind;        /* ax_transition_kind */
     float delay;          /* seconds, >= 0 */
-    float duration;       /* seconds, >= 0 (TIMING, SPRING) */
-    float curve[4];       /* TIMING: cubic Bezier x1, y1, x2, y2 (x in 0..1) */
-    float bounce;         /* SPRING: -1..1 */
+    float duration;       /* seconds, >= 0: TIMING's length; SPRING's perceptual duration */
+    /* TIMING */
+    uint32_t easing;             /* ax_easing */
+    float curve[4];              /* CUBIC_BEZIER: x1, y1, x2, y2 (x in 0..1) */
+    uint32_t steps;              /* STEPS: at least 1 (2 with JUMP_NONE) */
+    uint32_t step_position;      /* ax_step_position */
+    const ax_linear_stop *stops; /* LINEAR: 2 to AX_TRANSITION_MAX_STOPS, inputs in 0..1 and */
+    uint32_t stop_count;         /*   not decreasing; copied when recorded */
+    /* SPRING. Perceptual (stiffness 0): duration > 0 and bounce. Physical: stiffness > 0. */
+    float bounce;    /* -1 < bounce < 1; 0 is critically damped, above 0 bounces */
+    float stiffness; /* > 0 for a physical spring */
+    float damping;   /* >= 0 */
+    float mass;      /* > 0; 0 means 1 */
+    /* DECAY */
+    float rate; /* > 0, per second */
 } ax_transition;
 
 /* ---- Colors ---------------------------------------------------------------------------------- */
@@ -103,14 +146,21 @@ AX_API void ax_txn_insert_before(ax_txn *t, ax_node parent, ax_node child, ax_no
  * transaction that name a removed node fail as stale. thread: app */
 AX_API void ax_txn_remove(ax_txn *t, ax_node node);
 
-/* Whether this transaction's changes animate implicitly (default true). No effect until
- * animations exist. thread: app */
+/* Whether this transaction's changes animate implicitly (default true). With false, its changes
+ * take effect at once and stop the animations of the properties they change; frames that change
+ * in a frame where every transaction applied was not animated snap too. thread: app */
 AX_API void ax_txn_set_animated(ax_txn *t, bool animated);
 
-/* Overrides the transition of one property of a node for this change. On a shorthand it applies
- * to every longhand. No effect until animations exist. thread: app */
+/* The node's own transition for one property, kept until set again (AX_TRANSITION_DEFAULT
+ * removes it). It applies to changes made from then on, this transaction's included. On a
+ * shorthand it applies to every longhand; on a layout property it is the node's layout
+ * transition (AX_PROP_LAYOUT). thread: app */
 AX_API void ax_txn_set_transition(ax_txn *t, ax_node node, ax_prop prop,
                                   const ax_transition *transition);
+
+/* The world's transition for one property, for nodes without their own (AX_TRANSITION_DEFAULT
+ * goes back to the built-in default). thread: app */
+AX_API void ax_txn_set_default_transition(ax_txn *t, ax_prop prop, const ax_transition *transition);
 
 /*
  * Queues the transaction for the scene thread and ends it. On success *out_seq (may be NULL) is

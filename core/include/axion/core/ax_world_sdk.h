@@ -24,6 +24,7 @@
 
 #include "../ax_txn.h"
 #include "../ax_world.h"
+#include "ax_anim.h"
 #include "ax_prop_registry.h"
 #include "ax_scene.h"
 #include <axion/base/ax_compiler.h>
@@ -107,14 +108,11 @@ typedef struct ax_txn_cmd_remove {
 
 typedef struct ax_txn_cmd_transition {
     ax_txn_cmd h;
-    ax_prop prop; /* a longhand: shorthands are expanded when recording */
-    uint32_t kind;
-    ax_node node;
-    float delay;
-    float duration;
-    float curve[4];
-    float bounce;
+    ax_prop prop; /* a longhand or AX_PROP_LAYOUT: shorthands and layout properties are mapped
+                   * when recording */
     uint32_t reserved;
+    ax_node node;   /* null: the world's default for prop (ax_txn_set_default_transition) */
+    ax_curve curve; /* validated (ax_anim.h) */
 } ax_txn_cmd_transition;
 
 /* A committed transaction, as the scene thread reads it. */

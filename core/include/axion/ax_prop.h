@@ -80,6 +80,10 @@ enum {
     AX_PROP_BORDER_WIDTH = 0x0134,        /* shorthand: the four border widths */
     /* Grid starts at 0x0140. */
 
+    /* Not a value: the frame layout computes, as the target of a layout transition
+     * (ax_txn_set_transition; decision 94). It cannot be set. */
+    AX_PROP_LAYOUT = 0x01FF,
+
     /* Paint. */
     AX_PROP_BACKGROUND_COLOR = 0x0201,           /* color */
     AX_PROP_CORNER_RADIUS_TOP_LEFT = 0x0202,     /* f32, logical units */

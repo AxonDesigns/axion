@@ -127,6 +127,16 @@ static inline ax_affine2 ax_affine2_scale(float sx, float sy)
 /* Rotation by `radians` about the origin (clockwise on screen, since y points down). */
 AX_API ax_affine2 ax_affine2_rotate(float radians);
 
+/* ---- Deterministic elementary functions (decision 81) ----------------------------------------
+ * The same bits on every platform: only +, -, *, / and bit manipulation, no libm. Animations
+ * (decision 94) and the renderers use them instead of libm's. Relative error below 1e-6 over the
+ * ranges UI code uses. */
+AX_API void ax_sin_cos(float x, float *out_sin, float *out_cos);
+AX_API float ax_exp2f(float y);           /* 0 below 2^-126, infinity above 2^127 */
+AX_API float ax_expf(float x);            /* e^x, through ax_exp2f */
+AX_API float ax_log2f(float x);           /* x > 0 and normal; NaN otherwise */
+AX_API float ax_atan2f(float y, float x); /* in [-pi, pi]; 0 for (0, 0) */
+
 /* m * n: applies n first, then m. */
 static inline ax_affine2 ax_affine2_mul(ax_affine2 m, ax_affine2 n)
 {

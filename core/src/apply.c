@@ -261,10 +261,10 @@ static bool apply_remove(apply_state *st, const ax_txn_cmd_remove *c)
 static bool apply_transition(apply_state *st, const ax_txn_cmd_transition *c)
 {
     const ax_prop_desc *d = ax_prop_registry_find(&st->scene->props, c->prop);
-    if (!check_node(st, c->node, "the node")) {
+    if (!AX_HANDLE_IS_NULL(c->node) && !check_node(st, c->node, "the node")) {
         return false;
     }
-    if (d == NULL || (d->flags & AX_PROP_ANIMATABLE) == 0) {
+    if (c->prop != AX_PROP_LAYOUT && (d == NULL || (d->flags & AX_PROP_ANIMATABLE) == 0)) {
         failf(st, AX_ERR_INVALID_ARGUMENT, "transition: property 0x%x is %s", (unsigned)c->prop,
               d == NULL ? "unknown" : "not animatable");
         return false;
