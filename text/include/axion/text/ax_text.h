@@ -209,7 +209,7 @@ typedef struct ax_text_line {
 /* A paragraph laid out at one width: immutable, reference-counted. */
 typedef struct ax_text_layout {
     float max_width; /* what it was wrapped at (NaN: not wrapped) */
-    float box_width; /* what alignment used (the widest line when max_width is NaN) */
+    float box_width; /* what it was aligned in (NaN: the widest line) */
     float width, height;
     uint32_t line_count, glyph_count;
     const ax_text_line *lines;

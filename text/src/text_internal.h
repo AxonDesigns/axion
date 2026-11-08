@@ -170,6 +170,91 @@ static inline void tx_count(ax_atomic_u64 *c, uint64_t n)
     (void)ax_atomic_fetch_add_u64(c, n, AX_MO_RELAXED);
 }
 
+/* ---- Shaping (paragraph.c) ------------------------------------------------------------------- */
+
+/* A shaped run in the shaping cache: HarfBuzz's output in font units, immutable. */
+typedef struct tx_shaped {
+    tx_entry entry;
+    /* The key. */
+    ax_font_id font;
+    uint32_t script, direction;
+    uint32_t feature_count;
+    ax_text_feature features[AX_TEXT_MAX_FEATURES];
+    uint32_t text_len;
+    char *text;
+    /* The glyphs, in visual order (left to right). */
+    uint32_t count;
+    uint32_t *ids;
+    uint32_t *clusters; /* byte offsets in `text` */
+    int32_t *advance, *x_offset, *y_offset;
+    uint8_t *unsafe; /* HarfBuzz's UNSAFE_TO_BREAK: breaking before this glyph needs reshaping */
+} tx_shaped;
+
+typedef struct tx_shape_key {
+    ax_font_id font;
+    uint32_t script, direction;
+    uint32_t feature_count;
+    const ax_text_feature *features;
+    const char *text;
+    uint32_t text_len;
+} tx_shape_key;
+
+/* Shapes `key` through the cache; the caller holds the reference it returns (tx_cache_release on
+ * ts->shape_cache). NULL when out of memory. `fragment` counts it as a line-end fragment. */
+tx_shaped *tx_shape(ax_text_system *ts, const tx_shape_key *key, bool fragment);
+
+/* ---- Paragraphs (paragraph.c, layout.c) ------------------------------------------------------ */
+
+/* A run: a range of the text with one style and one font. Itemization's later stages (bidi level,
+ * script, per-cluster font fallback) refine runs further; the fields are already here. */
+typedef struct tx_run {
+    uint32_t start, end; /* bytes */
+    uint32_t style;
+    ax_font_id font;
+    uint32_t script;    /* hb_script_t */
+    uint32_t direction; /* hb_direction_t: left to right until bidi (M3) */
+    uint8_t level;      /* bidi embedding level: 0 until bidi */
+    tx_shaped *shaped;
+} tx_run;
+
+/* A glyph of the shaped paragraph, flattened over its runs. */
+typedef struct tx_pglyph {
+    uint32_t id;
+    uint32_t cluster; /* absolute byte offset */
+    uint32_t run;
+    float advance, x_offset, y_offset; /* logical units */
+    bool unsafe;
+} tx_pglyph;
+
+#define TX_LAYOUT_CACHE 4u
+
+typedef struct tx_layout {
+    ax_text_layout pub;
+    ax_atomic_u32 refs;
+    ax_text_system *ts;
+    size_t bytes;
+} tx_layout;
+
+struct ax_text_paragraph {
+    ax_atomic_u32 refs;
+    ax_text_system *ts;
+    char *text;
+    uint32_t len;
+    ax_text_style *styles;
+    uint32_t style_count;
+    uint32_t align;
+    tx_run *runs;
+    uint32_t run_count;
+    char *breaks;    /* libunibreak line breaks, per byte (after byte i) */
+    char *graphemes; /* grapheme breaks, per byte */
+    ax_mutex mutex;  /* shaping once; the layout cache */
+    ax_atomic_u32 state; /* 0: not shaped, 1: shaped, 2: failed */
+    tx_pglyph *glyphs;
+    uint32_t glyph_count;
+    tx_layout *cache[TX_LAYOUT_CACHE];
+    uint32_t cache_next;
+};
+
 /* glyphs.c */
 void tx_glyphs_init(ax_text_system *ts);
 void tx_glyphs_deinit(ax_text_system *ts);

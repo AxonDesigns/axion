@@ -13,6 +13,9 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <graphemebreak.h>
+#include <linebreak.h>
+
 #include "text_internal.h"
 
 #include <axion/base/ax_error_set.h>
@@ -45,6 +48,9 @@ ax_result ax_text_system_create(const ax_text_system_desc *desc, ax_text_system 
     ax_text_system *ts;
     uint32_t i;
     *out = NULL;
+    /* libunibreak's tables (idempotent). */
+    init_linebreak();
+    init_graphemebreak();
     ts = (ax_text_system *)ax_mem_alloc(a, sizeof *ts, AX_ALIGNOF(ax_text_system));
     if (ts == NULL) {
         return ax_set_error(AX_ERR_OUT_OF_MEMORY, "ax_text_system_create: out of memory");

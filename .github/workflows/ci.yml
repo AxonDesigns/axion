@@ -59,13 +59,14 @@ jobs:
           # ThreadSanitizer over the code with cross-thread handoffs: base's primitives and jobs, the
           # platform module's queues and triple buffers, the Render IR's mailbox, core's queues, the
           # runtime's threads (with a fake presenter), the software renderer's tiles on the job
-          # system and the headless host's instances and threaded mode. gpu/ is not built: its suites
+          # system, the headless host's instances and threaded mode, and text's shared caches (shaping
+          # and measuring from several threads). gpu/ is not built: its suites
           # run under ASan, and Dawn is not instrumented (decision 44).
-          - name: "Linux / Clang / TSan (base, platform, render IR, core, runtime, soft, headless)"
+          - name: "Linux / Clang / TSan (base, platform, render IR, core, text, runtime, soft, headless)"
             os: ubuntu-latest
             preset: clang-tsan
             configure_args: "-DAX_BUILD_GPU=OFF"
-            test_args: "-L \"^(base|platform|render_ir|core|runtime|render_soft|headless)$\""
+            test_args: "-L \"^(base|platform|render_ir|core|text|runtime|render_soft|headless)$\""
     steps:
       - uses: actions/checkout@v4
 

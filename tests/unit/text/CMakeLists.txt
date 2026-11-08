@@ -19,3 +19,9 @@ set_tests_properties(text.includes.only_base PROPERTIES LABELS text)
 
 ax_add_unit_test(text test_features.c)
 target_link_libraries(test_text_features PRIVATE ax_text)
+
+ax_add_unit_test(text test_shaping.c)
+target_link_libraries(test_text_shaping PRIVATE ax_text)
+
+ax_add_unit_test(text test_lines.c)
+target_link_libraries(test_text_lines PRIVATE ax_text)
