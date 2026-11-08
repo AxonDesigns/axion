@@ -116,6 +116,7 @@ new entry that points back to the old one.
 | 100 | Glyph rasterization, the glyph cache, frame requests     | Implementation |
 | 101 | Glyph runs, atlases, coverage correction, scaled text    | Implementation |
 | 102 | Layout animations end on the pixel grid                  | Implementation |
+| 103 | The handshake bound with text; m1_nodes builds again     | Implementation |
 
 ---
 
@@ -4557,10 +4558,12 @@ upload needs because it commits nothing.
 
 **Decision.**
 - **Rasterizing** (`text/src/glyphs.c`): FreeType renders 8-bit coverage at the instance's size (a
-  font at a raster size to 1/64 px, `ax_text_font_instance`): up to 48 device px, light hinting
-  (the autohinter's light mode, vertical only, KDE's "slight") and 4 subpixel positions (the
-  outline moved bin/4 px); up to 256 px, the exact size without hinting at whole pixels; beyond,
-  the 256 px raster scaled. FreeType's faces are not thread-safe: each rasterizer context, one
+  font at a raster size to 1/64 px, `ax_text_font_instance`): up to 48 device px, 4 subpixel
+  positions (the outline moved bin/4 px) and light hinting (the autohinter's light mode, vertical
+  only, KDE's "slight") **at whole device scales only**: at a fractional scale (1.325) no hinting,
+  as Qt does, since hinting snaps stems to a grid such a scale does not have; measured against KDE
+  (decision 101), hinting at 1.325 made text 5 % heavier than KDE's in both polarities. Up to 256
+  px, the exact size without hinting at whole pixels; beyond, the 256 px raster scaled. FreeType's faces are not thread-safe: each rasterizer context, one
   thread at a time from a pool, has its own library and faces over the shared font bytes. Fixed
   point: the same bytes everywhere.
 - **The glyph cache:** entries inserted pending (a glyph is never rasterized twice), ready with
@@ -4636,15 +4639,44 @@ any difference investigated before a tolerance.
 - **The coverage correction** (`ax_ir_text_lut`, one deterministic table for both renderers):
   Skia's mask gamma: for the text's luminance (8 buckets) and the opposite luminance assumed
   behind it, the alpha that, blended in the renderer's sRGB space, gives the blend of a space of
-  exponent `gamma`, with `contrast` thickening dark text. Parameters provisional (gamma 1.8,
-  contrast 0.1) until tuned against the desktop's text with `tools/diag/kde_text_capture.sh` and
-  `text_weight` (see the PR); the blending space itself is issue #4's (the next PR).
+  exponent `gamma`, with `contrast` thickening dark text. **Tuned to KDE's text: gamma 2.3,
+  contrast 0**, close to no correction (KDE blends glyph coverage in sRGB space). The blending
+  space itself is issue #4's (the next PR).
+- **How it was tuned** (the owner's conditions: both polarities, both monitors, only the window
+  captured, no raw capture in the repository):
+  - `tools/diag/kde_text_capture.py`: a Qt Quick window (qml6, a Qt Quick Controls TextArea:
+    KDE's desktop style, the text path of Plasma and Kirigami apps, Noto Sans 10 pt, fontconfig's
+    slight hinting, grayscale) captures itself with `grabToImage` at its monitor's device pixel
+    ratio, which it logs and the script checks; a KWin script moves it to each output. Spectacle
+    is not used: its window capture saves logical pixels, which hides the 1.325 scale. Dark:
+    Breeze Dark as the desktop has it; light: Breeze Light for that process only (a temporary
+    XDG_CONFIG_HOME with the user's fontconfig and font settings).
+  - At scale 1, Qt Widgets (kdialog, captured by Spectacle) and this path give the same ink
+    within 0.3 % (1.013 and 1.016 at gamma 2.2), so the Qt Quick captures stand for KDE's text.
+  - `text_weight` compares ink (linear-light luminance moved toward the text color, summed over
+    the three lines) with AXION's rendering of the same lines (the system's Noto Sans, the same
+    size and colors) over a grid of gamma and contrast. AXION's ink over KDE's, gamma 2.3,
+    contrast 0, hinting only at whole scales:
+
+    | Monitor | Light on dark | Dark on light |
+    | --- | --- | --- |
+    | HDMI-A-1, scale 1 | 0.996 | 0.993 |
+    | DP-2, scale 1.325 | 1.008 | 1.036 |
+
+    A second capture gave the same figures. Contrast only darkens dark text, which is already at
+    or above KDE's weight, so it stays 0.
 - **Measured.** Parity (`headless.text_goldens.the_gpu_renderer_draws_text_like_the_software_one`,
   Dawn on the owner's NVIDIA): dE (OKLab) at the 99.9th percentile 0.0033 to 0.0034, mean 0.0001,
   within decision 83's 0.02 and 0.002. `bench_text`: 40 paragraphs (11 to 48 px) animating their
-  width through the resize preset: 0.88 ms median per frame for layout, animation and recording
-  on one thread, 2.3 ms worst (3.2 ms with jobs, the workers waking), under a 260 Hz refresh's
-  3.8 ms.
+  width through the resize preset: about 0.7-1.0 ms median per frame for layout, animation and
+  recording, the worst frame of a run 1.9-3.3 ms in either mode, under a 260 Hz refresh's 3.8 ms.
+  **Why the worst frame looked slower with jobs** (3.2 against 2.3 ms in the first run): it is
+  noise. The column is not a relayout boundary and the resize preset lays it out serially, so the
+  job system does nothing in this case (0 boundaries laid out in parallel, no glyph to rasterize
+  during the animation); over five runs each, the worst frames were 2.39-3.25 ms on one thread
+  and 2.36-3.12 ms with jobs. The slowest frames are always the first three of an animation, whose
+  widths are new and far apart, so their line layouts are not cached yet. The bench now prints
+  every run's worst frame and the parallel-boundaries counter.
 - **Goldens** (`tests/goldens/text/`): paragraphs at 11, 13, 16 and 20 px, light and dark, at
   scales 1 and 1.325; 14 px at three widths; 28 and 48 px. **Byte-identical on Linux, macOS,
   Windows and the web** (the determinism job: 29 identical images).
@@ -4667,11 +4699,47 @@ node at rest, so the interface does not jump when it stops.
   relayout now carries the target's own rounding offset (the rounded target frame minus the
   unrounded one), constant during the animation: the motion stays smooth, and the last animated
   frame meets the frame at rest.
-- Values the app sets (a TRANSFORM with a fractional translation) end where they were set; text
-  inside such a layer is drawn bilinearly, not snapped (later, with the document's "snapping eases
-  back in as the animation settles").
+- **Pending, named "snap pure-translation layer origins to device pixels when recording":** a
+  layer whose transform is a pure translation (a TRANSFORM the app set, or one at rest after an
+  animation) can sit at a fractional device position, above all vertically, and its text is then
+  sampled bilinearly: blurry at rest. Recording should round such a layer's origin to the device
+  pixel grid (only in the snapshot, never the value the app set or the mirror shows), with the
+  document's "snapping eases back in as the animation settles" so the snap itself never jumps.
+  Not done here.
 - **Test:** `core.text_layout.a_resize_ends_on_the_pixel_grid_without_a_jump`: a parent resized by
   the default spring at scale 1.325 ends with its child on its rounded frame, the last animated
   frame within the spring's last step (under 0.1 device px; 0.33 px before the change).
+
+**Status.** Implementation, pending the owner's approval.
+
+## 103. The size handshake's bound with real layout and text; m1_nodes builds again
+
+**Context.** M0's commitment (decision 57, confirmed by decision 59): re-measure the size
+handshake's bound (half a refresh, within 2-8 ms) with real layout and text. The owner allowed the
+measurement on their desktop.
+
+**Decision.**
+- **Measured** with `tools/diag/measure_m1_handshake.py` (m1_nodes, clang-release, Dawn on the
+  owner's NVIDIA, KWin; 8 s per run after a 2 s warm-up; "resize" is KWin resizing the window about
+  120 times a second, so every new size lays the 30 paragraphs out again):
+
+  | Output | State | Refresh | Presented/s | Missed/s | Scene late/s | Forced/s | Change to screen |
+  | --- | --- | --- | --- | --- | --- | --- | --- |
+  | HDMI-A-1 | quiet | 13.91 ms | 39.0 | 29.7 | 0 | 0 | 25.6 ms mean, 30.5 max |
+  | HDMI-A-1 | resize | 13.90 ms | 71.7 | 0.14 | 71.7 | 0 | 32.0 ms mean, 38.5 max |
+  | DP-2 | quiet | 3.85 ms | 133.9 | 115.1 | 0 | 0 | 11.6 ms mean, 12.5 max |
+  | DP-2 | resize | 3.84 ms | 134.0 | 126.0 | 122.7 | 0 | 11.7 ms mean, 11.9 max |
+
+  **The bound holds: no configure was forced**, at 72 and 260 Hz: every new size waited for the
+  scene (scene late) and got its snapshot, text laid out again, within half a refresh. The default
+  stays.
+- **Missed refreshes at 260 Hz are not text's:** m1_nodes changes something every 1.2 s, so
+  "quiet" is never at rest; the seconds with many missed refreshes are those of the cards'
+  animations, and `main`'s m1_nodes (no text, built for the comparison) shows the same pattern
+  (seconds of 40 presented and 264 missed). Recorded to investigate apart (the pipeline's pacing
+  while animating, or what "missed" counts then); not changed here.
+- **m1_nodes builds again:** PR #12 (commit 7ffa651) emptied `examples/m1_nodes/CMakeLists.txt`,
+  so the example has not been built since; a build tree kept the older binary. Restored with
+  `m1_cards.c` (and `ax_text`).
 
 **Status.** Implementation, pending the owner's approval.
