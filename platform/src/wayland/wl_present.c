@@ -50,8 +50,7 @@ static void frame_done(void *data, struct wl_callback *cb, uint32_t time_ms)
 
 static const struct wl_callback_listener frame_listener = {frame_done};
 
-/* ---- presentation feedback
- * ----------------------------------------------------------------------- */
+/* ---- presentation feedback ------------------------------------------------------------------ */
 
 static void release_record(wl_frame_record *rec)
 {
@@ -96,8 +95,7 @@ static void feedback_discarded(void *data, struct wp_presentation_feedback *fb)
 static const struct wp_presentation_feedback_listener feedback_listener = {
     feedback_sync_output, feedback_presented, feedback_discarded};
 
-/* ---- commit preparation
- * -------------------------------------------------------------------------- */
+/* ---- commit preparation --------------------------------------------------------------------- */
 
 static int32_t logical_px(float v)
 {

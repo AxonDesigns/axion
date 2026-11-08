@@ -102,13 +102,14 @@ typedef void (*ax_layout_measure_fn)(void *user, ax_node node, float width,
 /* Counters of a pass (summed over passes until reset). */
 typedef struct ax_layout_counters {
     uint64_t passes;
-    uint64_t roots;          /* layout roots laid out (boundaries and trees) */
-    uint64_t parallel_roots; /* of those, laid out in frame jobs */
-    uint64_t layouts;        /* nodes laid out (a protocol or leaf run with perform) */
-    uint64_t measures;       /* nodes measured without laying out */
-    uint64_t cached;         /* requests answered from the cache */
-    uint64_t measure_calls;  /* measure functions called */
-    uint64_t frames_changed; /* rounded frames that changed */
+    uint64_t roots;           /* layout roots laid out (boundaries and trees) */
+    uint64_t parallel_roots;  /* of those, laid out in frame jobs */
+    uint64_t layouts;         /* nodes laid out (a protocol or leaf run with perform) */
+    uint64_t measures;        /* nodes measured without laying out */
+    uint64_t cached;          /* requests answered from the cache */
+    uint64_t measure_calls;   /* measure functions called */
+    uint64_t frames_changed;  /* rounded frames that changed */
+    uint64_t present_layouts; /* nodes laid out for presentation (ax_layout_present) */
 } ax_layout_counters;
 
 /* ---- For protocols -----------------------------------------------------------------------------
@@ -132,8 +133,7 @@ AX_API bool ax_layout_is_tree_root(ax_layout_ctx *ctx, uint32_t row);
 /* Zeroes the layout of a subtree that takes no space (DISPLAY none). */
 AX_API void ax_layout_zero_subtree(ax_layout_ctx *ctx, uint32_t row);
 
-/* ---- Style resolution (shared by protocols)
- * ------------------------------------------------------ */
+/* ---- Style resolution (shared by protocols) ------------------------------------------------- */
 
 /* NaN for AUTO, the value in points, or a percentage of ref (NaN when ref is NaN). */
 static inline float ax_layout_resolve(ax_dimension d, float ref)
@@ -148,8 +148,7 @@ static inline float ax_layout_resolve(ax_dimension d, float ref)
     }
 }
 
-/* ---- The pass
- * ------------------------------------------------------------------------------------ */
+/* ---- The pass ------------------------------------------------------------------------------- */
 
 /* Asks for a window root's viewport: true when `root` (a parentless node) is a window root, with
  * its logical size and its pixel scale (rounding). */
@@ -189,6 +188,16 @@ AX_API void ax_layout_tree(struct ax_scene *scene, ax_node root, float owner_w, 
                            float scale);
 
 AX_API void ax_layout_get_counters(struct ax_scene *scene, ax_layout_counters *out, bool reset);
+
+/*
+ * The resize preset's hook (decision 94): lays the subtree under `row` out again with the node at
+ * exactly width x height, into `boxes` (an array indexed by row, at least the store's row count,
+ * zeroed before its first use), leaving the target layout, its caches and the mirror untouched.
+ * Every node of the subtree is laid out (no cache across sizes); results are not rounded. A
+ * child's presentation frame is then (pos[LEFT], pos[TOP], measured_w, measured_h) of its box.
+ */
+AX_API void ax_layout_present(struct ax_scene *scene, uint32_t row, float width, float height,
+                              ax_node_layout *boxes);
 
 /* Gives a leaf node a measure function (NULL removes it), marking it for layout. A node with a
  * measure function is laid out as a leaf: its children are not laid out.

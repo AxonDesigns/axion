@@ -297,8 +297,7 @@ AX_TEST(main_only_calls_report_wrong_thread_in_release)
 #endif
 }
 
-/* ---- marshalled calls when the main thread stops pumping (decision 42)
- * ---------------------------- */
+/* ---- marshalled calls when the main thread stops pumping (decision 42) ---------------------- */
 
 #include "common/platform_internal.h"
 

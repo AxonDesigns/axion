@@ -64,8 +64,7 @@ int axa_channel_of(ax_prop prop)
     }
 }
 
-/* ---- Transforms: CSS's 2D decomposition -------------------------------------------------------
- */
+/* ---- Transforms: CSS's 2D decomposition --------------------------------------------------- */
 
 void axa_decompose(ax_affine2 m, float out[AXA_MAX_COMPONENTS])
 {
@@ -251,8 +250,7 @@ static uint16_t lookup(world_impl *w, anim_state *a, uint32_t slot, int ch)
     return id;
 }
 
-/* ---- Transitions from transactions
- * ---------------------------------------------------------------- */
+/* ---- Transitions from transactions ---------------------------------------------------------- */
 
 void ax__anim_set_transition(world_impl *w, ax_node node, ax_prop prop, const ax_curve *c)
 {
@@ -284,8 +282,7 @@ void ax__anim_set_transition(world_impl *w, ax_node node, ax_prop prop, const ax
     }
 }
 
-/* ---- Tracks
- * ------------------------------------------------------------------------------------------ */
+/* ---- Tracks --------------------------------------------------------------------------------- */
 
 static float seconds(uint64_t from, uint64_t to)
 {
@@ -606,13 +603,58 @@ static bool animated_ok(bool animate, const frame_change *c, const ax_node_store
     return animate && c->had_frame && c->prev_parent == s->links[row].parent;
 }
 
-/* Frame changes since the last sample: animated when an animated transaction caused them, and
- * not a viewport's resize; a node that changed parent, or is new, takes its frame at once. */
+/* Whether a node's frame change animates: an animated transaction caused it, not a viewport's
+ * resize, and the node was laid out before under the same parent. */
+static uint16_t frame_curve(world_impl *w, anim_state *a, bool animate, const frame_change *c,
+                            uint32_t row)
+{
+    const ax_node_store *s = &w->scene.store;
+    uint16_t id;
+    if (!animated_ok(animate, c, s, row)) {
+        return 0;
+    }
+    id = lookup(w, a, c->slot, AXA_FRAME);
+    return curve_at(a, id)->kind == AX_TRANSITION_NONE ? 0 : id;
+}
+
+/* Whether one of the node's ancestors starts resizing in this cycle (listed in `resizing`). */
+static bool under_resizing(const ax_node_store *s, const uint32_t *resizing, uint32_t count,
+                           uint32_t row)
+{
+    uint32_t p = s->links[row].parent;
+    while (p != AX_NODE_NONE) {
+        uint32_t i;
+        for (i = 0; i < count; ++i) {
+            if (resizing[i] == p) {
+                return true;
+            }
+        }
+        p = s->links[s->slots[p].row].parent;
+    }
+    return false;
+}
+
+/* Frame changes since the last sample. A node under an ancestor that starts resizing in the same
+ * cycle follows it through the resize preset's relayout and does not animate its own change: a
+ * layout animation's descendants animate relative to it (decision 94). */
 static void frames(world_impl *w, anim_state *a)
 {
     const ax_node_store *s = &w->scene.store;
     const bool animate = a->any_animated && !a->viewport_changed;
-    uint32_t i;
+    uint32_t i, resizing_count = 0, resizing_cap = 0;
+    uint32_t *resizing = NULL;
+    for (i = 0; i < a->change_count; ++i) {
+        const frame_change *c = &a->changes[i];
+        ax_node node = ax_node_store_handle(s, c->slot);
+        uint32_t row = s->slots[c->slot].generation == c->generation ? ax_node_store_row(s, node)
+                                                                     : AX_NODE_NONE;
+        if (row != AX_NODE_NONE && s->links[row].first_child != AX_NODE_NONE &&
+            (c->prev.w != s->layout[row].frame.w || c->prev.h != s->layout[row].frame.h) &&
+            frame_curve(w, a, animate, c, row) != 0 &&
+            grow(w, (void **)&resizing, &resizing_cap, resizing_count + 1u, sizeof(uint32_t))) {
+            resizing[resizing_count++] = c->slot;
+        }
+    }
     for (i = 0; i < a->change_count; ++i) {
         const frame_change *c = &a->changes[i];
         ax_node node = ax_node_store_handle(s, c->slot);
@@ -625,8 +667,11 @@ static void frames(world_impl *w, anim_state *a)
             continue;
         }
         an = anim_node(w, node, false);
-        id = animated_ok(animate, c, s, row) ? lookup(w, a, c->slot, AXA_FRAME) : 0;
-        if (id == 0 || curve_at(a, id)->kind == AX_TRANSITION_NONE) {
+        id = frame_curve(w, a, animate, c, row);
+        if (id != 0 && under_resizing(s, resizing, resizing_count, row)) {
+            id = 0;
+        }
+        if (id == 0) {
             if (an != NULL && (an->active & 1u) != 0) {
                 memset(&an->track[AXA_FRAME], 0, sizeof an->track[AXA_FRAME]);
                 an->active &= ~1u;
@@ -643,11 +688,13 @@ static void frames(world_impl *w, anim_state *a)
         target_of(s, row, AXA_FRAME, to);
         retarget(w, a, an, AXA_FRAME, id, from, to, a->change_time);
     }
+    if (resizing != NULL) {
+        ax_mem_free(&w->allocator, resizing, sizeof(uint32_t) * resizing_cap);
+    }
     a->change_count = 0;
 }
 
-/* ---- Sampling
- * ----------------------------------------------------------------------------------------- */
+/* ---- Sampling ------------------------------------------------------------------------------- */
 
 static float clamp01(float v)
 {
@@ -772,4 +819,9 @@ void ax__anim_get_counters(world_impl *w, ax_anim_counters *out, bool reset)
             w->anim->counters.active = active;
         }
     }
+}
+
+uint64_t ax__anim_time(world_impl *w)
+{
+    return w->anim != NULL && w->anim->enabled ? w->anim->last_time : 0;
 }

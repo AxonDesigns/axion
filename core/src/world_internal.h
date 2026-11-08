@@ -260,6 +260,7 @@ void ax__anim_on_frame_changed(world_impl *w, uint32_t slot);
 void ax__anim_viewport_changed(world_impl *w);
 uint32_t ax__anim_step(world_impl *w, uint64_t t, void (*on_root)(world_impl *, uint32_t));
 const struct axa_node *ax__anim_node(world_impl *w, uint32_t row);
+uint64_t ax__anim_time(world_impl *w); /* the last sample's time; 0 before the animator runs */
 void ax__anim_get_counters(world_impl *w, ax_anim_counters *out, bool reset);
 
 #endif /* AX_CORE_WORLD_INTERNAL_H */

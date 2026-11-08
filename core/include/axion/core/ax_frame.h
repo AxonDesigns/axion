@@ -125,14 +125,16 @@ AX_API ax_result ax_world_record_root(ax_world world, ax_node root, ax_ir_builde
 
 /* Counters since the last reset, for tests and profiles. */
 typedef struct ax_frame_counters {
-    uint64_t frames_changed;  /* layout: frames that changed */
-    uint64_t nodes_recorded;  /* nodes whose items were recorded again */
-    uint64_t items_recorded;  /* items made from properties */
-    uint64_t items_reused;    /* items copied from the cache */
-    uint64_t layers;          /* layers recorded */
-    uint64_t layers_promoted; /* nodes that became layers */
-    uint64_t clips;           /* clip layers recorded (overflow hidden) */
-    uint64_t snapshots;       /* ax_world_record_root calls that succeeded */
+    uint64_t frames_changed;    /* layout: frames that changed */
+    uint64_t nodes_recorded;    /* nodes whose items were recorded again */
+    uint64_t items_recorded;    /* items made from properties */
+    uint64_t items_reused;      /* items copied from the cache */
+    uint64_t layers;            /* layers recorded */
+    uint64_t layers_promoted;   /* nodes that became layers */
+    uint64_t clips;             /* clip layers recorded (overflow hidden) */
+    uint64_t layers_demoted;    /* layers back in their parent's space after a neutral second */
+    uint64_t present_relayouts; /* resizing nodes whose children were laid out again */
+    uint64_t snapshots;         /* ax_world_record_root calls that succeeded */
 } ax_frame_counters;
 
 AX_API void ax_world_get_frame_counters(ax_world world, ax_frame_counters *out, bool reset);

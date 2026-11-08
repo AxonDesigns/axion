@@ -9,6 +9,7 @@
  * determinism (the same sequence gives the same bits).
  */
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "ax_test.h"
@@ -152,8 +153,7 @@ static ax_transition kind(ax_transition_kind k)
     return tr;
 }
 
-/* ---- Defaults, springs and the fast path
- * --------------------------------------------------------- */
+/* ---- Defaults, springs and the fast path ---------------------------------------------------- */
 
 AX_TEST(opacity_springs_to_its_target_without_recording_items_again)
 {
@@ -424,8 +424,7 @@ AX_TEST(bouncy_springs_stay_in_the_valid_range)
     pipe_stop(&p);
 }
 
-/* ---- Layout animations
- * ------------------------------------------------------------------------------ */
+/* ---- Layout animations ---------------------------------------------------------------------- */
 
 AX_TEST(reordered_cards_move_to_their_new_place)
 {
@@ -464,8 +463,7 @@ AX_TEST(reordered_cards_move_to_their_new_place)
     pipe_stop(&p);
 }
 
-/* ---- Determinism
- * ---------------------------------------------------------------------------------------- */
+/* ---- Determinism ---------------------------------------------------------------------------- */
 
 static void scripted(pipe *p)
 {
@@ -541,5 +539,100 @@ AX_TEST(a_rotation_animates_through_its_decomposition_on_the_fast_path)
     AX_CHECK_EQ_U(fc.items_recorded, 0);
     AX_CHECK_RESULT(ax_world_presentation(p.w, p.card[1], AX_PROP_TRANSFORM, &v), AX_OK);
     AX_CHECK(memcmp(&v.transform2d, &turned, sizeof turned) == 0); /* the target, exactly */
+    pipe_stop(&p);
+}
+
+/* The resize preset (decision 94): a card that grows lays its children out again at each
+ * interpolated width; at rest they match the target layout exactly. */
+AX_TEST(a_resizing_card_lays_its_children_out_at_every_interpolated_size)
+{
+    static pipe p;
+    ax_txn *t;
+    ax_node left, right;
+    ax_frame_counters fc;
+    ax_rect card, l, r;
+    uint64_t ms;
+    AX_REQUIRE(pipe_start(&p));
+    t = ax_txn_begin(p.w);
+    ax_txn_set_u32(t, p.card[0], AX_PROP_FLEX_DIRECTION, AX_FLEX_DIRECTION_ROW);
+    ax_txn_set_dimension(t, p.card[0], AX_PROP_PADDING, pt(4));
+    left = ax_txn_create(t, AX_NODE_VIEW);
+    right = ax_txn_create(t, AX_NODE_VIEW);
+    ax_txn_set_f32(t, left, AX_PROP_FLEX_GROW, 1.0f);
+    ax_txn_set_dimension(t, right, AX_PROP_WIDTH, pt(30));
+    ax_txn_set_color(t, left, AX_PROP_BACKGROUND_COLOR, ax_rgba_from_srgb(1, 0, 0, 1));
+    ax_txn_set_color(t, right, AX_PROP_BACKGROUND_COLOR, ax_rgba_from_srgb(0, 0, 1, 1));
+    ax_txn_append_child(t, p.card[0], left);
+    ax_txn_append_child(t, p.card[0], right);
+    ax_txn_set_animated(t, false);
+    commit(&p, t);
+    frame_at(&p, 116 * MS);
+    p.clock.now = 120 * MS;
+    t = ax_txn_begin(p.w);
+    ax_txn_set_dimension(t, p.card[0], AX_PROP_WIDTH, pt(300));
+    commit(&p, t);
+    ax_world_get_frame_counters(p.w, &fc, true);
+    frame_at(&p, 148 * MS);
+    frame_at(&p, 180 * MS);
+    card = frame_of(&p, p.card[0]);
+    AX_CHECK(card.w > 100.0f && card.w < 300.0f);
+    ax_world_get_frame_counters(p.w, &fc, true);
+    AX_CHECK(fc.present_relayouts >= 1);
+    /* The children fill the interpolated width: the dump shows the blue one at its right edge. */
+    {
+        char want[96];
+        (void)snprintf(want, sizeof want, "rect (%g 4 30 32)", (double)(card.w - 4.0f - 30.0f));
+        AX_CHECK(strstr(p.dump, want) != NULL);
+        if (strstr(p.dump, want) == NULL) {
+            printf("card %g; want %s in\n%s\n", (double)card.w, want, p.dump);
+        }
+    }
+    for (ms = 196; ms < 1500; ms += 16) {
+        frame_at(&p, ms * MS);
+    }
+    ax_world_get_frame_counters(p.w, &fc, true);
+    frame_at(&p, 1516 * MS);
+    ax_world_get_frame_counters(p.w, &fc, true);
+    AX_CHECK_EQ_U(fc.present_relayouts, 0); /* at rest: the target layout */
+    l = frame_of(&p, left);
+    r = frame_of(&p, right);
+    AX_CHECK(l.w == 300.0f - 8.0f - 30.0f && r.x == 300.0f - 4.0f - 30.0f);
+    pipe_stop(&p);
+}
+
+/* Demotion with hysteresis: a layer back at a neutral opacity for a second returns to its parent's
+ * space, recording its items there once. */
+AX_TEST(a_layer_neutral_for_a_second_is_demoted)
+{
+    static pipe p;
+    ax_txn *t;
+    ax_frame_counters fc;
+    uint64_t ms;
+    AX_REQUIRE(pipe_start(&p));
+    p.clock.now = 110 * MS;
+    t = ax_txn_begin(p.w);
+    ax_txn_set_f32(t, p.card[1], AX_PROP_OPACITY, 0.5f);
+    commit(&p, t);
+    frame_at(&p, 132 * MS);
+    p.clock.now = 140 * MS;
+    t = ax_txn_begin(p.w);
+    ax_txn_set_f32(t, p.card[1], AX_PROP_OPACITY, 1.0f);
+    commit(&p, t);
+    for (ms = 164; ms < 1000; ms += 16) {
+        frame_at(&p, ms * MS); /* back to 1 well within this */
+    }
+    ax_world_get_frame_counters(p.w, &fc, true);
+    AX_CHECK_EQ_U(fc.layers_demoted, 0); /* not yet a neutral second */
+    /* Something else changes later, so the window records again: past the second, demoted. */
+    p.clock.now = 2000 * MS;
+    t = ax_txn_begin(p.w);
+    ax_txn_set_color(t, p.card[2], AX_PROP_BACKGROUND_COLOR, ax_rgba_from_srgb(0, 1, 0, 1));
+    ax_txn_set_animated(t, false);
+    commit(&p, t);
+    frame_at(&p, 2032 * MS);
+    ax_world_get_frame_counters(p.w, &fc, true);
+    AX_CHECK_EQ_U(fc.layers_demoted, 1);
+    AX_CHECK_EQ_U(fc.nodes_recorded, 2); /* card 1 in its parent's space, card 2's new color */
+    AX_CHECK(strstr(p.dump, "layer 1") == NULL); /* no layer but the root */
     pipe_stop(&p);
 }

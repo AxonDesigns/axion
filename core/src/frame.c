@@ -34,8 +34,9 @@ typedef struct rec_entry {
     uint32_t layer;      /* slot of the layer whose space the items are in (AX_NODE_NONE: none) */
     ax_vec2 origin;      /* the node's top-left in that space */
     float width, height;
-    bool stale;    /* marked PAINT since (LAYOUT shows as a new size or origin) */
-    bool promoted; /* the node records a layer (sticky) */
+    bool stale;             /* marked PAINT since (LAYOUT shows as a new size or origin) */
+    bool promoted;          /* the node records a layer (until demoted, decision 94) */
+    uint64_t neutral_since; /* animator time since its layer has been neutral; 0: not neutral */
     uint8_t *items;
     uint32_t size, capacity;
 } rec_entry;
@@ -47,8 +48,10 @@ typedef struct rec_frame {
     ax_vec2 origin; /* the node's top-left in that layer's space */
     uint32_t next;  /* next child to visit; AX_NODE_NONE when done */
     bool entered;
-    bool pushed;  /* a layer was pushed for the node */
-    bool clipped; /* a clip layer was pushed for its children (overflow hidden) */
+    bool pushed;           /* a layer was pushed for the node */
+    bool clipped;          /* a clip layer was pushed for its children (overflow hidden) */
+    bool in_present;       /* its frame comes from a presentation relayout (the resize preset) */
+    bool children_present; /* its children's frames do */
 } rec_frame;
 
 struct frame_state {
@@ -58,6 +61,8 @@ struct frame_state {
     uint32_t rec_capacity;
     rec_frame *stack;
     uint32_t stack_capacity;
+    ax_node_layout *pbox; /* presentation relayouts (the resize preset), by row */
+    uint32_t pbox_capacity;
     ax_frame_counters counters;
 };
 
@@ -96,6 +101,7 @@ void ax__frame_free(world_impl *w)
     ax_mem_free(&w->allocator, f->rec, sizeof(rec_entry) * f->rec_capacity);
     ax_mem_free(&w->allocator, f->roots, sizeof(frame_root) * f->root_capacity);
     ax_mem_free(&w->allocator, f->stack, sizeof(rec_frame) * f->stack_capacity);
+    ax_mem_free(&w->allocator, f->pbox, sizeof(ax_node_layout) * f->pbox_capacity);
     ax_mem_free(&w->allocator, f, sizeof *f);
     w->frame = NULL;
 }
@@ -583,6 +589,8 @@ ax_result ax_world_record_root(ax_world world, ax_node root, ax_ir_builder *b)
     f->stack[0].entered = false;
     f->stack[0].pushed = false;
     f->stack[0].clipped = false;
+    f->stack[0].in_present = false;
+    f->stack[0].children_present = false;
     depth = 1;
     while (depth > 0) {
         rec_frame *top = &f->stack[depth - 1u];
@@ -597,10 +605,53 @@ ax_result ax_world_record_root(ax_world world, ax_node root, ax_ir_builder *b)
                 continue;
             }
             presentation(w, row, &pr);
-            /* The parent placed this node at its target frame's origin: add the animated
-             * offset of its position. */
-            top->origin.x += pr.frame.x - s->layout[row].frame.x;
-            top->origin.y += pr.frame.y - s->layout[row].frame.y;
+            {
+                /* The frame its animation offsets: the target, or, under a resizing ancestor,
+                 * the presentation relayout's (the resize preset, decision 94). */
+                const ax_rect target = s->layout[row].frame;
+                ax_rect base = target;
+                if (top->in_present) {
+                    const ax_node_layout *pb = &f->pbox[row];
+                    base = ax_rect_make(pb->pos[AX_EDGE_LEFT], pb->pos[AX_EDGE_TOP], pb->measured_w,
+                                        pb->measured_h);
+                    pr.frame.x += base.x - target.x;
+                    pr.frame.y += base.y - target.y;
+                    pr.frame.w = base.w + (pr.frame.w - target.w);
+                    pr.frame.h = base.h + (pr.frame.h - target.h);
+                    pr.frame.w = pr.frame.w > 0.0f ? pr.frame.w : 0.0f;
+                    pr.frame.h = pr.frame.h > 0.0f ? pr.frame.h : 0.0f;
+                }
+                /* The parent placed this node at its target frame's origin. */
+                top->origin.x += pr.frame.x - target.x;
+                top->origin.y += pr.frame.y - target.y;
+                top->children_present = top->in_present;
+                if ((pr.frame.w != base.w || pr.frame.h != base.h) &&
+                    s->links[row].first_child != AX_NODE_NONE &&
+                    grow(w, (void **)&f->pbox, &f->pbox_capacity, s->row_count,
+                         sizeof(ax_node_layout))) {
+                    /* Resizing: its children laid out again at the interpolated size. */
+                    ax_layout_present(&w->scene, row, pr.frame.w, pr.frame.h, f->pbox);
+                    f->counters.present_relayouts++;
+                    top->children_present = true;
+                }
+            }
+            {
+                /* Demotion with hysteresis: a layer whose transform, opacity and frame have been
+                 * neutral for a second goes back to its parent's space (one re-recording). */
+                const uint64_t now = ax__anim_time(w);
+                const bool neutral = is_identity(&c->transform) && c->opacity == 1.0f && !pr.moving;
+                if (e->promoted && neutral && now != 0) {
+                    if (e->neutral_since == 0) {
+                        e->neutral_since = now;
+                    } else if (now - e->neutral_since >= 1000000000ull) {
+                        e->promoted = false;
+                        e->neutral_since = 0;
+                        f->counters.layers_demoted++;
+                    }
+                } else if (!neutral) {
+                    e->neutral_since = 0;
+                }
+            }
             if (e->generation != s->slots[top->slot].generation) {
                 e->promoted = false; /* a new node in a reused slot */
                 e->generation = 0;
@@ -651,6 +702,8 @@ ax_result ax_world_record_root(ax_world world, ax_node root, ax_ir_builder *b)
             next->entered = false;
             next->pushed = false;
             next->clipped = false;
+            next->in_present = top->children_present;
+            next->children_present = false;
             continue;
         }
         if (top->clipped) {

@@ -79,6 +79,7 @@ typedef struct ax_scene {
     ax_component_type transitions_component; /* a node's own transitions */
     ax_component_type anim_component;        /* a node's running animations */
     uint32_t layout_pass;                    /* the newest pass */
+    uint32_t present_pass;                   /* the newest presentation pass (ax_layout_present) */
     ax_layout_counters layout_counters;
 } ax_scene;
 

@@ -171,8 +171,7 @@ ax_result ax_curve_from_transition(const ax_transition *t, ax_curve *out)
     return AX_OK;
 }
 
-/* ---- Easing
- * ----------------------------------------------------------------------------------------- */
+/* ---- Easing --------------------------------------------------------------------------------- */
 
 static float bez(float p1, float p2, float u)
 {
@@ -314,8 +313,7 @@ bool ax_curve_progress(const ax_curve *c, float t, float *progress, float *rate)
     return false;
 }
 
-/* ---- Springs and decay
- * ----------------------------------------------------------------------------- */
+/* ---- Springs and decay ---------------------------------------------------------------------- */
 
 void ax_spring_eval(float k, float c, float m, float x0, float v0, float t, float *x, float *v)
 {

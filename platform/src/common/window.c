@@ -307,8 +307,7 @@ ax_result ax_window_set_hit_regions(ax_window window, const ax_hit_region *regio
     return AX_OK;
 }
 
-/* ---- surfaces
- * ------------------------------------------------------------------------------------ */
+/* ---- surfaces ------------------------------------------------------------------------------- */
 
 ax_result ax_surface_get_info(ax_surface surface, ax_surface_info *out_info)
 {
