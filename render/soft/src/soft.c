@@ -24,7 +24,22 @@ struct ax_render_soft {
     uint32_t ctx_count;
     ax_atomic_u64 free_ctx; /* bit i: ctx[i] is free */
     ax_render_soft_stats stats;
+    void *user; /* the window side's state (surface.c), freed with the renderer */
+    size_t user_size;
 };
+
+void *ax__render_soft_alloc_user(ax_render_soft *r, size_t size)
+{
+    AX_ASSERT(r->user == NULL);
+    r->user = ax_mem_alloc(&r->allocator, size, 16);
+    r->user_size = r->user != NULL ? size : 0;
+    return r->user;
+}
+
+void *ax__render_soft_user(ax_render_soft *r)
+{
+    return r->user;
+}
 
 /* One job: every `step`-th tile from `first`. */
 typedef struct tile_job {
@@ -101,6 +116,9 @@ void ax_render_soft_destroy(ax_render_soft *r)
         free_ctx(r, &r->ctx[i]);
     }
     ax_arena_deinit(&r->scratch);
+    if (r->user != NULL) {
+        ax_mem_free(&r->allocator, r->user, r->user_size);
+    }
     a = r->allocator;
     ax_mem_free(&a, r, sizeof *r);
 }

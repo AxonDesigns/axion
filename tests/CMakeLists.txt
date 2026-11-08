@@ -185,7 +185,7 @@ endif()
 if(NOT AX_BUILD_PLATFORM)
     # These need the platform module's SDK.
     list(REMOVE_ITEM _ax_headers "axion/gpu/ax_gpu_surface.h" "axion/render/ax_renderer.h"
-         "axion/render/ax_render_wgpu_surface.h")
+         "axion/render/ax_render_wgpu_surface.h" "axion/render/ax_render_soft_surface.h")
 endif()
 set(_ax_header_tus "")
 foreach(_h IN LISTS _ax_headers)

@@ -75,6 +75,17 @@ typedef struct wl_frame_record {
 
 #define AX_WL_MAX_FRAMES_IN_FLIGHT 8
 
+/* One CPU buffer of a window (wl_shm_present.c). */
+typedef struct wl_shm_slot {
+    int fd;
+    struct wl_shm_pool *pool;
+    struct wl_buffer *buffer;
+    void *pixels;
+    size_t size; /* bytes mapped */
+    uint32_t width, height;
+    bool busy; /* attached and not released by the compositor yet */
+} wl_shm_slot;
+
 struct wl_window;
 
 /*
@@ -111,6 +122,11 @@ typedef struct wl_window {
     bool frame_done; /* presenter-owned */
     wl_frame_record frames[AX_WL_MAX_FRAMES_IN_FLIGHT];
     int applied_buffer_scale; /* presenter-owned: last wl_surface.set_buffer_scale */
+
+    /* presenter-owned: CPU buffers (wl_shm_present.c), created through a wl_shm wrapper bound to
+     * the private queue, so their release events arrive when the presenter dispatches it */
+    struct wl_shm *shm_wrapper;
+    wl_shm_slot shm[4];
 
     /* main thread: configure assembly */
     int32_t pending_width, pending_height; /* from xdg_toplevel.configure; 0 = client decides */
@@ -158,6 +174,12 @@ void ax_wl_surface_commit_failed(ax_window_impl *w);
 void ax_wl_surface_drop_frame(ax_window_impl *w);
 uint32_t ax_wl_surface_commits_in_flight(ax_window_impl *w);
 void ax_wl_present_window_destroyed(ax_window_impl *w);
+
+struct ax_cpu_buffer;
+ax_result ax_wl_cpu_acquire(ax_window_impl *w, uint32_t width, uint32_t height,
+                            struct ax_cpu_buffer *out);
+void ax_wl_cpu_present(ax_window_impl *w, uint32_t slot);
+void ax_wl_cpu_release(ax_window_impl *w);
 
 /* wl_pointer.c */
 void ax_wl_seat_bound(ax_app_impl *app);

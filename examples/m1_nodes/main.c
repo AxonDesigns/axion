@@ -11,7 +11,8 @@
  *                  changes a color every second, and with --block-ms blocks itself on purpose
  *   scene thread   the runtime's: applies transactions at each vsync, positions, records the
  *                  Render IR from the tree, publishes the mirror
- *   render thread  the runtime's: presents with ax_render_wgpu
+ *   render thread  the runtime's: presents with ax_render_wgpu, or with ax_render_soft into
+ *                  shared-memory buffers (--renderer=soft, or when no GPU is usable)
  *
  * Motion. Implicit animations do not exist yet, so a scene driver that exists only in this
  * example (slide() below, ax_rt_scene_driver) turns and moves nodes at every tick from the
@@ -21,7 +22,7 @@
  *
  * Usage: m1_nodes [--decorations=native|none] [--stats] [--duration=SECONDS] [--width=W]
  *                 [--height=H] [--block-ms=MS] [--block-every=SECONDS]
- *                 [--adapter=default|software] [--max-wait-ms=MS]
+ *                 [--adapter=default|software] [--max-wait-ms=MS] [--renderer=gpu|soft]
  *                 [--pacing=default|compositor|driver]
  *                 [--present-mode=default|fifo|fifo-relaxed|mailbox|immediate]
  *
@@ -43,6 +44,7 @@
 #include "axion/core/ax_world_sdk.h"
 #include "axion/gpu/ax_gpu_surface.h"
 #include "axion/platform/ax_hit_regions.h"
+#include "axion/render/ax_render_soft_surface.h"
 #include "axion/render/ax_render_wgpu.h"
 #include "axion/runtime/ax_runtime_platform.h"
 
@@ -69,6 +71,7 @@ typedef struct options {
     float width, height;
     double block_ms, block_every;
     int adapter, pacing, present_mode;
+    int soft; /* --renderer=soft */
     uint64_t max_wait_ns;
 } options;
 
@@ -97,7 +100,7 @@ typedef struct shared {
 static const char usage[] =
     "usage: %s [--decorations=native|none] [--stats] [--duration=SECONDS] [--width=W]\n"
     "          [--height=H] [--block-ms=MS] [--block-every=SECONDS]\n"
-    "          [--adapter=default|software] [--max-wait-ms=MS]\n"
+    "          [--adapter=default|software] [--max-wait-ms=MS] [--renderer=gpu|soft]\n"
     "          [--pacing=default|compositor|driver]\n"
     "          [--present-mode=default|fifo|fifo-relaxed|mailbox|immediate]\n";
 
@@ -129,6 +132,10 @@ static int parse_options(int argc, char **argv, options *o)
             o->block_every = atof(a + 14);
         } else if (strncmp(a, "--max-wait-ms=", 14) == 0) {
             o->max_wait_ns = (uint64_t)(atof(a + 14) * 1e6);
+        } else if (strcmp(a, "--renderer=gpu") == 0) {
+            o->soft = 0;
+        } else if (strcmp(a, "--renderer=soft") == 0) {
+            o->soft = 1;
         } else if (strcmp(a, "--adapter=default") == 0) {
             o->adapter = AX_GPU_ADAPTER_DEFAULT;
         } else if (strcmp(a, "--adapter=software") == 0) {
@@ -414,16 +421,18 @@ static void print_stats(shared *s, ax_runtime rt, ax_rt_window_counters *prev, l
     if (ax_rt_get_window_counters(rt, s->window, &c) != AX_OK) {
         return;
     }
-    printf("stats: presented %llu | missed %llu | frames %llu | snapshots shown %llu | refresh "
-           "%.3f ms | scene late %llu | forced %llu | color change -> screen %.2f ms (max %.2f) "
-           "| app blocked %.0f ms\n",
-           (unsigned long long)(c.presented - prev->presented),
-           (unsigned long long)(c.missed_vblanks - prev->missed_vblanks),
-           (unsigned long long)(c.frames - prev->frames),
-           (unsigned long long)(c.snapshots_shown - prev->snapshots_shown),
-           (double)c.refresh_ns / 1e6, (unsigned long long)(c.scene_late - prev->scene_late),
-           (unsigned long long)(c.forced_acks - prev->forced_acks), (double)l->last_ns / 1e6,
-           (double)l->max_ns / 1e6, blocked_ms);
+    printf(
+        "stats: %s | presented %llu | missed %llu | frames %llu | snapshots shown %llu | refresh "
+        "%.3f ms | scene late %llu | forced %llu | color change -> screen %.2f ms (max %.2f) "
+        "| app blocked %.0f ms\n",
+        ax_rt_renderer_vtbl(rt) == ax_render_soft_vtbl() ? "soft" : "gpu",
+        (unsigned long long)(c.presented - prev->presented),
+        (unsigned long long)(c.missed_vblanks - prev->missed_vblanks),
+        (unsigned long long)(c.frames - prev->frames),
+        (unsigned long long)(c.snapshots_shown - prev->snapshots_shown), (double)c.refresh_ns / 1e6,
+        (unsigned long long)(c.scene_late - prev->scene_late),
+        (unsigned long long)(c.forced_acks - prev->forced_acks), (double)l->last_ns / 1e6,
+        (double)l->max_ns / 1e6, blocked_ms);
     fflush(stdout);
     *prev = c;
     l->max_ns = 0;
@@ -469,6 +478,9 @@ static int app_thread(void *arg)
     memset(&pd, 0, sizeof pd);
     pd.app = s->app;
     pd.renderer_desc = &rd;
+    if (s->opt.soft) {
+        pd.renderer = ax_render_soft_vtbl(); /* pinned; wd is ignored */
+    }
     pd.max_wait_ns = s->opt.max_wait_ns;
     pd.driver = slide;
     pd.driver_user = &s->m;

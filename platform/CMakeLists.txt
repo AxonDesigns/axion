@@ -17,12 +17,14 @@ set(_ax_platform_common
     src/common/frame_clock.c
     src/common/hit_test.c
     src/common/present.c
+    src/common/present_cpu.c
     src/common/window.c)
 
 set(_ax_platform_wayland
     src/wayland/wl_app.c
     src/wayland/wl_pointer.c
     src/wayland/wl_present.c
+    src/wayland/wl_shm_present.c
     src/wayland/wl_window.c)
 
 add_library(ax_platform STATIC ${_ax_platform_common} ${_ax_platform_wayland})

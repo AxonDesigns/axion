@@ -228,6 +228,7 @@ void ax_wl_present_window_destroyed(ax_window_impl *w)
 {
     wl_window *ww = wl_window_of(w);
     int i;
+    ax_wl_cpu_release(w);
     if (ww->frame_callback != NULL) {
         wl_callback_destroy(ww->frame_callback);
         ww->frame_callback = NULL;

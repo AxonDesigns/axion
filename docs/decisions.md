@@ -3519,7 +3519,7 @@ corrupt input under ASan.
     `AX_TEST_FAILURE_DIR` (default `golden-failures/` in the test's directory). CI sets it in every
     job and uploads it when a job fails (`golden-failures-<job>`);
   - with `AX_TEST_IMAGE_DIR` set, every image checked is written there too, for the cross-platform
-    comparison (decision 84's CI job).
+    comparison (decision 85's CI job).
 - **The goldens of this step** (`tests/unit/render_soft/test_goldens.c`): the seven coverage
   scenes, the rotating hairline fan (four frames, 1.7 degrees apart), the zone plate, the zone
   plate behind three nested rounded clips (the middle one turned 9 degrees), group opacity and
@@ -3568,6 +3568,55 @@ ax_render_wgpu into an RGBA8 texture and with ax_render_soft, and compares the t
 - **CI:** the coverage jobs (Dawn on lavapipe, wgpu-native on lavapipe, Dawn on Metal) run these
   tests, and `compare-coverage` still compares their images with each other within 3/255.
 - decision 56's supersampled reference stays as a test of the software renderer itself.
+
+**Status.** Implementation, pending the owner's approval.
+
+## 84. CPU presentation in platform; ax_render_soft in windows; the fallback
+
+**Context.** The owner asked that in a window, as the last resort, the software renderer present
+through a CPU presentation interface in platform (wl_shm on Wayland) that the renderer uses
+without knowing about Wayland. The document's fallback chain: WebGPU first, then GL (when linked),
+then software, unless the app pins one.
+
+**Decision.**
+- **`axion/platform/ax_present_cpu.h`** (internal SDK, presenter thread): `ax_surface_cpu_acquire`
+  gives a free buffer of the frame's pixel size (premultiplied, 8 bits per channel,
+  `AX_CPU_FORMAT_BGRA8`), `ax_surface_cpu_present` prepares the commit (`ax_surface_prepare_commit`:
+  the configure's acknowledgement, scale, frame callback, feedback) and commits the buffer, wholly
+  damaged; `ax_surface_cpu_release` frees the surface's buffers. Three optional operations of the
+  backend table; a backend without them reports `AX_ERR_UNSUPPORTED`.
+  - When every buffer is still held by the compositor, acquire returns `AX_ERR_OUT_OF_MEMORY`: the
+    frame is skipped and retried at the next one.
+- **Wayland** (`platform/src/wayland/wl_shm_present.c`): up to four buffers per window, each a
+  memfd mapped once, its own `wl_shm_pool` and an ARGB8888 `wl_buffer` (B, G, R, A in memory on
+  little-endian hosts, premultiplied as Wayland requires). They are created through a `wl_shm`
+  proxy wrapper bound to the window's private queue, so `wl_buffer.release` arrives when the
+  presenter dispatches it, as frame callbacks do. A buffer is busy from its commit to its release;
+  a new size replaces a free buffer of another size. Window destruction frees them. `platform/`
+  used wl_shm only for cursors until now; `examples/m0_window`'s shm path stays an example.
+- **`ax_render_soft_vtbl()`** (`axion/render/ax_render_soft_surface.h`, built with the platform
+  module): the renderer interface over those buffers, with the interface's rules: nothing until
+  configured; `ONLY_IF_REQUIRED`; a configure is acknowledged only with a snapshot of its logical
+  size (`AX_FRAME_CONTENT_MISMATCH` otherwise) unless `ACCEPT_ANY_SIZE`; a frame without a snapshot
+  is the background (`AX_FRAME_CLEARED`); `wait_frame` and `wait_frames` are the platform's, paced
+  by frame callbacks. Statistics per surface: frames, time to the first frame, mismatches, sizes
+  accepted, frames skipped because every buffer was busy. Decision 48's drain does not apply:
+  shm commits do not queue in the compositor like a FIFO swapchain's.
+- **The runtime's fallback** (`runtime/src/platform.c`): with no renderer pinned
+  (`ax_rt_platform_desc.renderer` NULL) the platform presenter uses ax_render_wgpu when the gpu
+  module is built, and **ax_render_soft when it is not, or when ax_render_wgpu cannot be created**
+  (no usable GPU). The software renderer's tiles run on the runtime's job system (frame priority,
+  decision 80). `ax_render_soft_vtbl()` pins it. `ax_rt_renderer_vtbl(rt)` (any thread) tells which
+  renderer presents. `m1_nodes --renderer=soft` pins it, and `--stats` prints which one draws.
+- **Measured** (`m1_nodes`, 800 x 500 at scale 1, headless weston 15 with pixman, Release):
+  ax_render_soft presents 60 frames a second with 0 missed; Debug reaches about 21. Without a
+  Vulkan driver (`VK_DRIVER_FILES` pointing nowhere) the default chain falls back to the software
+  renderer and presents the same; with lavapipe it presents with ax_render_wgpu.
+- **Tests** (`tests/integration/wayland/test_soft_pipeline.c`, label `wayland`, headless weston,
+  no GPU): the tree presented with the software renderer and `on_presented` reporting it; a maximize
+  answered with a snapshot of the new size, without a forced acknowledgement; the fallback (the test
+  runs without a Vulkan driver); argument errors of the CPU interface. Under ASan with the rest of
+  the Wayland suites.
 
 **Status.** Implementation, pending the owner's approval.
 

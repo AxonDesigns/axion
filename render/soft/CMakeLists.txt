@@ -17,6 +17,12 @@ target_include_directories(ax_render_soft
 target_link_libraries(ax_render_soft PUBLIC ax_render_ir ax_base)
 ax_target_defaults(ax_render_soft)
 
+# Windows: the ax_renderer_vtbl over the platform's CPU buffers (decision 84).
+if(AX_BUILD_PLATFORM)
+    target_sources(ax_render_soft PRIVATE src/surface.c)
+    target_link_libraries(ax_render_soft PUBLIC ax_platform)
+endif()
+
 # The web build's SIMD path needs WebAssembly SIMD128 (every current browser and Node). Without
 # it the renderer uses its scalar path, which gives the same bytes.
 if(EMSCRIPTEN)

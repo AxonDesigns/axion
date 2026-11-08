@@ -115,6 +115,11 @@ ax_result ax__soft_prepare(const ax_render_ir *ir, uint32_t width, uint32_t heig
                            bool linear_default, ax_arena *arena, soft_frame *out,
                            ax_render_counts *counts);
 
+/* State another part of the renderer (surface.c) keeps with it, freed by ax_render_soft_destroy.
+ * One allocation per renderer. */
+void *ax__render_soft_alloc_user(ax_render_soft *r, size_t size);
+void *ax__render_soft_user(ax_render_soft *r);
+
 /* ---- tiles (raster.c) ------------------------------------------------------------------------ */
 
 /* One thread's tile buffers: the base and one per open group, each four planes of floats. */
