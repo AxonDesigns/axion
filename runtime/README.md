@@ -12,4 +12,5 @@ Runtime: runs a world's frame pipeline (decision 77).
 
 The scene stage and the single-threaded mode depend on core and the Render IR only. The threads
 need base's threads; the platform presenter (windows, the renderer, decision 57's frame step) is
-built with the platform module, and uses ax_render_wgpu when the gpu module is built.
+built with the platform module, and uses ax_render_wgpu when the gpu module is built, falling back
+to ax_render_soft in shared-memory buffers when it is not or no GPU is usable (decision 84).

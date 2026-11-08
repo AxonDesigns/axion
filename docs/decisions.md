@@ -93,6 +93,14 @@ new entry that points back to the old one.
 | 77  | The runtime, the frame's order and the single thread     | Approved       |
 | 78  | The scene and render threads; vsync on the render thread | Deviation      |
 | 79  | The cooperative mode's tests in Node                     | Approved       |
+| 80  | Job priorities: frame and background                     | Implementation |
+| 81  | `ax_render_soft`: the software renderer and determinism  | Implementation |
+| 82  | Golden images: PNG in the repository, updated on purpose | Implementation |
+| 83  | GPU renderers against the software reference             | Implementation |
+| 84  | CPU presentation; ax_render_soft in windows; fallback    | Implementation |
+| 85  | The headless host and its C testing API                  | Implementation |
+| 86  | Images byte-identical on every platform: the CI job      | Implementation |
+| 87  | Reference measurements: ax_render_soft on m1_nodes       | Implementation |
 
 ---
 
@@ -3695,6 +3703,49 @@ and automation and MCP (M2, M3) are out of scope.
     the test keeps them loaded and uses the gpu tests' LeakSanitizer suppressions.
   - Under ASan, TSan (3 runs) and in Node: clean. `core.txn` gains the committed sequence (aborted and
     failed transactions take none) and `AX_MAX_WORLDS` worlds at once.
+
+**Status.** Implementation, pending the owner's approval.
+
+## 86. Images byte-identical on every platform: the CI job
+
+**Context.** The owner asked that the same headless test give byte-identical images on Linux,
+macOS, Windows and Emscripten, checked by a job that compares the artifacts as compare-coverage
+does, with core, render/soft and headless building on Windows and in the single-threaded
+Emscripten build.
+
+**Decision.**
+- **What makes it hold** (decision 81): no contraction in any AXION target, no libm transcendental
+  function (base's rotation and sRGB conversions are deterministic, so the IR built by core and the
+  tests is too), no denormals, a SIMD path with the scalar path's bits, tiles independent of the
+  thread count; and decision 82's PNG encoder, whose output depends only on the pixels, so equal
+  files mean equal pixels.
+- **The job** (`compare-determinism`, `tools/ci/compare_images.py`): the release jobs of Linux
+  (Clang, x86-64, SSE2), macOS (Clang, arm64, NEON) and Windows (MSVC, x64, SSE2), and the web job
+  (Node, SIMD128), run the tests with `AX_TEST_IMAGE_DIR`, so every image a golden test checks is
+  also written there (decision 82), and upload them (`images-<platform>`). The job requires every
+  platform's set to be the same files with the same bytes, and reports the first differing pixel
+  of a file that differs. It covers every software-renderer golden (the coverage and torture
+  scenes, group opacity, linear layers) and the headless host's card UI, which goes through
+  core's transactions, the runtime and the presenter: 16 images.
+- **Platforms:** core, render/soft and headless build on Windows (MSVC, Debug and Release) and in the
+  single-threaded Emscripten build, whose test job now includes the `render_soft` and `headless`
+  labels (tests that need threads or a GPU skip there).
+- **The web tests and the environment.** Emscripten 4.0.10 (CI's version) gives a program in Node
+  only its default environment, so the tests did not see `AX_TEST_IMAGE_DIR` and the web job
+  uploaded nothing; Emscripten 5 mirrors Node's environment (`NODE_HOST_ENV`), which is why it
+  worked on a machine with 5.0.2. `tests/harness/node_env.js`, a `--pre-js` of every web test,
+  copies `process.env` into the program's environment before `main` (only in programs that read
+  it). The web tests also link `-sNODERAWFS=1` (the host's files: goldens, artifacts) and
+  `-sALLOW_MEMORY_GROWTH=1`.
+- **Measured:** CI's Linux, macOS and Windows images were identical byte for byte (16 of 16), and
+  equal to a local x86-64 build's and to the Emscripten build's in Node with both 4.0.10 and 5.0.2.
+- **TSan** now also runs the `render_soft` and `headless` labels (tiles on the job system, eight
+  instances on threads, the threaded host).
+- **Fixed in the same step:** `runtime.threads.a_blocked_app_thread_does_not_stop_frames` (decision
+  78) failed twice on the macOS ASan runner with 30 frames blocked against 33 not blocked: timed
+  waits wake late there, so the unblocked window (many 10 ms waits) lasted longer than 500 ms and
+  held more frames. The check now scales the reference to the two windows' measured lengths; the
+  slack of two frames stays.
 
 **Status.** Implementation, pending the owner's approval.
 
