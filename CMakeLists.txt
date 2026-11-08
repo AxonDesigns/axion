@@ -59,6 +59,7 @@ endif()
 add_subdirectory(render)
 add_subdirectory(core)
 add_subdirectory(runtime)
+add_subdirectory(headless)
 
 if(AX_BUILD_EXAMPLES)
     add_subdirectory(examples)

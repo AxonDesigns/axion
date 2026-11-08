@@ -6,6 +6,7 @@
 
 set(_ax_render_soft_tests
     test_determinism.c
+    test_goldens.c
     test_reference.c
     test_simd.c
     test_soft.c)
@@ -19,3 +20,11 @@ endforeach()
 target_sources(test_render_soft_reference PRIVATE coverage_reference.c)
 # test_simd compares the two paths through the renderer's internals.
 target_include_directories(test_render_soft_simd PRIVATE "${PROJECT_SOURCE_DIR}/render/soft/src")
+target_link_libraries(test_render_soft_goldens PRIVATE ax_test_golden)
+# The goldens also carry the label `golden`, which the update_goldens target runs.
+get_property(_tests DIRECTORY PROPERTY TESTS)
+foreach(_test IN LISTS _tests)
+    if(_test MATCHES "^render_soft\\.goldens\\.")
+        set_property(TEST "${_test}" APPEND PROPERTY LABELS golden)
+    endif()
+endforeach()

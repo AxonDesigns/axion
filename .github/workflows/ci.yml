@@ -106,12 +106,18 @@ jobs:
         shell: bash
         run: mkdir -p "${{ runner.temp }}/coverage"
 
+      # Golden-image failures write the actual, expected and difference images here (decision 82).
+      - name: Golden failure directory
+        shell: bash
+        run: mkdir -p "${{ runner.temp }}/golden-failures"
+
       # gpu/ tests fail instead of skipping when no adapter exists (macOS runners have Metal).
       - name: Test
         if: runner.os != 'Linux'
         env:
           AX_REQUIRE_GPU_TESTS: "1"
           AX_TEST_ARTIFACT_DIR: ${{ matrix.coverage && format('{0}/coverage', runner.temp) || '' }}
+          AX_TEST_FAILURE_DIR: ${{ runner.temp }}/golden-failures
         run: ctest --preset ${{ matrix.preset }} ${{ matrix.test_args }}
 
       # Linux also runs the Wayland integration tests against a headless weston.
@@ -122,7 +128,16 @@ jobs:
           AX_TEST_GPU_ADAPTER: software
           AX_REQUIRE_GPU_TESTS: "1"
           AX_TEST_ARTIFACT_DIR: ${{ matrix.coverage && format('{0}/coverage', runner.temp) || '' }}
+          AX_TEST_FAILURE_DIR: ${{ runner.temp }}/golden-failures
         run: tools/ci/with-weston.sh ctest --preset ${{ matrix.preset }} ${{ matrix.test_args }}
+
+      - name: Upload golden failures
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: golden-failures-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/golden-failures
+          if-no-files-found: ignore
 
       - name: Upload coverage images
         if: matrix.coverage
@@ -244,4 +259,16 @@ jobs:
         run: cmake --build --preset emscripten-tests -- -k 0
 
       - name: Test (Node)
-        run: ctest --preset emscripten-tests
+        env:
+          AX_TEST_FAILURE_DIR: ${{ runner.temp }}/golden-failures
+        run: |
+          mkdir -p "$AX_TEST_FAILURE_DIR"
+          ctest --preset emscripten-tests
+
+      - name: Upload golden failures
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: golden-failures-web
+          path: ${{ runner.temp }}/golden-failures
+          if-no-files-found: ignore

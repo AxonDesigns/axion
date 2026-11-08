@@ -84,8 +84,9 @@ int main(int argc, char **argv)
     target_link_libraries(${_exe} PRIVATE ax_test_harness ax_base)
     ax_target_defaults(${_exe})
     if(EMSCRIPTEN)
-        # Tests in Node: a heap that grows past Emscripten's default 16 MB.
-        target_link_options(${_exe} PRIVATE "-sALLOW_MEMORY_GROWTH=1")
+        # Tests in Node: a heap that grows past Emscripten's default 16 MB, and the host's file
+        # system (goldens, artifacts) instead of an in-memory one.
+        target_link_options(${_exe} PRIVATE "-sALLOW_MEMORY_GROWTH=1" "-sNODERAWFS=1")
     endif()
 
     foreach(_case IN LISTS _cases)
@@ -112,10 +113,28 @@ target_include_directories(ax_test_scenes PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/sc
 target_link_libraries(ax_test_scenes PUBLIC ax_render_ir)
 ax_target_defaults(ax_test_scenes)
 
+# Golden images (decision 82): tests/goldens/<suite>/<name>.png, compared by axt_golden.h.
+add_library(ax_test_golden STATIC harness/axt_golden.c)
+target_include_directories(ax_test_golden PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/harness")
+target_link_libraries(ax_test_golden PUBLIC ax_test_harness ax_headless)
+target_compile_definitions(ax_test_golden PRIVATE
+    "AX_TEST_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/goldens\"")
+ax_target_defaults(ax_test_golden)
+
+# Rewrites every golden from what the tests draw now. On purpose only (tools/update_goldens.sh
+# runs it); the tests refuse when the CI variable is set.
+add_custom_target(update_goldens
+    COMMAND "${CMAKE_COMMAND}" -E env AX_UPDATE_GOLDENS=1
+            "${CMAKE_CTEST_COMMAND}" -L golden --output-on-failure
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+    COMMENT "Updating the golden images in tests/goldens"
+    USES_TERMINAL)
+
 add_subdirectory(unit/harness)
 add_subdirectory(unit/base)
 add_subdirectory(unit/render_ir)
 add_subdirectory(unit/render_soft)
+add_subdirectory(unit/headless)
 add_subdirectory(unit/core)
 add_subdirectory(unit/runtime)
 add_subdirectory(bench)
@@ -133,7 +152,7 @@ endif()
 
 # Every header must compile on its own (includes what it uses). One generated translation unit
 # per header, built with the same strict settings; failure breaks the build.
-set(_ax_header_modules base core)
+set(_ax_header_modules base core headless)
 if(AX_BUILD_PLATFORM)
     list(APPEND _ax_header_modules platform)
 endif()
@@ -176,7 +195,7 @@ foreach(_h IN LISTS _ax_headers)
     list(APPEND _ax_header_tus "${_tu}")
 endforeach()
 add_library(ax_header_check OBJECT ${_ax_header_tus})
-target_link_libraries(ax_header_check PRIVATE ax_base ax_core ax_render_ir ax_render_soft)
+target_link_libraries(ax_header_check PRIVATE ax_base ax_core ax_render_ir ax_render_soft ax_headless)
 if(AX_BUILD_PLATFORM)
     target_link_libraries(ax_header_check PRIVATE ax_platform ax_render_frame)
 endif()

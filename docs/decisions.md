@@ -3472,3 +3472,60 @@ included; the window part comes with decision 83.
 
 **Status.** Implementation, pending the owner's approval.
 
+## 82. Golden images: PNG in the repository, updated only on purpose
+
+**Context.** The owner asked for golden PNGs in the repository, updated only with an explicit
+command and never in CI, with a failure uploading the difference image as an artifact; and for
+AXION's own PNG codec, whose deflate really compresses and whose inflate is tested against
+corrupt input under ASan.
+
+**Decision.**
+- **Codec** (`headless/include/axion/headless/ax_png.h`, `headless/src/png.c`, in the headless
+  module, which needs it for snapshots):
+  - the encoder writes 8-bit RGB when every pixel is opaque, RGBA otherwise, non-interlaced, with
+    an `sRGB` chunk; per row the filter with the smallest sum of absolute values; one deflate block
+    with fixed Huffman codes over greedy LZ77 matches (hash chains of 64 links, 32 KiB window).
+    The output depends only on the pixels: the same image is the same file on every platform
+    (`headless.png.encoding_is_pinned_byte_for_byte` pins a hash of it). A 256 x 256 gradient
+    takes 1.7 KB; the goldens of this step take 172 KB together;
+  - the decoder reads 8-bit grey, grey and alpha, RGB and RGBA, every filter and any zlib stream
+    (stored, fixed and dynamic Huffman blocks; inflate after zlib's reference decoder, puff), and
+    checks every chunk CRC, the zlib header and Adler-32 and the exact length of the image data.
+    Palette, 16-bit and interlaced images are `AX_ERR_UNSUPPORTED`; corrupt files
+    `AX_ERR_INVALID_ARGUMENT` (also for files that cannot be opened: the stable ABI has no I/O
+    error code, and this does not justify one);
+  - PNG stores straight alpha. Renderers' premultiplied pixels are divided by alpha with integer
+    rounding (`AX_PNG_PREMULTIPLIED`, `ax_rgba_unpremultiply`), lossless for opaque pixels.
+  - Tests (`tests/unit/headless/test_png.c`, label `headless`): round trips; files written by
+    Python's zlib (`gen_png_samples.py`; stored, fixed and dynamic blocks, every filter, grey,
+    grey and alpha, RGB, RGBA) decode to their pixels; the unsupported kinds; premultiplied input;
+    real compression; **corrupt input**: every truncation of four files, 6000 files with one to
+    three flipped bits whose chunk CRCs are repaired so the flips reach the parser and inflate, and
+    500 random ones, each decoded from a buffer of exactly its size so ASan sees any read past it:
+    an error or a valid image, never a crash. Under ASan and UBSan with GCC and Clang. Python's
+    zlib also reads AXION's files back (checked while writing it).
+- **Goldens** (`tests/harness/axt_golden.h`, library `ax_test_golden`):
+  - `tests/goldens/<suite>/<name>.png`, compared after the same conversion to straight alpha the
+    golden went through, so it holds exactly what the comparison saw;
+  - **exact** for the software renderer, which is deterministic (decision 81); a per-channel
+    tolerance argument exists for goldens of other renderers;
+  - **updated only on purpose:** `tools/update_goldens.sh [preset]` builds and runs the
+    `update_goldens` target, which runs the tests labelled `golden` with `AX_UPDATE_GOLDENS=1`. A
+    test refuses to update when the `CI` variable is set (GitHub sets it), and fails. New PNGs are
+    reviewed before they are committed;
+  - **on a mismatch** the test writes `<suite>__<name>.actual.png`, `.expected.png` and `.diff.png`
+    (grey where both agree, red where they differ, brighter for bigger differences) to
+    `AX_TEST_FAILURE_DIR` (default `golden-failures/` in the test's directory). CI sets it in every
+    job and uploads it when a job fails (`golden-failures-<job>`);
+  - with `AX_TEST_IMAGE_DIR` set, every image checked is written there too, for the cross-platform
+    comparison (decision 84's CI job).
+- **The goldens of this step** (`tests/unit/render_soft/test_goldens.c`): the seven coverage
+  scenes, the rotating hairline fan (four frames, 1.7 degrees apart), the zone plate, the zone
+  plate behind three nested rounded clips (the middle one turned 9 degrees), group opacity and
+  linear layers. Locally Clang Debug and GCC Release on x86-64 and the Emscripten build in Node
+  (SIMD128) produce byte-identical PNGs.
+- The web tests link with `-sNODERAWFS=1` (they read goldens and write artifacts on the host's
+  file system) and `-sALLOW_MEMORY_GROWTH=1`.
+
+**Status.** Implementation, pending the owner's approval.
+
