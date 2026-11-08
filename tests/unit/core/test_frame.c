@@ -412,3 +412,62 @@ AX_TEST(window_roots_are_checked)
     ax_ir_builder_deinit(&b);
     AX_CHECK_RESULT(ax_world_destroy(w), AX_OK);
 }
+
+/* Overflow hidden (decision 93): the children go into a clip layer of the node's frame, rounded by
+ * its radii; the node's own background stays outside it. Toggling the clip records the children
+ * again in the new space; DISPLAY none records nothing. */
+AX_TEST(overflow_hidden_records_a_clip_layer_around_the_children)
+{
+    static const char *const golden =
+        "render_ir 1.0 size 400x300 time_ns 0 seq 0 background (0 0 0 1)\n"
+        "damage full\n"
+        "layer 0 root items 2\n"
+        "  rect (0 0 400 300) color (0 0 0.25 1)\n"
+        "  rounded_rect (10 20 100 50) radii (8 8 8 8) color (1 1 1 1)\n"
+        "  layer 1 transform (1 0 0 1 10 20) clip rounded_rect (0 0 100 50) radii (8 8 8 8) "
+        "items 1\n"
+        "    rect (5 5 10 10) color (1 0 0 1)\n"
+        "  layer 2 implicit items 1\n" /* items after a child layer (the IR's rule) */
+        "    rect (200 100 40 20) color (0 0 1 1)\n";
+    ax_world w;
+    scene_nodes n;
+    ax_ir_builder b;
+    const ax_render_ir *ir;
+    text out;
+    ax_txn *t;
+    ax_frame_counters c;
+    AX_REQUIRE(ax_world_create(NULL, &w) == AX_OK);
+    ax_ir_builder_init(&b, ax_default_allocator());
+    AX_REQUIRE(build(w, &n));
+    t = ax_txn_begin(w);
+    ax_txn_set_u32(t, n.card, AX_PROP_OVERFLOW, AX_OVERFLOW_HIDDEN);
+    ax_txn_set_transform(t, n.spinner, AX_PROP_TRANSFORM, (ax_transform2d){1, 0, 0, 1, 0, 0});
+    ax_txn_set_u32(t, n.dot, AX_PROP_DISPLAY, AX_DISPLAY_NONE);
+    AX_REQUIRE(ax_txn_commit(t, NULL) == AX_OK);
+    ir = frame(w, n.root, &b, 400, 300);
+    AX_REQUIRE(ir != NULL);
+    AX_CHECK_RESULT(ax_ir_validate(ir), AX_OK);
+    memset(&out, 0, sizeof out);
+    ax_ir_dump(ir, write_text, &out);
+    if (strcmp(out.buf, golden) != 0) {
+        printf("got:\n%s\nexpected:\n%s\n", out.buf, golden);
+    }
+    AX_CHECK(strcmp(out.buf, golden) == 0);
+    c = counters(w);
+    AX_CHECK_EQ_U(c.clips, 1);
+
+    /* Visible again: the inner node is recorded again, in the root layer's space. */
+    t = ax_txn_begin(w);
+    ax_txn_set_u32(t, n.card, AX_PROP_OVERFLOW, AX_OVERFLOW_VISIBLE);
+    AX_REQUIRE(ax_txn_commit(t, NULL) == AX_OK);
+    ir = frame(w, n.root, &b, 400, 300);
+    AX_REQUIRE(ir != NULL);
+    c = counters(w);
+    AX_CHECK_EQ_U(c.clips, 0);
+    AX_CHECK_EQ_U(c.nodes_recorded, 1);
+    memset(&out, 0, sizeof out);
+    ax_ir_dump(ir, write_text, &out);
+    AX_CHECK(strstr(out.buf, "  rect (15 25 10 10) color (1 0 0 1)\n") != NULL);
+    ax_ir_builder_deinit(&b);
+    AX_CHECK_RESULT(ax_world_destroy(w), AX_OK);
+}

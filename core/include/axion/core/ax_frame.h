@@ -23,6 +23,10 @@
  * frames go to the store's layout column and to the mirror (ax_world_touch_node). A window root is
  * laid out at its viewport whatever its own size, margins and insets.
  *
+ * Clips. A node with OVERFLOW hidden and children records a clip layer around its children: its
+ * frame (0, 0, width, height), a rounded rect when it has corner radii, in its own space. Its own
+ * items stay outside the clip (decision 93). Nodes with DISPLAY none record nothing.
+ *
  * Layers. A window root, and every node that has ever had a TRANSFORM other than the identity or
  * an OPACITY other than 1, records a layer: its transform is translate(its origin in the parent
  * layer) times its TRANSFORM about the center of its frame (decision 63), with its opacity.
@@ -95,6 +99,7 @@ typedef struct ax_frame_counters {
     uint64_t items_reused;    /* items copied from the cache */
     uint64_t layers;          /* layers recorded */
     uint64_t layers_promoted; /* nodes that became layers */
+    uint64_t clips;           /* clip layers recorded (overflow hidden) */
     uint64_t snapshots;       /* ax_world_record_root calls that succeeded */
 } ax_frame_counters;
 

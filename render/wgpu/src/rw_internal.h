@@ -27,6 +27,18 @@ typedef struct rw_instance {
     float inv[4];   /* device pixel -> local, linear part a, b, c, d */
 } rw_instance;
 
+/* One clip record: 4 x vec4f, matching rect.wgsl's Clip (decision 93). */
+typedef struct rw_clip {
+    float m[4];     /* device pixel -> local, linear part a, b, c, d */
+    float t[4];     /* translation tx, ty; z = flags; w = parent record + 1 (0: none) */
+    float rect[4];  /* x, y, w, h (local) */
+    float radii[4]; /* clamped */
+} rw_clip;
+
+/* Clips evaluated per pixel at most, besides the one device-space rect the CPU intersects the
+ * axis-aligned rect clips into; the shader's MAX_CLIPS is one more. */
+#define RW_MAX_CLIP_CHAIN 4u
+
 #define RW_FLAG_ROUNDED                    1u
 #define RW_FLAG_FOOTPRINT_FROM_DERIVATIVES 2u
 

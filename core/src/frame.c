@@ -44,7 +44,8 @@ typedef struct rec_frame {
     ax_vec2 origin; /* the node's top-left in that layer's space */
     uint32_t next;  /* next child to visit; AX_NODE_NONE when done */
     bool entered;
-    bool pushed; /* a layer was pushed for the node */
+    bool pushed;  /* a layer was pushed for the node */
+    bool clipped; /* a clip layer was pushed for its children (overflow hidden) */
 } rec_frame;
 
 struct frame_state {
@@ -397,6 +398,22 @@ static bool emit_items(world_impl *w, ax_ir_builder *b, uint32_t slot, uint32_t 
     return true;
 }
 
+/* The clip layer of an overflow-hidden node at `origin` in its layer: its frame, rounded by its
+ * corner radii, around its children (decision 93). */
+static ax_ir_layer_desc clip_desc(const ax_node_store *s, uint32_t row, ax_vec2 origin)
+{
+    ax_ir_layer_desc d = ax_ir_layer_desc_default();
+    const float *r = s->paint[row].corner_radius;
+    d.transform = ax_affine2_translate(origin.x, origin.y);
+    d.clip.kind = (r[0] > 0.0f || r[1] > 0.0f || r[2] > 0.0f || r[3] > 0.0f)
+                      ? AX_IR_CLIP_ROUNDED_RECT
+                      : AX_IR_CLIP_RECT;
+    d.clip.path = AX_IR_NO_INDEX;
+    d.clip.rect = ax_rect_make(0.0f, 0.0f, s->layout[row].frame.w, s->layout[row].frame.h);
+    memcpy(d.clip.radii, r, sizeof d.clip.radii);
+    return d;
+}
+
 /* The layer record of a promoted node at `origin` in its parent layer: translate there, then the
  * node's transform about its frame's center (decision 63). */
 static ax_ir_layer_desc layer_desc(const ax_node_store *s, uint32_t row, ax_vec2 origin)
@@ -439,6 +456,7 @@ ax_result ax_world_record_root(ax_world world, ax_node root, ax_ir_builder *b)
     f->stack[0].origin = ax_vec2_make(0.0f, 0.0f);
     f->stack[0].entered = false;
     f->stack[0].pushed = false;
+    f->stack[0].clipped = false;
     depth = 1;
     while (depth > 0) {
         rec_frame *top = &f->stack[depth - 1u];
@@ -447,6 +465,10 @@ ax_result ax_world_record_root(ax_world world, ax_node root, ax_ir_builder *b)
             rec_entry *e = &f->rec[top->slot];
             const ax_node_composite *c = &s->composite[row];
             top->entered = true;
+            if (s->style[row].display == AX_DISPLAY_NONE) {
+                depth--; /* takes no space and draws nothing, with its subtree */
+                continue;
+            }
             if (e->generation != s->slots[top->slot].generation) {
                 e->promoted = false; /* a new node in a reused slot */
                 e->generation = 0;
@@ -465,6 +487,17 @@ ax_result ax_world_record_root(ax_world world, ax_node root, ax_ir_builder *b)
             }
             if (!emit_items(w, b, top->slot, row, top->layer, top->origin)) {
                 return ax_set_error(AX_ERR_OUT_OF_MEMORY, "ax_world_record_root: out of memory");
+            }
+            if (s->style[row].overflow == AX_OVERFLOW_HIDDEN &&
+                s->links[row].first_child != AX_NODE_NONE) {
+                /* The children only: the node's own items keep their edges unclipped. */
+                ax_ir_layer_desc d = clip_desc(s, row, top->origin);
+                ax_ir_push_layer(b, &d);
+                f->counters.layers++;
+                f->counters.clips++;
+                top->clipped = true;
+                top->layer = top->slot;
+                top->origin = ax_vec2_make(0.0f, 0.0f);
             }
             top->next = s->links[row].first_child;
             continue;
@@ -485,7 +518,11 @@ ax_result ax_world_record_root(ax_world world, ax_node root, ax_ir_builder *b)
                 top->origin, ax_vec2_make(s->layout[crow].frame.x, s->layout[crow].frame.y));
             next->entered = false;
             next->pushed = false;
+            next->clipped = false;
             continue;
+        }
+        if (top->clipped) {
+            ax_ir_pop_layer(b);
         }
         if (top->pushed) {
             ax_ir_pop_layer(b);
