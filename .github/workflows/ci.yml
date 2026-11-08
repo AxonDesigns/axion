@@ -22,14 +22,16 @@ concurrency:
 
 jobs:
   # Repository checks that need no build: every tracked text file ends in a newline
-  # (.editorconfig).
+  # (.editorconfig), and decisions.md's index agrees with each entry's status line.
   repo-checks:
-    name: Repository checks (final newlines)
+    name: Repository checks (final newlines, decision statuses)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Final newlines
         run: sh tools/ci/check_final_newline.sh
+      - name: Decision statuses
+        run: python3 tools/ci/check_decision_status.py
 
   build-test:
     name: ${{ matrix.name }}

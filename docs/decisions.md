@@ -4303,8 +4303,7 @@ the `scale` and `crossfade` layout presets, gestures and the driver graph.
   - Demotion's cost comes in one frame: the 61 cards the resize moved were demoted together a
     second later, recording 5490 items once.
 
-**Status.** Implementation, pending the owner's approval (the defaults, clamping and the lookup
-without the class level were approved in the plan).
+**Status.** Approved by the owner.
 
 ## 95. Zero frames at rest
 
@@ -4354,7 +4353,7 @@ animates, and that a commit wake it.
     at rest**, then frames again when the bar slides; with the app thread blocked during a
     running animation, 30 of 30 refreshes presented with a new snapshot each, as unblocked.
 
-**Status.** Implementation, pending the owner's approval.
+**Status.** Approved by the owner.
 
 ## 96. m1_nodes as animated cards, the scene driver gone, goldens of animation frames
 
@@ -4394,4 +4393,4 @@ intermediate animation frames with ax_render_soft.
   is either presented with a new snapshot or missed by the display itself, whose missed refreshes
   are counted exactly (two refreshes of slack).
 
-**Status.** Implementation, pending the owner's approval.
+**Status.** Approved by the owner.
