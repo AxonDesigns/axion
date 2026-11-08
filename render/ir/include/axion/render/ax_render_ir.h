@@ -213,6 +213,11 @@ typedef struct ax_ir_text_lut_params {
 /* AXION's defaults (decision 101). */
 AX_API ax_ir_text_lut_params ax_ir_text_lut_default(void);
 
+/* UNSUPPORTED, for development comparisons only (tools/diag/text_weight): replaces the defaults
+ * for renderers created afterwards in this process; NULL restores them. thread: before any
+ * renderer exists */
+AX_API void ax_ir_text_lut_override(const ax_ir_text_lut_params *params);
+
 /* Builds the table. Deterministic (base's own exp2 and log2). thread: any */
 AX_API void ax_ir_text_lut_build(const ax_ir_text_lut_params *params,
                                  uint8_t lut[AX_IR_TEXT_LUT_BUCKETS][256]);

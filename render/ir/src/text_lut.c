@@ -23,9 +23,23 @@
 #include <axion/base/ax_math.h>
 #include <axion/render/ax_render_ir.h>
 
+static ax_ir_text_lut_params g_override;
+static int g_overridden;
+
+void ax_ir_text_lut_override(const ax_ir_text_lut_params *params)
+{
+    g_overridden = params != NULL;
+    if (params != NULL) {
+        g_override = *params;
+    }
+}
+
 ax_ir_text_lut_params ax_ir_text_lut_default(void)
 {
     ax_ir_text_lut_params p;
+    if (g_overridden) {
+        return g_override;
+    }
     /* Provisional until tuned against the desktop's text (decision 101). */
     p.contrast = 0.1f;
     p.gamma = 1.8f;
