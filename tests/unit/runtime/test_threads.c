@@ -388,10 +388,12 @@ AX_TEST(a_blocked_app_thread_does_not_stop_frames)
            (unsigned long long)ref_frames, (unsigned long long)ref_shown,
            (unsigned long long)ref_late);
     /* Every frame the unblocked window had, each with a new snapshot from the scene. Relative,
-     * with a frame of slack at the windows' edges: a loaded runner may be late in both. */
+     * with two frames of slack at the windows' edges (a late frame is followed by one that
+     * catches up, which may fall in either window); a block that held the pipeline back would lose
+     * the whole window, about 30 frames. */
     AX_CHECK(ref_frames >= 15);
-    AX_CHECK(frames + 1u >= ref_frames);
-    AX_CHECK(shown + 1u >= ref_shown);
+    AX_CHECK(frames + 2u >= ref_frames);
+    AX_CHECK(shown + 2u >= ref_shown);
     AX_CHECK(late <= ref_late + 1u);
     AX_CHECK_RESULT(ax_runtime_destroy(rt), AX_OK);
     AX_CHECK_RESULT(ax_world_destroy(w), AX_OK);

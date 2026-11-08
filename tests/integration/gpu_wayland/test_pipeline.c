@@ -357,8 +357,10 @@ AX_TEST(a_blocked_app_thread_loses_no_frame)
            (unsigned long long)ref_presented, (unsigned long long)ref_shown,
            (unsigned long long)ref_missed);
     AX_REQUIRE(ref_presented >= 5); /* the pipeline runs at all */
-    /* One frame of slack: the windows' edges fall anywhere within a refresh. */
-    AX_CHECK(presented + 1u >= ref_presented);
-    AX_CHECK(shown + 1u >= ref_shown);
+    /* Two frames of slack in the counts: each window's two edges fall anywhere within a frame
+     * (two refreshes where the runner presents every other one). A block that held the pipeline
+     * back would lose the whole window, about 30 frames. Missed refreshes get one. */
+    AX_CHECK(presented + 2u >= ref_presented);
+    AX_CHECK(shown + 2u >= ref_shown);
     AX_CHECK(missed <= ref_missed + 1u);
 }

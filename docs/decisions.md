@@ -3246,8 +3246,8 @@ surface from one render thread. The owner asked for:
       asks the 144 Hz one to be clearly faster); every `on_presented` comes, in order, as
       `PRESENTED`; the mirror shows the last change.
     - The app thread blocked 500 ms (asleep) against 500 ms of it waiting for events: no fewer
-      frames and new snapshots, no more late frames, with one frame of slack at the windows'
-      edges. Locally 30, 30 and 0 in both.
+      frames and new snapshots (two frames of slack at the windows' edges), no more late frames
+      (one of slack). Locally 30, 30 and 0 in both.
     - 20 surfaces added and removed while the threads run.
     - Locally 5 runs under TSan, 2 more pinned to one CPU, clean.
   - `tests/integration/gpu_wayland/test_pipeline.c` (headless weston, lavapipe), with the real
@@ -3256,11 +3256,12 @@ surface from one render thread. The owner asked for:
     - a maximize is answered with a snapshot of the new size (locally 1280x688, `scene_late` 1,
       no forced acknowledgement);
     - with the app thread blocked 500 ms, no frame is lost compared with the 500 ms before it
-      unblocked: presentations and new snapshots no fewer, missed vblanks no more, with one frame
-      of slack. Locally at weston's 60 Hz: 30 presentations, 30 snapshots and 0 missed in both.
+      unblocked: presentations and new snapshots no fewer (two frames of slack: on runners that
+      present every other refresh, a window edge moves the count by two), missed vblanks no more
+      (one of slack). A block that held the pipeline back would lose about 30. Locally at weston's 60 Hz: 30 presentations, 30 snapshots and 0 missed in both.
       **The criterion is relative** because GitHub's Ubuntu runners (weston 13 at 79.6 Hz,
-      lavapipe) present every other refresh in any window: 20 of 39, with the app thread blocked
-      or not, while weston 15 in CI and the local weston reach every refresh. That is the software
+      lavapipe) present every other refresh in any window: 19 to 21 of 39, with the app thread
+      blocked or not, while weston 15 in CI and the local weston reach every refresh. That is the software
       renderer's speed on those runners (the commit misses weston's repaint window), not the
       block; the desktop check with `m1_nodes --block-ms=500` covers real hardware.
 
