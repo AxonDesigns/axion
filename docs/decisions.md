@@ -102,12 +102,12 @@ new entry that points back to the old one.
 | 86  | Images byte-identical on every platform: the CI job      | Approved       |
 | 87  | Reference measurements: ax_render_soft on m1_nodes       | Approved       |
 | 88  | `AX_ERR_TIMEOUT` and `AX_ERR_IO`                         | Approved       |
-| 89  | Layout's style storage, properties and the mirror        | Implementation |
-| 90  | The layout engine: protocols, cache, boundaries          | Implementation |
-| 91  | Flex conformance against Yoga                            | Implementation |
-| 92  | Parallel boundaries, `ax_measure_sync`, benchmark        | Implementation |
-| 93  | Clips: overflow hidden, and in `ax_render_wgpu`          | Implementation |
-
+| 89  | Layout's style storage, properties and the mirror        | Approved       |
+| 90  | The layout engine: protocols, cache, boundaries          | Approved       |
+| 91  | Flex conformance against Yoga                            | Approved       |
+| 92  | Parallel boundaries, `ax_measure_sync`, benchmark        | Approved       |
+| 93  | Clips: overflow hidden, and in `ax_render_wgpu`          | Approved       |
+s
 ---
 
 ## 1. Base may use OS thread primitives
