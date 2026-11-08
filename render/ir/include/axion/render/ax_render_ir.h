@@ -50,7 +50,7 @@
 AX_EXTERN_C_BEGIN
 
 #define AX_IR_VERSION_MAJOR 1u
-#define AX_IR_VERSION_MINOR 0u
+#define AX_IR_VERSION_MINOR 1u /* 1.1: glyph runs, the glyph source, resource epochs */
 
 #define AX_IR_NO_LAYER UINT32_MAX
 #define AX_IR_NO_INDEX UINT32_MAX
@@ -106,8 +106,9 @@ typedef struct ax_ir_layer {
 typedef enum ax_ir_item_type {
     AX_IR_ITEM_RECT = 1,
     AX_IR_ITEM_ROUNDED_RECT = 2,
+    AX_IR_ITEM_GLYPH_RUN = 10, /* minor 1 (decision 101) */
     /* Reserved: 3 border, 4 box shadow, 5 linear gradient, 6 radial gradient, 7 conic gradient,
-     * 8 path, 9 image, 10 glyph run, 11 user shader quad, 12 backdrop-filter region,
+     * 8 path, 9 image, 11 user shader quad, 12 backdrop-filter region,
      * 13 3D viewport. 0x8000 and above: private to a consumer, never written by AXION. */
     AX_IR_ITEM_FIRST_PRIVATE = 0x8000
 } ax_ir_item_type;
@@ -142,6 +143,83 @@ typedef struct ax_ir_rounded_rect_item {
     ax_color color;
 } ax_ir_rounded_rect_item;
 
+/*
+ * A run of glyphs of one font instance at one raster scale, in one color (minor 1, decision 101).
+ * glyph_count ax_ir_glyph records follow the fixed part.
+ *
+ * Positions are integers on the run's raster grid: a glyph's pen position in the layer's space,
+ * times raster_scale, which the scene chose so that one raster pixel is one device pixel when the
+ * snapshot is drawn at the scale it was recorded for (the window's scale, and the layers' scale at
+ * rest). The glyph's bitmap (from the snapshot's glyph source) has its top-left pixel at
+ * (x + left, y - top) raster pixels; a renderer maps raster pixels to layer units by dividing by
+ * raster_scale, then draws through the layer's transform. When that lands raster pixels exactly on
+ * device pixels, the bitmap is copied as it is; otherwise it is sampled bilinearly (a layer
+ * scaling or turning under an animation, until the scene records it again at the new scale).
+ *
+ * Coverage is corrected for the text's luminance (ax_ir_text_lut) before blending. A consumer
+ * without a glyph source draws nothing for the run (counted as skipped).
+ */
+typedef struct ax_ir_glyph_run_item {
+    ax_ir_item_header header;
+    ax_color color;         /* premultiplied linear light, as every item */
+    uint32_t font_instance; /* the glyph source's key for the font at its raster size */
+    uint32_t glyph_count;
+    float raster_scale; /* raster pixels per layer unit */
+    uint32_t flags;     /* none defined; 0 */
+} ax_ir_glyph_run_item;
+
+typedef struct ax_ir_glyph {
+    uint32_t id;  /* glyph id in the font */
+    uint32_t bin; /* subpixel position: the bitmap is rendered bin/4 pixel to the right */
+    int32_t x, y; /* pen position (y the baseline) on the raster grid */
+} ax_ir_glyph;
+
+/* A glyph's bitmap: 8-bit coverage, rows top-down, top-left pixel at (x + left, y - top). */
+typedef struct ax_ir_glyph_bitmap {
+    uint16_t width, height;
+    int16_t left, top;
+    uint32_t stride;
+    const uint8_t *pixels;
+} ax_ir_glyph_bitmap;
+
+/*
+ * Where a snapshot's glyph bitmaps come from: the scene's glyph cache (text), or the table a
+ * deserialized snapshot carries. lookup may be called from the render thread at any time while
+ * the snapshot is alive, and the bitmaps it returns stay valid as long (the producer keeps every
+ * glyph a live snapshot uses: decision 100). False when the glyph has no bitmap.
+ */
+typedef struct ax_ir_glyph_source {
+    bool (*lookup)(const struct ax_ir_glyph_source *self, uint32_t font_instance, uint32_t glyph,
+                   uint32_t bin, ax_ir_glyph_bitmap *out);
+    void *user;
+} ax_ir_glyph_source;
+
+/* ---- text coverage correction ---------------------------------------------------------------- */
+
+#define AX_IR_TEXT_LUT_BUCKETS 8u
+
+/*
+ * The correction of glyph coverage for the text's luminance (the document's "gamma and contrast
+ * correction tuned to match platform text"; decision 101), shared by every renderer so they draw
+ * the same text: alpha = lut[bucket][coverage]. Built like Skia's mask gamma: for a text luminance,
+ * the alpha that, blended in the renderer's space against the opposite luminance, gives the blend
+ * a `gamma` space would, with `contrast` darkening thin strokes of dark text.
+ */
+typedef struct ax_ir_text_lut_params {
+    float contrast; /* 0..1: thicker stems for dark text */
+    float gamma;    /* the space whose blend it imitates: 1 linear light, ~2.2 the sRGB space */
+} ax_ir_text_lut_params;
+
+/* AXION's defaults (decision 101). */
+AX_API ax_ir_text_lut_params ax_ir_text_lut_default(void);
+
+/* Builds the table. Deterministic (base's own exp2 and log2). thread: any */
+AX_API void ax_ir_text_lut_build(const ax_ir_text_lut_params *params,
+                                 uint8_t lut[AX_IR_TEXT_LUT_BUCKETS][256]);
+
+/* The bucket of a text color (premultiplied linear): its luminance, quantized. */
+AX_API uint32_t ax_ir_text_lut_bucket(ax_color color);
+
 /* ---- the snapshot ------------------------------------------------------------------------------
  */
 
@@ -165,6 +243,9 @@ typedef struct ax_render_ir {
     const void *layers;    /* use ax_ir_layer_at */
     uint32_t items_size;   /* bytes in the item stream */
     const uint8_t *items;
+    /* Minor 1 (check struct_size). */
+    const ax_ir_glyph_source *glyphs; /* the glyph runs' bitmaps; NULL without glyph runs */
+    uint64_t resource_epoch;          /* the epoch the producer stamped the glyphs it uses with */
 } ax_render_ir;
 
 static inline const ax_ir_layer *ax_ir_layer_at(const ax_render_ir *ir, uint32_t index)
@@ -267,6 +348,14 @@ AX_API void ax_ir_rect(ax_ir_builder *b, ax_rect rect, ax_color color);
 AX_API void ax_ir_rounded_rect(ax_ir_builder *b, ax_rect rect, const float radii[4],
                                ax_color color);
 
+/* A glyph run (see ax_ir_glyph_run_item): `item`'s header and glyph_count are filled in. */
+AX_API void ax_ir_glyph_run(ax_ir_builder *b, const ax_ir_glyph_run_item *item,
+                            const ax_ir_glyph *glyphs, uint32_t glyph_count);
+
+/* The snapshot's glyph source and resource epoch (decision 100), kept until the next begin. */
+AX_API void ax_ir_builder_set_resources(ax_ir_builder *b, const ax_ir_glyph_source *glyphs,
+                                        uint64_t resource_epoch);
+
 /* Any item record: `payload_size` bytes follow the header, padded to AX_IR_ITEM_ALIGN. For item
  * types without a helper, and for tests. */
 AX_API void ax_ir_item(ax_ir_builder *b, uint16_t type, uint16_t flags, const void *payload,
@@ -290,11 +379,14 @@ AX_API ax_result ax_ir_builder_end(ax_ir_builder *b, const ax_render_ir **out_ir
 
 /*
  * The binary form: little-endian, with explicit sizes so it reads across versions:
- *     header   "AXIR", u16 major, u16 minor, u32 header_size, then the snapshot's fields
+ *     header   "AXIR", u16 major, u16 minor, u32 header_size, then the snapshot's fields; since
+ *              minor 1 also the resource epoch and the glyph table: every glyph the snapshot's
+ *              runs use, with its bitmap, so a serialized snapshot draws on its own (decision 101)
  *     damage   damage_count rects (16 bytes each)
  *     layers   layer_count records of layer_stride bytes
  *     items    items_size bytes, the item stream unchanged (unknown items are kept)
- * The exact layout is in render/ir/src/serialize.c.
+ * A reader of minor 0 skips the larger header, glyph table included. The exact layout is in
+ * render/ir/src/serialize.c.
  */
 
 /* Bytes ax_ir_serialize writes for this snapshot. thread: any */
@@ -306,7 +398,8 @@ AX_API ax_result ax_ir_serialize(const ax_render_ir *ir, void *out, size_t capac
                                  size_t *out_size);
 
 /*
- * Reads a binary snapshot into memory from `arena`, validated (ax_ir_validate). A newer minor's
+ * Reads a binary snapshot into memory from `arena`, validated (ax_ir_validate). A glyph table
+ * becomes the snapshot's glyph source (in the arena). A newer minor's
  * extra layer fields are dropped and a missing field of an older minor takes its neutral value;
  * the item stream is kept as it is.
  * Errors: AX_ERR_ABI_MISMATCH (another major), AX_ERR_INVALID_ARGUMENT (not a snapshot, truncated or

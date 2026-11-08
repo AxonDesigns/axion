@@ -121,6 +121,39 @@ static void dump_layer(out *o, const ax_render_ir *ir, uint32_t index, unsigned 
                  (double)r.rect.x, (double)r.rect.y, (double)r.rect.w, (double)r.rect.h,
                  (double)r.radii[0], (double)r.radii[1], (double)r.radii[2], (double)r.radii[3],
                  (double)r.color.r, (double)r.color.g, (double)r.color.b, (double)r.color.a);
+        } else if (h->type == AX_IR_ITEM_GLYPH_RUN) {
+            /* The run, then its glyphs: id@x,y with the subpixel bin when it is not 0. The ids
+             * and positions are the font's and the raster grid's, so a dump is reproducible with
+             * the same font (decision 101). */
+            ax_ir_glyph_run_item g;
+            const uint8_t *gp = (const uint8_t *)h + sizeof g;
+            char glyph_line[256];
+            size_t fill = 0;
+            uint32_t k;
+            memcpy(&g, h, sizeof g);
+            emit(o, depth + 1, "glyph_run instance %u scale %g glyphs %u color (%g %g %g %g)",
+                 g.font_instance, (double)g.raster_scale, g.glyph_count, (double)g.color.r,
+                 (double)g.color.g, (double)g.color.b, (double)g.color.a);
+            for (k = 0; k < g.glyph_count; ++k) {
+                ax_ir_glyph gl;
+                int n;
+                memcpy(&gl, gp + sizeof gl * k, sizeof gl);
+                n = gl.bin != 0 ? snprintf(glyph_line + fill, sizeof glyph_line - fill, "%s%u@%d,%d/%u",
+                                           fill > 0 ? " " : "", gl.id, gl.x, gl.y, gl.bin)
+                                : snprintf(glyph_line + fill, sizeof glyph_line - fill, "%s%u@%d,%d",
+                                           fill > 0 ? " " : "", gl.id, gl.x, gl.y);
+                if (n < 0 || (size_t)n >= sizeof glyph_line - fill || fill + (size_t)n > 96u) {
+                    glyph_line[fill] = '\0';
+                    emit(o, depth + 2, "%s", glyph_line);
+                    fill = 0;
+                    k--; /* again, on a fresh glyph_line */
+                    continue;
+                }
+                fill += (size_t)n;
+            }
+            if (fill > 0) {
+                emit(o, depth + 2, "%s", glyph_line);
+            }
         } else {
             emit(o, depth + 1, "item type %u flags 0x%x size %u", h->type, h->flags, h->size);
         }

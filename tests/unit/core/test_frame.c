@@ -224,7 +224,7 @@ AX_TEST(stale_layout_roots_are_skipped_and_an_overflow_walks_everything)
 /* ---- Recording ------------------------------------------------------------------------------- */
 
 static const char *const k_golden =
-    "render_ir 1.0 size 400x300 time_ns 0 seq 0 background (0 0 0 1)\n"
+    "render_ir 1.1 size 400x300 time_ns 0 seq 0 background (0 0 0 1)\n"
     "damage full\n"
     "layer 0 root items 3\n"
     "  rect (0 0 400 300) color (0 0 0.25 1)\n"
@@ -419,7 +419,7 @@ AX_TEST(window_roots_are_checked)
 AX_TEST(overflow_hidden_records_a_clip_layer_around_the_children)
 {
     static const char *const golden =
-        "render_ir 1.0 size 400x300 time_ns 0 seq 0 background (0 0 0 1)\n"
+        "render_ir 1.1 size 400x300 time_ns 0 seq 0 background (0 0 0 1)\n"
         "damage full\n"
         "layer 0 root items 2\n"
         "  rect (0 0 400 300) color (0 0 0.25 1)\n"

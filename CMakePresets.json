@@ -122,7 +122,7 @@
       "configurePreset": "emscripten-tests",
       "inherits": "test-base",
       "description": "The single-threaded build's tests in Node: core, the Render IR and the runtime's cooperative mode (decision 79).",
-      "filter": { "include": { "label": "^(core|headless|render_ir|render_soft|runtime)$" }, "exclude": { "label": "^death$" } }
+      "filter": { "include": { "label": "^(core|headless|render_ir|render_soft|runtime|text)$" }, "exclude": { "label": "^death$" } }
     }
   ]
 }

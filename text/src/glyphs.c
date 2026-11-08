@@ -338,12 +338,36 @@ static ax_job_counter *bg_counter(ax_text_system *ts)
     return &ts->bg_counter;
 }
 
+/* Grows a list of glyph pointers (the first `stack_cap` live on the caller's stack). */
+static bool list_push(ax_text_system *ts, tx_glyph ***list, uint32_t *count, uint32_t *cap,
+                      tx_glyph **stack, tx_glyph *g)
+{
+    if (*count == *cap) {
+        uint32_t ncap = *cap * 2u;
+        tx_glyph **bigger = (tx_glyph **)ax_mem_alloc(&ts->allocator, sizeof(tx_glyph *) * ncap,
+                                                      AX_ALIGNOF(tx_glyph *));
+        if (bigger == NULL) {
+            return false;
+        }
+        memcpy(bigger, *list, sizeof(tx_glyph *) * *count);
+        if (*list != stack) {
+            ax_mem_free(&ts->allocator, *list, sizeof(tx_glyph *) * *cap);
+        }
+        *list = bigger;
+        *cap = ncap;
+    }
+    (*list)[(*count)++] = g;
+    return true;
+}
+
 uint32_t ax_text_glyphs_ensure(ax_text_system *ts, const ax_glyph_key *keys, uint32_t count,
                                uint64_t epoch, ax_job_system *jobs, uint32_t *sync_budget)
 {
-    tx_glyph *stack_list[128];
-    tx_glyph **todo = stack_list;
-    uint32_t todo_count = 0, todo_cap = 128;
+    /* Every key's entry, with a reference held until the end (a key may repeat in a run: its
+     * later uses find the entry its first use created), and the entries this call created. */
+    tx_glyph *stack_all[256], *stack_todo[128];
+    tx_glyph **all = stack_all, **todo = stack_todo;
+    uint32_t all_count = 0, all_cap = 256, todo_count = 0, todo_cap = 128;
     uint32_t missing = 0;
     uint32_t i;
     for (i = 0; i < count; ++i) {
@@ -351,6 +375,7 @@ uint32_t ax_text_glyphs_ensure(ax_text_system *ts, const ax_glyph_key *keys, uin
         tx_entry *e = tx_cache_get(&ts->glyph_cache, hash, &keys[i]);
         tx_glyph *g;
         uint64_t last;
+        bool created = false;
         if (e == NULL) {
             tx_glyph *fresh = (tx_glyph *)ax_mem_alloc(&ts->allocator, sizeof *fresh,
                                                         AX_ALIGNOF(tx_glyph));
@@ -368,26 +393,7 @@ uint32_t ax_text_glyphs_ensure(ax_text_system *ts, const ax_glyph_key *keys, uin
             if (e != &fresh->entry) {
                 tx_glyph_destroy(&fresh->entry, ts); /* another thread inserted it first */
             } else {
-                /* Ours to rasterize: keep the reference for the work list. */
-                if (todo_count == todo_cap) {
-                    uint32_t cap = todo_cap * 2u;
-                    tx_glyph **bigger = (tx_glyph **)ax_mem_alloc(
-                        &ts->allocator, sizeof(tx_glyph *) * cap, AX_ALIGNOF(tx_glyph *));
-                    if (bigger == NULL) {
-                        /* Out of memory: rasterize it now. */
-                        rasterize_list(ts, (tx_glyph *const *)&fresh, 1);
-                        tx_cache_release(&ts->glyph_cache, e);
-                        continue;
-                    }
-                    memcpy(bigger, todo, sizeof(tx_glyph *) * todo_count);
-                    if (todo != stack_list) {
-                        ax_mem_free(&ts->allocator, todo, sizeof(tx_glyph *) * todo_cap);
-                    }
-                    todo = bigger;
-                    todo_cap = cap;
-                }
-                todo[todo_count++] = fresh;
-                continue;
+                created = true;
             }
         }
         g = (tx_glyph *)(void *)e;
@@ -396,14 +402,25 @@ uint32_t ax_text_glyphs_ensure(ax_text_system *ts, const ax_glyph_key *keys, uin
                !ax_atomic_compare_exchange_u64(&g->last_epoch, &last, epoch, AX_MO_RELAXED,
                                                AX_MO_RELAXED)) {
         }
-        if (ax_atomic_load_u32(&g->state, AX_MO_ACQUIRE) == GLYPH_PENDING) {
-            missing++; /* someone else is rasterizing it */
+        if (!list_push(ts, &all, &all_count, &all_cap, stack_all, g)) {
+            /* Out of memory: settle this one now. */
+            if (created) {
+                rasterize_list(ts, &g, 1);
+            }
+            if (ax_atomic_load_u32(&g->state, AX_MO_ACQUIRE) == GLYPH_PENDING) {
+                missing++;
+            }
+            tx_cache_release(&ts->glyph_cache, e);
+            continue;
         }
-        tx_cache_release(&ts->glyph_cache, e);
+        if (created && !list_push(ts, &todo, &todo_count, &todo_cap, stack_todo, g)) {
+            rasterize_list(ts, &g, 1);
+        }
     }
     if (todo_count > 0) {
         uint32_t sync = todo_count;
-        if (sync_budget != NULL && jobs != NULL) {
+        /* Inline jobs (one thread) gain nothing from deferring: everything now. */
+        if (sync_budget != NULL && jobs != NULL && !ax_jobs_is_inline(jobs)) {
             sync = *sync_budget < todo_count ? *sync_budget : todo_count;
             *sync_budget -= sync;
         }
@@ -432,33 +449,25 @@ uint32_t ax_text_glyphs_ensure(ax_text_system *ts, const ax_glyph_key *keys, uin
             } else {
                 rasterize_list(ts, todo, sync);
             }
-            for (i = 0; i < sync; ++i) {
-                if (ax_atomic_load_u32(&todo[i]->state, AX_MO_ACQUIRE) == GLYPH_PENDING) {
-                    missing++;
-                }
-                tx_cache_release(&ts->glyph_cache, &todo[i]->entry);
-            }
         }
-        /* The rest in background batches, which keep their references. */
+        /* The rest in background batches, which take references of their own. */
         i = sync;
         while (i < todo_count) {
             const uint32_t n = todo_count - i < BG_CHUNK ? todo_count - i : BG_CHUNK;
             raster_batch *b = (raster_batch *)ax_mem_alloc(
                 &ts->allocator, sizeof *b + sizeof(tx_glyph *) * n, AX_ALIGNOF(raster_batch));
-            missing += n;
+            uint32_t k;
             if (b == NULL) {
-                uint32_t k;
                 rasterize_list(ts, todo + i, n);
-                for (k = 0; k < n; ++k) {
-                    tx_cache_release(&ts->glyph_cache, &todo[i + k]->entry);
-                }
-                missing -= n;
                 i += n;
                 continue;
             }
             b->ts = ts;
             b->count = n;
-            memcpy(b->glyphs, todo + i, sizeof(tx_glyph *) * n);
+            for (k = 0; k < n; ++k) {
+                b->glyphs[k] = todo[i + k];
+                (void)ax_atomic_fetch_add_u32(&todo[i + k]->entry.refs, 1u, AX_MO_RELAXED);
+            }
             b->job.fn = background_job;
             b->job.arg = b;
             ts->last_jobs = jobs;
@@ -467,7 +476,16 @@ uint32_t ax_text_glyphs_ensure(ax_text_system *ts, const ax_glyph_key *keys, uin
             i += n;
         }
     }
-    if (todo != stack_list) {
+    for (i = 0; i < all_count; ++i) {
+        if (ax_atomic_load_u32(&all[i]->state, AX_MO_ACQUIRE) == GLYPH_PENDING) {
+            missing++;
+        }
+        tx_cache_release(&ts->glyph_cache, &all[i]->entry);
+    }
+    if (all != stack_all) {
+        ax_mem_free(&ts->allocator, all, sizeof(tx_glyph *) * all_cap);
+    }
+    if (todo != stack_todo) {
         ax_mem_free(&ts->allocator, todo, sizeof(tx_glyph *) * todo_cap);
     }
     return missing;

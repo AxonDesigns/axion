@@ -17,6 +17,7 @@
 #include <axion/base/ax_triple_buffer.h>
 #include <axion/core/ax_scene.h>
 #include <axion/core/ax_world_sdk.h>
+#include <axion/render/ax_render_ir.h>
 
 #define AX_TXN_MESSAGE_SIZE 192u
 
@@ -189,6 +190,8 @@ typedef struct world_impl {
     bool text_owned;
     struct ax_text_paragraph **text_batch; /* paragraphs to shape this frame (text_stage.c) */
     uint32_t text_batch_capacity;
+    ax_ir_glyph_source glyph_source; /* snapshots' bitmaps: the text system's glyph cache */
+    ax_atomic_u32 glyphs_arrived;    /* background glyphs became ready (any thread sets it) */
     anim_state *anim;                /* anim/animator.c: implicit animations (scene thread) */
     void (*commit_hook)(void *user); /* app thread: after each commit */
     void *commit_hook_user;

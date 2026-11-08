@@ -247,14 +247,14 @@ static void poll_all(ax_world w)
 /* ---- Tests ----------------------------------------------------------------------------------- */
 
 static const char *const k_first =
-    "render_ir 1.0 size 200x100 time_ns 100000000 seq 1 background (0 0 0.25 1)\n"
+    "render_ir 1.1 size 200x100 time_ns 100000000 seq 1 background (0 0 0.25 1)\n"
     "damage full\n"
     "layer 0 root items 2\n"
     "  rect (0 0 200 100) color (0 0 0.25 1)\n"
     "  rect (10 20 100 50) color (1 1 1 1)\n";
 
 static const char *const k_red =
-    "render_ir 1.0 size 200x100 time_ns 132000000 seq 2 background (0 0 0.25 1)\n"
+    "render_ir 1.1 size 200x100 time_ns 132000000 seq 2 background (0 0 0.25 1)\n"
     "damage full\n"
     "layer 0 root items 2\n"
     "  rect (0 0 200 100) color (0 0 0.25 1)\n"

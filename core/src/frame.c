@@ -6,15 +6,19 @@
  * and recording the Render IR from the node store with a per-node cache of encoded items.
  */
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "world_internal.h"
 
 #include <axion/ax_error.h>
 #include <axion/base/ax_error_set.h>
+#include <axion/base/ax_jobs.h>
 #include <axion/base/ax_memory.h>
 #include <axion/core/ax_frame.h>
 #include <axion/core/ax_layout.h>
+#include <axion/core/ax_text_node.h>
+#include <axion/text/ax_text.h>
 
 #include "anim/anim_internal.h"
 
@@ -35,6 +39,8 @@ typedef struct rec_entry {
     ax_vec2 origin;      /* the node's top-left in that space */
     float width, height;
     bool stale;             /* marked PAINT since (LAYOUT shows as a new size or origin) */
+    bool incomplete;        /* some glyph runs waited for their glyphs (decision 100) */
+    float raster_scale;     /* the raster scale its glyph runs were recorded at */
     bool promoted;          /* the node records a layer (until demoted, decision 94) */
     uint64_t neutral_since; /* animator time since its layer has been neutral; 0: not neutral */
     uint8_t *items;
@@ -64,6 +70,13 @@ struct frame_state {
     ax_node_layout *pbox; /* presentation relayouts (the resize preset), by row */
     uint32_t pbox_capacity;
     ax_frame_counters counters;
+    /* Text (decisions 100 and 101). */
+    uint64_t epoch;        /* the newest snapshot's resource epoch */
+    float record_scale;    /* the window's scale, while a root records */
+    uint32_t glyph_budget; /* glyphs rasterized at once this frame, left */
+    ax_glyph_key *keys;    /* scratch for one run's glyph keys */
+    ax_ir_glyph *glyphs;   /* scratch for one run's records */
+    uint32_t scratch_capacity;
 };
 
 static world_impl *scene_world(ax_world world)
@@ -102,6 +115,8 @@ void ax__frame_free(world_impl *w)
     ax_mem_free(&w->allocator, f->roots, sizeof(frame_root) * f->root_capacity);
     ax_mem_free(&w->allocator, f->stack, sizeof(rec_frame) * f->stack_capacity);
     ax_mem_free(&w->allocator, f->pbox, sizeof(ax_node_layout) * f->pbox_capacity);
+    ax_mem_free(&w->allocator, f->keys, sizeof(ax_glyph_key) * f->scratch_capacity);
+    ax_mem_free(&w->allocator, f->glyphs, sizeof(ax_ir_glyph) * f->scratch_capacity);
     ax_mem_free(&w->allocator, f, sizeof *f);
     w->frame = NULL;
 }
@@ -315,6 +330,17 @@ void ax_world_record_collect(ax_world world)
     }
     s = &w->scene.store;
     seq = ax_atomic_load_u64(&w->applied_seq, AX_MO_RELAXED);
+    if (ax_atomic_load_u32(&w->glyphs_arrived, AX_MO_ACQUIRE) != 0) {
+        /* Background glyphs are ready (decision 100): nodes whose runs waited record again. */
+        uint32_t slot;
+        ax_atomic_store_u32(&w->glyphs_arrived, 0, AX_MO_RELAXED);
+        for (slot = 0; slot < f->rec_capacity && slot < s->slot_count; ++slot) {
+            if (f->rec[slot].incomplete && s->slots[slot].row < AX_NODE_SLOT_RETIRED &&
+                s->slots[slot].generation == f->rec[slot].generation) {
+                s->dirty[s->slots[slot].row] |= AX_DIRTY_PAINT;
+            }
+        }
+    }
     for (row = 0; row < s->row_count; ++row) {
         uint32_t flags = s->dirty[row];
         uint32_t slot;
@@ -465,15 +491,161 @@ ax_result ax_world_presentation_frame(ax_world world, ax_node node, ax_rect *out
     return AX_OK;
 }
 
-static bool record_items(world_impl *w, rec_entry *e, const pres *pr, ax_vec2 origin)
+/* Floor division by 4 of a quarter-pixel count (glyph x on the raster grid). */
+static int32_t floor_div4(int64_t n)
+{
+    return (int32_t)(n >= 0 ? n / 4 : -((-n + 3) / 4));
+}
+
+static int64_t round_to_i64(double v)
+{
+    return (int64_t)(v >= 0.0 ? v + 0.5 : v - 0.5);
+}
+
+/* Appends one glyph run (glyphs [g0, g1) of a laid-out paragraph, of one font and size) at
+ * `origin` (the content box's top-left in the layer's space), in `color`. A run whose glyphs are
+ * not all ready is left out whole (decision 100) and the entry is marked incomplete. */
+static bool record_run(world_impl *w, rec_entry *e, ax_text_system *ts, const ax_text_layout *l,
+                       uint32_t g0, uint32_t g1, ax_vec2 origin, ax_color color, float scale)
+{
+    frame_state *f = w->frame;
+    const ax_text_glyph *first = &l->glyphs[g0];
+    float extra = 1.0f;
+    const float pixel_size = first->size * scale;
+    const ax_font_instance instance = ax_text_font_instance(ts, first->font, pixel_size, &extra);
+    const float rs = scale / extra; /* raster pixels per layer unit for this run */
+    const bool subpixel = pixel_size <= AX_TEXT_SUBPIXEL_MAX_SIZE;
+    const uint32_t n = g1 - g0;
+    ax_ir_glyph_run_item head;
+    uint32_t i, missing;
+    if (instance == 0 || n == 0) {
+        return true;
+    }
+    if (n > f->scratch_capacity) {
+        uint32_t cap = f->scratch_capacity < 256u ? 256u : f->scratch_capacity;
+        ax_glyph_key *k;
+        ax_ir_glyph *g;
+        while (cap < n) {
+            cap *= 2u;
+        }
+        k = (ax_glyph_key *)ax_mem_alloc(&w->allocator, sizeof *k * cap, AX_ALIGNOF(ax_glyph_key));
+        g = (ax_ir_glyph *)ax_mem_alloc(&w->allocator, sizeof *g * cap, AX_ALIGNOF(ax_ir_glyph));
+        if (k == NULL || g == NULL) {
+            ax_mem_free(&w->allocator, k, sizeof *k * cap);
+            ax_mem_free(&w->allocator, g, sizeof *g * cap);
+            return false;
+        }
+        ax_mem_free(&w->allocator, f->keys, sizeof(ax_glyph_key) * f->scratch_capacity);
+        ax_mem_free(&w->allocator, f->glyphs, sizeof(ax_ir_glyph) * f->scratch_capacity);
+        f->keys = k;
+        f->glyphs = g;
+        f->scratch_capacity = cap;
+    }
+    for (i = 0; i < n; ++i) {
+        const ax_text_glyph *tg = &l->glyphs[g0 + i];
+        /* On the raster grid: the baseline on a whole pixel, x to a quarter pixel (subpixel
+         * positions) or a whole one above AX_TEXT_SUBPIXEL_MAX_SIZE. In double, so positions far
+         * from the origin keep their quarters. */
+        const double x = ((double)origin.x + (double)tg->x) * (double)rs;
+        const double y = ((double)origin.y + (double)tg->y) * (double)rs;
+        ax_ir_glyph *g = &f->glyphs[i];
+        g->id = tg->id;
+        g->y = (int32_t)round_to_i64(y);
+        if (subpixel) {
+            const int64_t q = round_to_i64(x * (double)AX_TEXT_SUBPIXEL_BINS);
+            g->x = floor_div4(q);
+            g->bin = (uint32_t)(q - (int64_t)g->x * 4);
+        } else {
+            g->x = (int32_t)round_to_i64(x);
+            g->bin = 0;
+        }
+        f->keys[i].instance = instance;
+        f->keys[i].glyph = g->id;
+        f->keys[i].bin = g->bin;
+    }
+    missing = ax_text_glyphs_ensure(ts, f->keys, n, f->epoch, w->jobs, &f->glyph_budget);
+    if (missing > 0) {
+        e->incomplete = true;
+        f->counters.glyph_runs_deferred++;
+        return true; /* the whole run later, never part of it */
+    }
+    memset(&head, 0, sizeof head);
+    head.header.type = AX_IR_ITEM_GLYPH_RUN;
+    head.header.size = (uint32_t)(sizeof head + sizeof(ax_ir_glyph) * n);
+    head.color = color;
+    head.font_instance = instance;
+    head.glyph_count = n;
+    head.raster_scale = rs;
+    f->counters.items_recorded++;
+    f->counters.glyph_runs++;
+    return append_item(w, e, &head, (uint32_t)sizeof head) &&
+           append_item(w, e, f->glyphs, (uint32_t)(sizeof(ax_ir_glyph) * n));
+}
+
+/* The glyph runs of a text leaf: its paragraph laid out at its content box's width, one run per
+ * line and font. */
+static bool record_text(world_impl *w, rec_entry *e, uint32_t row, const pres *pr, ax_vec2 origin)
+{
+    const ax_node_store *s = &w->scene.store;
+    const ax_node_text *t = (const ax_node_text *)ax_node_store_peek_component(
+        s, s->slot_of_row[row], w->scene.text_component);
+    const ax_node_layout *box = &s->layout[row];
+    ax_text_system *ts = w->text;
+    const ax_text_layout *l;
+    ax_vec2 content;
+    float cw;
+    ax_color color;
+    uint32_t i;
+    bool ok = true;
+    if (t == NULL || t->paragraph == NULL || ts == NULL) {
+        return true;
+    }
+    color = t->computed.color;
+    if (!(color.a > 0.0f)) {
+        return true;
+    }
+    content.x = origin.x + box->border[AX_EDGE_LEFT] + box->padding[AX_EDGE_LEFT];
+    content.y = origin.y + box->border[AX_EDGE_TOP] + box->padding[AX_EDGE_TOP];
+    cw = pr->frame.w - box->border[AX_EDGE_LEFT] - box->padding[AX_EDGE_LEFT] -
+         box->border[AX_EDGE_RIGHT] - box->padding[AX_EDGE_RIGHT];
+    if (cw < 0.0f) {
+        cw = 0.0f;
+    }
+    l = ax_text_paragraph_layout(t->paragraph, cw, cw);
+    if (l == NULL) {
+        return false;
+    }
+    for (i = 0; i < l->line_count && ok; ++i) {
+        const ax_text_line *line = &l->lines[i];
+        uint32_t g = line->first_glyph, end = line->first_glyph + line->glyph_count;
+        while (g < end && ok) {
+            uint32_t k = g + 1u;
+            while (k < end && l->glyphs[k].font == l->glyphs[g].font &&
+                   l->glyphs[k].size == l->glyphs[g].size) {
+                k++;
+            }
+            ok = record_run(w, e, ts, l, g, k, content, color, w->frame->record_scale);
+            g = k;
+        }
+    }
+    ax_text_layout_release(l);
+    return ok;
+}
+
+static bool record_items(world_impl *w, rec_entry *e, uint32_t row, const pres *pr, ax_vec2 origin)
 {
     const ax_node_paint *p = &pr->paint;
     const ax_rect frame = pr->frame;
     const ax_rect rect = ax_rect_make(origin.x, origin.y, frame.w, frame.h);
     e->size = 0;
+    e->incomplete = false;
+    e->raster_scale = w->frame->record_scale;
     w->frame->counters.nodes_recorded++;
-    if (p->background.a <= 0.0f || frame.w <= 0.0f || frame.h <= 0.0f) {
+    if (frame.w <= 0.0f || frame.h <= 0.0f) {
         return true; /* nothing visible */
+    }
+    if (p->background.a <= 0.0f) {
+        return record_text(w, e, row, pr, origin);
     }
     if (p->corner_radius[0] > 0.0f || p->corner_radius[1] > 0.0f || p->corner_radius[2] > 0.0f ||
         p->corner_radius[3] > 0.0f) {
@@ -485,7 +657,9 @@ static bool record_items(world_impl *w, rec_entry *e, const pres *pr, ax_vec2 or
         memcpy(it.radii, p->corner_radius, sizeof it.radii);
         it.color = p->background;
         w->frame->counters.items_recorded++;
-        return append_item(w, e, &it, (uint32_t)sizeof it);
+        if (!append_item(w, e, &it, (uint32_t)sizeof it)) {
+            return false;
+        }
     } else {
         ax_ir_rect_item it;
         memset(&it, 0, sizeof it);
@@ -494,8 +668,11 @@ static bool record_items(world_impl *w, rec_entry *e, const pres *pr, ax_vec2 or
         it.rect = rect;
         it.color = p->background;
         w->frame->counters.items_recorded++;
-        return append_item(w, e, &it, (uint32_t)sizeof it);
+        if (!append_item(w, e, &it, (uint32_t)sizeof it)) {
+            return false;
+        }
     }
+    return record_text(w, e, row, pr, origin);
 }
 
 /* Emits the node's items: from the cache when still valid, recorded again otherwise. */
@@ -508,9 +685,9 @@ static bool emit_items(world_impl *w, ax_ir_builder *b, uint32_t slot, const pre
     uint32_t off = 0;
     bool reuse = e->generation == s->slots[slot].generation && !e->stale && e->layer == layer &&
                  e->origin.x == origin.x && e->origin.y == origin.y && e->width == frame.w &&
-                 e->height == frame.h;
+                 e->height == frame.h && e->raster_scale == w->frame->record_scale;
     if (!reuse) {
-        if (!record_items(w, e, pr, origin)) {
+        if (!record_items(w, e, s->slots[slot].row, pr, origin)) {
             return false;
         }
         e->generation = s->slots[slot].generation;
@@ -580,6 +757,14 @@ ax_result ax_world_record_root(ax_world world, ax_node root, ax_ir_builder *b)
     s = &w->scene.store;
     if (!grow(w, (void **)&f->rec, &f->rec_capacity, s->slot_count, sizeof(rec_entry))) {
         return ax_set_error(AX_ERR_OUT_OF_MEMORY, "ax_world_record_root: out of memory");
+    }
+    /* Text (decisions 100 and 101): the snapshot's epoch stamps the glyphs it uses, and its
+     * glyph source lets the renderer read them. */
+    f->epoch++;
+    f->record_scale = r->scale;
+    f->glyph_budget = w->jobs != NULL && !ax_jobs_is_inline(w->jobs) ? 1024u : 256u;
+    if (w->text != NULL) {
+        ax_ir_builder_set_resources(b, &w->glyph_source, f->epoch);
     }
     if (!grow(w, (void **)&f->stack, &f->stack_capacity, 1u, sizeof(rec_frame))) {
         return ax_set_error(AX_ERR_OUT_OF_MEMORY, "ax_world_record_root: out of memory");
@@ -732,4 +917,13 @@ void ax_world_get_frame_counters(ax_world world, ax_frame_counters *out, bool re
     if (reset) {
         memset(&w->frame->counters, 0, sizeof w->frame->counters);
     }
+}
+
+uint32_t ax_world_retire_glyphs(ax_world world, uint64_t oldest_live_epoch)
+{
+    world_impl *w = scene_world(world);
+    if (w == NULL || w->text == NULL) {
+        return 0;
+    }
+    return ax_text_glyphs_retire(w->text, oldest_live_epoch);
 }

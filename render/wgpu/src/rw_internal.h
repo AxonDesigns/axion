@@ -41,6 +41,47 @@ typedef struct rw_clip {
 
 #define RW_FLAG_ROUNDED                    1u
 #define RW_FLAG_FOOTPRINT_FROM_DERIVATIVES 2u
+#define RW_FLAG_GLYPH                      4u /* radii = the glyph's texels; page and LUT row in
+                                               * bits 8-15 and 16-23 of the flags */
+
+/* ---- The glyph atlas (atlas.c, decision 101) ---- */
+
+#define RW_ATLAS_SIZE    1024u
+#define RW_ATLAS_PAGES   4u
+#define RW_ATLAS_SHELVES 96u
+#define RW_ATLAS_ENTRIES 8192u
+#define RW_ATLAS_TABLE   16384u /* power of two, at least twice the entries */
+
+typedef struct rw_shelf {
+    uint32_t y, height, x;
+} rw_shelf;
+
+typedef struct rw_atlas_page {
+    rw_shelf shelves[RW_ATLAS_SHELVES];
+    uint32_t shelf_count;
+    uint64_t last_frame;
+} rw_atlas_page;
+
+typedef struct rw_atlas_entry {
+    uint32_t instance, glyph, bin;
+    uint16_t page, x, y, w, h; /* x, y: the bitmap's first texel (inside its border) */
+    int16_t left, top;
+} rw_atlas_entry;
+
+typedef struct rw_atlas {
+    WGPUTexture texture; /* R8Unorm, RW_ATLAS_PAGES layers */
+    WGPUTextureView view;
+    WGPUTexture lut; /* 256 x AX_IR_TEXT_LUT_BUCKETS, R8Unorm */
+    WGPUTextureView lut_view;
+    WGPUSampler sampler;
+    uint32_t generation;
+    uint64_t frame;
+    rw_atlas_page pages[RW_ATLAS_PAGES];
+    rw_atlas_entry entries[RW_ATLAS_ENTRIES];
+    uint32_t entry_count;
+    uint32_t table[RW_ATLAS_TABLE]; /* entry index + 1, 0: empty */
+    uint64_t uploads, evictions, skipped;
+} rw_atlas;
 
 enum { RW_MAX_PIPELINES = 4, RW_MAX_SURFACES = 8 };
 
@@ -77,11 +118,21 @@ struct ax_render_wgpu {
     bool linear_blend;   /* AX_RENDER_WGPU_DIAG_LINEAR_BLEND (unsupported, decision 58) */
     uint32_t test_flags; /* RW_TEST_* (render/wgpu/src/rw_testing.h) */
 
+    rw_atlas atlas; /* glyphs (atlas.c) */
+
     rw_surface *surfaces; /* window surfaces (surface.c), NULL without the platform module */
     uint32_t surface_count;
 
     ax_render_wgpu_stats stats;
 };
+
+/* The atlas (atlas.c): a frame begins (textures for the current device; false when they cannot
+ * be made), a glyph's place (uploaded on first use; NULL when it has no bitmap or no room is left;
+ * valid until the next call), and the textures freed. */
+bool ax__rw_atlas_begin(ax_render_wgpu *r);
+const rw_atlas_entry *ax__rw_atlas_glyph(ax_render_wgpu *r, const ax_ir_glyph_source *src,
+                                         uint32_t instance, uint32_t glyph, uint32_t bin);
+void ax__rw_atlas_free(ax_render_wgpu *r);
 
 /* Releases the window surfaces (surface.c; a no-op without the platform module). */
 void ax__render_wgpu_destroy_surfaces(ax_render_wgpu *r);

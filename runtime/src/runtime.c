@@ -616,6 +616,19 @@ static void tick(rt_impl *r, uint32_t index, const ax_rt_request *q)
     /* 6. The mirror, after layout. 7. The flags, consumed. */
     (void)ax_world_publish_mirror(world);
     ax_scene_clear_dirty(scene);
+    /* 8. Glyphs no drawable snapshot uses may go (decision 100): the oldest resource epoch the
+     * mailboxes still hold, over every surface. */
+    {
+        uint64_t oldest = UINT64_MAX;
+        uint32_t i;
+        for (i = 0; i < AX_RUNTIME_MAX_SURFACES; ++i) {
+            if (r->surfaces[i].scene_live) {
+                const uint64_t e = ax_ir_mailbox_oldest_epoch(&r->surfaces[i].mailbox);
+                oldest = e < oldest ? e : oldest;
+            }
+        }
+        (void)ax_world_retire_glyphs(world, oldest);
+    }
 }
 
 /* What reached the screen, and the watermark for ax_txn_on_presented (decision 75): every

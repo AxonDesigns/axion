@@ -81,7 +81,18 @@ typedef struct soft_clip {
     uint32_t parent; /* AX_IR_NO_INDEX for the outermost */
 } soft_clip;
 
-enum { SOFT_CMD_ITEM = 0, SOFT_CMD_PUSH = 1, SOFT_CMD_POP = 2 };
+enum { SOFT_CMD_ITEM = 0, SOFT_CMD_PUSH = 1, SOFT_CMD_POP = 2, SOFT_CMD_GLYPH = 3 };
+
+/* A glyph's bitmap as a command samples it (decision 101). */
+typedef struct soft_glyph {
+    const uint8_t *pixels;
+    uint32_t stride;
+    int32_t width, height;
+    uint32_t exact;     /* raster pixels land on device pixels: copied as they are */
+    int32_t x0, y0;     /* exact: the device pixel of the bitmap's top-left */
+    soft_affine inv;    /* otherwise: device point -> bitmap coordinates (pixel units) */
+    const uint8_t *lut; /* the coverage correction for the run's luminance (256 entries) */
+} soft_glyph;
 
 /* One step of the frame, in painting order. */
 typedef struct soft_cmd {
@@ -93,6 +104,7 @@ typedef struct soft_cmd {
     float color[4];   /* ITEM: premultiplied (sRGB-encoded, or linear when `linear`); PUSH: [3] is
                        * the group's opacity */
     soft_shape shape; /* ITEM */
+    soft_glyph glyph; /* GLYPH */
 } soft_cmd;
 
 /* A prepared frame: everything tiles read, never written while they run. */
@@ -112,8 +124,8 @@ typedef struct soft_frame {
 
 /* Turns a snapshot into the frame's commands (prepare.c), in `arena`. */
 ax_result ax__soft_prepare(const ax_render_ir *ir, uint32_t width, uint32_t height, float scale,
-                           bool linear_default, ax_arena *arena, soft_frame *out,
-                           ax_render_counts *counts);
+                           bool linear_default, const uint8_t (*lut)[256], ax_arena *arena,
+                           soft_frame *out, ax_render_counts *counts);
 
 /* State another part of the renderer (surface.c) keeps with it, freed by ax_render_soft_destroy.
  * One allocation per renderer. */

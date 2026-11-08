@@ -278,7 +278,7 @@ jobs:
   # renderer's and the headless host's tests run in Node: the cooperative mode (ax_host_frame), the
   # inline job system and SIMD128 as the web runs them (decision 79). Tests that need threads skip.
   emscripten:
-    name: Web / Emscripten / single-threaded (core, render IR, runtime, soft, headless in Node)
+    name: Web / Emscripten / single-threaded (core, text, render IR, runtime, soft, headless in Node)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

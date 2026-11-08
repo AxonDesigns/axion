@@ -23,6 +23,8 @@
 #include <axion/core/ax_text_node.h>
 #include <axion/text/ax_text.h>
 
+static void attach(world_impl *w);
+
 void ax_world_set_text_system(ax_world world, struct ax_text_system *text)
 {
     world_impl *w = ax__world_from_handle(world);
@@ -37,8 +39,51 @@ void ax_world_set_text_system(ax_world world, struct ax_text_system *text)
                       "ax_world_set_text_system: set it before the first text");
         ax_text_system_destroy(w->text);
     }
+    if (w->text != NULL) {
+        ax_text_set_glyphs_ready_callback(w->text, NULL, NULL);
+    }
     w->text = text;
     w->text_owned = false;
+    attach(w);
+}
+
+/* The snapshots' glyph source (decision 101): the text system's cache. Called on the render
+ * thread; the bitmaps stay while a live snapshot uses them (decision 100). */
+static bool glyph_lookup(const ax_ir_glyph_source *self, uint32_t font_instance, uint32_t glyph,
+                         uint32_t bin, ax_ir_glyph_bitmap *out)
+{
+    const world_impl *w = (const world_impl *)self->user;
+    ax_glyph_key k;
+    ax_glyph_bitmap b;
+    k.instance = font_instance;
+    k.glyph = glyph;
+    k.bin = bin;
+    if (w->text == NULL || !ax_text_glyph_lookup(w->text, &k, &b)) {
+        return false;
+    }
+    out->width = b.width;
+    out->height = b.height;
+    out->left = b.left;
+    out->top = b.top;
+    out->stride = b.stride;
+    out->pixels = b.pixels;
+    return true;
+}
+
+/* Background glyphs are ready: the nodes that waited record again at the next frame. */
+static void glyphs_ready(void *user)
+{
+    world_impl *w = (world_impl *)user;
+    ax_atomic_store_u32(&w->glyphs_arrived, 1u, AX_MO_RELEASE);
+}
+
+static void attach(world_impl *w)
+{
+    w->glyph_source.lookup = glyph_lookup;
+    w->glyph_source.user = w;
+    if (w->text != NULL) {
+        ax_text_set_glyphs_ready_callback(w->text, glyphs_ready, w);
+    }
 }
 
 static ax_text_system *text_system(world_impl *w)
@@ -49,6 +94,7 @@ static ax_text_system *text_system(world_impl *w)
         d.allocator = &w->allocator;
         if (ax_text_system_create(&d, &w->text) == AX_OK) {
             w->text_owned = true;
+            attach(w);
         }
     }
     return w->text;
@@ -64,6 +110,9 @@ ax_text_system *ax_world_text_system(ax_world world)
 
 void ax__text_free(world_impl *w)
 {
+    if (w->text != NULL && !w->text_owned) {
+        ax_text_set_glyphs_ready_callback(w->text, NULL, NULL); /* it outlives the world */
+    }
     if (w->text_owned && w->text != NULL) {
         ax_text_system_destroy(w->text);
     }

@@ -4,6 +4,7 @@
  *
  * Render IR: building and validating snapshots.
  */
+#include <stddef.h>
 #include <string.h>
 
 #include "axion/base/ax_assert.h"
@@ -14,6 +15,8 @@
 AX_STATIC_ASSERT(sizeof(ax_ir_item_header) == 8, "item header is 8 bytes");
 AX_STATIC_ASSERT(sizeof(ax_ir_rect_item) % AX_IR_ITEM_ALIGN == 0, "rect item padded");
 AX_STATIC_ASSERT(sizeof(ax_ir_rounded_rect_item) % AX_IR_ITEM_ALIGN == 0, "rrect item padded");
+AX_STATIC_ASSERT(sizeof(ax_ir_glyph_run_item) % AX_IR_ITEM_ALIGN == 0, "glyph run padded");
+AX_STATIC_ASSERT(sizeof(ax_ir_glyph) == 16, "glyph record is 16 bytes");
 AX_STATIC_ASSERT(sizeof(ax_ir_layer) == AX__IR_LAYER_SIZE_1_0, "layer record of version 1.0");
 
 enum { MIN_LAYERS = 16, MIN_ITEMS = 1024, MIN_DAMAGE = 4, MIN_DEPTH = 8 };
@@ -28,6 +31,8 @@ static size_t known_item_size(uint16_t type)
         return sizeof(ax_ir_rect_item);
     case AX_IR_ITEM_ROUNDED_RECT:
         return sizeof(ax_ir_rounded_rect_item);
+    case AX_IR_ITEM_GLYPH_RUN:
+        return sizeof(ax_ir_glyph_run_item);
     default:
         return sizeof(ax_ir_item_header);
     }
@@ -103,6 +108,16 @@ ax_result ax_ir_validate(const ax_render_ir *ir)
                 return ax_set_error(AX_ERR_INVALID_ARGUMENT,
                                     "render IR: layer %u, item at byte %u: type %u, size %u", i,
                                     offset, h.type, h.size);
+            }
+            if (h.type == AX_IR_ITEM_GLYPH_RUN) {
+                ax_ir_glyph_run_item run;
+                memcpy(&run, ir->items + offset, sizeof run);
+                if (run.glyph_count > (h.size - sizeof run) / sizeof(ax_ir_glyph)) {
+                    return ax_set_error(AX_ERR_INVALID_ARGUMENT,
+                                        "render IR: layer %u, glyph run at byte %u: %u glyphs in "
+                                        "%u bytes",
+                                        i, offset, run.glyph_count, h.size);
+                }
             }
             offset += h.size;
             ++count;
@@ -409,4 +424,40 @@ ax_result ax_ir_builder_end(ax_ir_builder *b, const ax_render_ir **out_ir)
 #endif
     *out_ir = &b->ir;
     return AX_OK;
+}
+
+void ax_ir_glyph_run(ax_ir_builder *b, const ax_ir_glyph_run_item *item, const ax_ir_glyph *glyphs,
+                     uint32_t glyph_count)
+{
+    const uint32_t fixed = (uint32_t)(sizeof *item - sizeof item->header);
+    uint8_t *payload;
+    uint32_t bytes;
+    if (glyph_count > (UINT32_MAX - (uint32_t)sizeof *item) / (uint32_t)sizeof(ax_ir_glyph)) {
+        if (b->error == AX_OK) {
+            b->error = ax_set_error(AX_ERR_UNSUPPORTED, "ax_ir_glyph_run: too many glyphs");
+        }
+        return;
+    }
+    bytes = fixed + glyph_count * (uint32_t)sizeof(ax_ir_glyph);
+    payload = (uint8_t *)ax_arena_alloc(&b->arena, bytes > 0 ? bytes : 1, 8);
+    if (payload == NULL) {
+        if (b->error == AX_OK) {
+            b->error = ax_set_error(AX_ERR_OUT_OF_MEMORY, "ax_ir_glyph_run: out of memory");
+        }
+        return;
+    }
+    memcpy(payload, (const uint8_t *)item + sizeof item->header, fixed);
+    memcpy(payload + offsetof(ax_ir_glyph_run_item, glyph_count) - sizeof item->header,
+           &glyph_count, sizeof glyph_count);
+    if (glyph_count > 0) {
+        memcpy(payload + fixed, glyphs, sizeof(ax_ir_glyph) * glyph_count);
+    }
+    ax_ir_item(b, AX_IR_ITEM_GLYPH_RUN, item->header.flags, payload, bytes);
+}
+
+void ax_ir_builder_set_resources(ax_ir_builder *b, const ax_ir_glyph_source *glyphs,
+                                 uint64_t resource_epoch)
+{
+    b->ir.glyphs = glyphs;
+    b->ir.resource_epoch = resource_epoch;
 }

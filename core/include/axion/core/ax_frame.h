@@ -123,6 +123,13 @@ AX_API bool ax_world_root_changed(ax_world world, ax_node root, uint64_t *out_se
  */
 AX_API ax_result ax_world_record_root(ax_world world, ax_node root, ax_ir_builder *b);
 
+/*
+ * Lets the text system evict glyphs that no snapshot still drawable uses (decision 100): the
+ * runtime passes the oldest resource epoch of the snapshots its mailboxes hold
+ * (ax_ir_mailbox_oldest_epoch). Returns the number of glyphs evicted.
+ */
+AX_API uint32_t ax_world_retire_glyphs(ax_world world, uint64_t oldest_live_epoch);
+
 /* Counters since the last reset, for tests and profiles. */
 typedef struct ax_frame_counters {
     uint64_t frames_changed;    /* layout: frames that changed */
@@ -135,6 +142,8 @@ typedef struct ax_frame_counters {
     uint64_t layers_demoted;    /* layers back in their parent's space after a neutral second */
     uint64_t present_relayouts; /* resizing nodes whose children were laid out again */
     uint64_t snapshots;         /* ax_world_record_root calls that succeeded */
+    uint64_t glyph_runs;          /* glyph runs recorded (decision 101) */
+    uint64_t glyph_runs_deferred; /* runs left out whole: their glyphs were not ready yet */
 } ax_frame_counters;
 
 AX_API void ax_world_get_frame_counters(ax_world world, ax_frame_counters *out, bool reset);

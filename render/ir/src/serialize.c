@@ -22,16 +22,30 @@
  *       88  f32 opacity; u32 blend_mode; u32 effects
  *   then    items_size bytes: the item stream, unchanged
  *
+ * Minor 1 appends to the header (readers of 1.0 skip it with header_size):
+ *       80  u64 resource_epoch
+ *       88  u32 glyph_table_size          92  u32 glyph_count
+ *       96  glyph_count entries sorted by (instance, glyph, bin), each
+ *              u32 instance, u32 glyph, u32 bin, u16 width, u16 height, i16 left, i16 top,
+ *              u32 reserved (0), then width x height coverage bytes, padded to 4
+ *   Every glyph the snapshot's runs use whose bitmap its glyph source has: a deserialized snapshot
+ *   draws its text with no text system (decision 101).
+ *
  * The item stream is copied as it is, so unknown items survive a round trip. Its records are
  * little-endian in memory too, which every AXION target is; a big-endian host is rejected.
  */
+#include <stddef.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "axion/base/ax_error_set.h"
+#include "axion/base/ax_memory.h"
 #include "axion/render/ax_render_ir.h"
 #include "ir_internal.h"
 
 #define HEADER_SIZE_1_0 80u
+#define HEADER_SIZE_1_1 96u
+#define GLYPH_ENTRY     24u
 
 static bool host_is_little_endian(void)
 {
@@ -100,12 +114,130 @@ static float r_f32(const uint8_t *p)
     return f;
 }
 
+/* ---- the glyph table ------------------------------------------------------------------------- */
+
+typedef struct glyph_key {
+    uint32_t instance, glyph, bin;
+} glyph_key;
+
+static int key_cmp(const void *a, const void *b)
+{
+    const glyph_key *x = (const glyph_key *)a, *y = (const glyph_key *)b;
+    if (x->instance != y->instance) {
+        return x->instance < y->instance ? -1 : 1;
+    }
+    if (x->glyph != y->glyph) {
+        return x->glyph < y->glyph ? -1 : 1;
+    }
+    if (x->bin != y->bin) {
+        return x->bin < y->bin ? -1 : 1;
+    }
+    return 0;
+}
+
+/* The distinct glyphs of the snapshot's runs, sorted (allocated with the default allocator; the
+ * caller frees `*cap` keys). */
+static ax_result collect_glyphs(const ax_render_ir *ir, glyph_key **out, uint32_t *out_count,
+                                uint32_t *cap)
+{
+    const ax_allocator *a = ax_default_allocator();
+    glyph_key *keys = NULL;
+    uint32_t n = 0, c = 0, i;
+    *out = NULL;
+    *out_count = 0;
+    *cap = 0;
+    if (ir->glyphs == NULL) {
+        return AX_OK;
+    }
+    for (i = 0; i < ir->layer_count; ++i) {
+        ax_ir_item_iter it = ax_ir_items(ir, ax_ir_layer_at(ir, i));
+        const ax_ir_item_header *h;
+        while ((h = ax_ir_item_next(&it)) != NULL) {
+            ax_ir_glyph_run_item run;
+            uint32_t k;
+            if (h->type != AX_IR_ITEM_GLYPH_RUN) {
+                continue;
+            }
+            memcpy(&run, h, sizeof run);
+            if (n + run.glyph_count > c) {
+                uint32_t nc = c < 256u ? 256u : c;
+                glyph_key *fresh;
+                while (nc < n + run.glyph_count) {
+                    nc *= 2u;
+                }
+                fresh = (glyph_key *)ax_mem_alloc(a, sizeof(glyph_key) * nc, 4);
+                if (fresh == NULL) {
+                    ax_mem_free(a, keys, sizeof(glyph_key) * c);
+                    return ax_set_error(AX_ERR_OUT_OF_MEMORY, "render IR: out of memory");
+                }
+                if (keys != NULL) {
+                    memcpy(fresh, keys, sizeof(glyph_key) * n);
+                    ax_mem_free(a, keys, sizeof(glyph_key) * c);
+                }
+                keys = fresh;
+                c = nc;
+            }
+            for (k = 0; k < run.glyph_count; ++k) {
+                ax_ir_glyph g;
+                memcpy(&g, (const uint8_t *)h + sizeof run + sizeof g * k, sizeof g);
+                keys[n].instance = run.font_instance;
+                keys[n].glyph = g.id;
+                keys[n].bin = g.bin;
+                n++;
+            }
+        }
+    }
+    if (n > 1) {
+        uint32_t w = 1;
+        qsort(keys, n, sizeof(glyph_key), key_cmp);
+        for (i = 1; i < n; ++i) {
+            if (key_cmp(&keys[i], &keys[w - 1u]) != 0) {
+                keys[w++] = keys[i];
+            }
+        }
+        n = w;
+    }
+    *out = keys;
+    *out_count = n;
+    *cap = c;
+    return AX_OK;
+}
+
+/* Bytes of the glyph table for these keys (those the source has). */
+static size_t table_size(const ax_render_ir *ir, const glyph_key *keys, uint32_t n,
+                         uint32_t *out_present)
+{
+    size_t size = 0;
+    uint32_t i, present = 0;
+    for (i = 0; i < n; ++i) {
+        ax_ir_glyph_bitmap b;
+        if (ir->glyphs->lookup(ir->glyphs, keys[i].instance, keys[i].glyph, keys[i].bin, &b)) {
+            size += GLYPH_ENTRY + (((size_t)b.width * b.height + 3u) & ~(size_t)3u);
+            present++;
+        }
+    }
+    *out_present = present;
+    return size;
+}
+
 /* ---- writing --------------------------------------------------------------------------------- */
+
+static size_t body_size(const ax_render_ir *ir)
+{
+    return (size_t)ir->damage_count * 16u + (size_t)ir->layer_count * AX__IR_LAYER_SIZE_1_0 +
+           ir->items_size;
+}
 
 size_t ax_ir_serialized_size(const ax_render_ir *ir)
 {
-    return HEADER_SIZE_1_0 + (size_t)ir->damage_count * 16u +
-           (size_t)ir->layer_count * AX__IR_LAYER_SIZE_1_0 + ir->items_size;
+    glyph_key *keys;
+    uint32_t n = 0, cap = 0, present = 0;
+    size_t table = 0;
+    if (collect_glyphs(ir, &keys, &n, &cap) == AX_OK && keys != NULL) {
+        table = table_size(ir, keys, n, &present);
+        ax_mem_free(ax_default_allocator(), keys, sizeof(glyph_key) * cap);
+    }
+    return HEADER_SIZE_1_1 + table + body_size(ir);
 }
 
 static void write_layer(writer *w, const ax_ir_layer *l)
@@ -139,13 +271,15 @@ static void write_layer(writer *w, const ax_ir_layer *l)
 
 ax_result ax_ir_serialize(const ax_render_ir *ir, void *out, size_t capacity, size_t *out_size)
 {
-    const size_t size = ax_ir_serialized_size(ir);
+    glyph_key *keys = NULL;
+    uint32_t n = 0, cap = 0, present = 0;
+    size_t table = 0, size;
     writer w;
     uint32_t i;
     ax_result r;
 
     if (out_size != NULL) {
-        *out_size = size;
+        *out_size = 0;
     }
     if (!host_is_little_endian()) {
         return ax_set_error(AX_ERR_UNSUPPORTED, "render IR: big-endian hosts are not supported");
@@ -154,7 +288,19 @@ ax_result ax_ir_serialize(const ax_render_ir *ir, void *out, size_t capacity, si
     if (r != AX_OK) {
         return r;
     }
-    if (capacity < size) {
+    r = collect_glyphs(ir, &keys, &n, &cap);
+    if (r != AX_OK) {
+        return r;
+    }
+    if (keys != NULL) {
+        table = table_size(ir, keys, n, &present);
+    }
+    size = HEADER_SIZE_1_1 + table + body_size(ir);
+    if (out_size != NULL) {
+        *out_size = size;
+    }
+    if (capacity < size || table > UINT32_MAX - HEADER_SIZE_1_1) {
+        ax_mem_free(ax_default_allocator(), keys, sizeof(glyph_key) * cap);
         return ax_set_error(AX_ERR_OUT_OF_MEMORY, "render IR: %zu bytes needed, %zu given", size,
                             capacity);
     }
@@ -163,7 +309,7 @@ ax_result ax_ir_serialize(const ax_render_ir *ir, void *out, size_t capacity, si
     w.p += 4;
     w_u16(&w, ir->version_major);
     w_u16(&w, ir->version_minor);
-    w_u32(&w, HEADER_SIZE_1_0);
+    w_u32(&w, (uint32_t)(HEADER_SIZE_1_1 + table));
     w_u32(&w, 0);
     w_f32(&w, ir->logical_width);
     w_f32(&w, ir->logical_height);
@@ -179,6 +325,36 @@ ax_result ax_ir_serialize(const ax_render_ir *ir, void *out, size_t capacity, si
     w_u32(&w, AX__IR_LAYER_SIZE_1_0);
     w_u32(&w, ir->items_size);
     w_u32(&w, 0);
+    /* Minor 1: the resource epoch and the glyph table. */
+    w_u64(&w, ir->struct_size >= offsetof(ax_render_ir, resource_epoch) + sizeof(uint64_t)
+                  ? ir->resource_epoch
+                  : 0u);
+    w_u32(&w, (uint32_t)table);
+    w_u32(&w, present);
+    for (i = 0; i < n; ++i) {
+        ax_ir_glyph_bitmap b;
+        uint32_t y;
+        size_t pad;
+        if (!ir->glyphs->lookup(ir->glyphs, keys[i].instance, keys[i].glyph, keys[i].bin, &b)) {
+            continue;
+        }
+        w_u32(&w, keys[i].instance);
+        w_u32(&w, keys[i].glyph);
+        w_u32(&w, keys[i].bin);
+        w_u16(&w, b.width);
+        w_u16(&w, b.height);
+        w_u16(&w, (uint16_t)b.left);
+        w_u16(&w, (uint16_t)b.top);
+        w_u32(&w, 0);
+        for (y = 0; y < b.height; ++y) {
+            memcpy(w.p, b.pixels + (size_t)y * b.stride, b.width);
+            w.p += b.width;
+        }
+        pad = (4u - ((size_t)b.width * b.height) % 4u) % 4u;
+        memset(w.p, 0, pad);
+        w.p += pad;
+    }
+    ax_mem_free(ax_default_allocator(), keys, sizeof(glyph_key) * cap);
     for (i = 0; i < ir->damage_count; ++i) {
         w_f32(&w, ir->damage[i].x);
         w_f32(&w, ir->damage[i].y);
@@ -225,9 +401,106 @@ static void read_layer(const uint8_t *p, ax_ir_layer *l)
     l->effects = r_u32(p + 96);
 }
 
+/* A deserialized snapshot's glyph source: the table's entries, sorted, in the arena. */
+typedef struct table_entry {
+    glyph_key key;
+    ax_ir_glyph_bitmap bitmap;
+} table_entry;
+
+typedef struct table_source {
+    ax_ir_glyph_source base;
+    const table_entry *entries;
+    uint32_t count;
+} table_source;
+
+static bool table_lookup(const ax_ir_glyph_source *self, uint32_t instance, uint32_t glyph,
+                         uint32_t bin, ax_ir_glyph_bitmap *out)
+{
+    const table_source *t = (const table_source *)self;
+    glyph_key k;
+    uint32_t lo = 0, hi = t->count;
+    k.instance = instance;
+    k.glyph = glyph;
+    k.bin = bin;
+    while (lo < hi) {
+        const uint32_t mid = lo + (hi - lo) / 2u;
+        const int c = key_cmp(&t->entries[mid].key, &k);
+        if (c == 0) {
+            *out = t->entries[mid].bitmap;
+            return true;
+        }
+        if (c < 0) {
+            lo = mid + 1u;
+        } else {
+            hi = mid;
+        }
+    }
+    return false;
+}
+
+static ax_result read_glyph_table(const uint8_t *p, uint32_t table, uint32_t count, ax_arena *arena,
+                                  const ax_ir_glyph_source **out)
+{
+    table_source *src;
+    table_entry *entries;
+    uint32_t at = 0, i;
+    *out = NULL;
+    if (count == 0) {
+        return AX_OK;
+    }
+    if (count > table / GLYPH_ENTRY) {
+        return ax_set_error(AX_ERR_INVALID_ARGUMENT, "render IR: glyph table of %u bytes, %u glyphs",
+                            table, count);
+    }
+    src = AX_ARENA_NEW(arena, table_source);
+    entries = AX_ARENA_NEW_ARRAY(arena, table_entry, count);
+    if (src == NULL || entries == NULL) {
+        return ax_set_error(AX_ERR_OUT_OF_MEMORY, "render IR: out of memory");
+    }
+    for (i = 0; i < count; ++i) {
+        table_entry *e = &entries[i];
+        size_t bytes;
+        uint8_t *pixels = NULL;
+        if (table - at < GLYPH_ENTRY) {
+            return ax_set_error(AX_ERR_INVALID_ARGUMENT, "render IR: truncated glyph table");
+        }
+        e->key.instance = r_u32(p + at);
+        e->key.glyph = r_u32(p + at + 4);
+        e->key.bin = r_u32(p + at + 8);
+        e->bitmap.width = r_u16(p + at + 12);
+        e->bitmap.height = r_u16(p + at + 14);
+        e->bitmap.left = (int16_t)r_u16(p + at + 16);
+        e->bitmap.top = (int16_t)r_u16(p + at + 18);
+        e->bitmap.stride = e->bitmap.width;
+        at += GLYPH_ENTRY;
+        bytes = (size_t)e->bitmap.width * e->bitmap.height;
+        if ((size_t)(table - at) < ((bytes + 3u) & ~(size_t)3u) ||
+            (i > 0 && key_cmp(&entries[i - 1u].key, &e->key) >= 0)) {
+            return ax_set_error(AX_ERR_INVALID_ARGUMENT, "render IR: malformed glyph table");
+        }
+        if (bytes > 0) {
+            pixels = (uint8_t *)ax_arena_alloc(arena, bytes, 4);
+            if (pixels == NULL) {
+                return ax_set_error(AX_ERR_OUT_OF_MEMORY, "render IR: out of memory");
+            }
+            memcpy(pixels, p + at, bytes);
+        }
+        e->bitmap.pixels = pixels;
+        at += (uint32_t)((bytes + 3u) & ~(size_t)3u);
+    }
+    src->base.lookup = table_lookup;
+    src->base.user = NULL;
+    src->entries = entries;
+    src->count = count;
+    *out = &src->base;
+    return AX_OK;
+}
+
 ax_result ax_ir_deserialize(const void *data, size_t size, ax_arena *arena,
                             const ax_render_ir **out_ir)
 {
+    const ax_ir_glyph_source *glyphs = NULL;
+    uint64_t epoch = 0;
     const uint8_t *p = (const uint8_t *)data;
     ax_render_ir *ir;
     ax_rect *damage = NULL;
@@ -284,6 +557,20 @@ ax_result ax_ir_deserialize(const void *data, size_t size, ax_arena *arena,
     ir->layer_count = r_u32(p + 64);
     ir->layer_stride = sizeof(ax_ir_layer);
     ir->items_size = r_u32(p + 72);
+    if (r_u16(p + 6) >= 1u && header_size >= HEADER_SIZE_1_1) {
+        const uint32_t table = r_u32(p + 88);
+        epoch = r_u64(p + 80);
+        if (table > header_size - HEADER_SIZE_1_1) {
+            return ax_set_error(AX_ERR_INVALID_ARGUMENT, "render IR: glyph table of %u bytes",
+                                table);
+        }
+        r = read_glyph_table(p + HEADER_SIZE_1_1, table, r_u32(p + 92), arena, &glyphs);
+        if (r != AX_OK) {
+            return r;
+        }
+    }
+    ir->glyphs = glyphs;
+    ir->resource_epoch = epoch;
     p += header_size;
 
     if (ir->damage_count != 0) {

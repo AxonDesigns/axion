@@ -6,6 +6,7 @@
  * texture (decision 55).
  */
 #include <math.h>
+#include <stddef.h>
 #include <string.h>
 
 #include <axion/base/ax_error_set.h>
@@ -94,6 +95,7 @@ void ax_render_wgpu_destroy(ax_render_wgpu *r)
         wgpuShaderModuleRelease(r->module);
     }
     ax_gpu_upload_ring_destroy(r->ring);
+    ax__rw_atlas_free(r);
     ax_arena_deinit(&r->scratch);
     if (r->owns_gpu) {
         ax_gpu_destroy(r->gpu);
@@ -408,6 +410,75 @@ static bool apply_clip(rw_layer_state *s, const ax_ir_clip *clip, rw_clip *recor
 }
 
 /* Turns the snapshot into instances in painting order. */
+/* The instances of a glyph run (decision 101): one quad per glyph with a bitmap, its texels in
+ * the atlas (uploaded on first use). Returns how many were written. */
+static uint32_t encode_glyphs(ax_render_wgpu *r, const ax_render_ir *ir,
+                              const ax_ir_item_header *h, const rw_layer_state *s, rw_instance *out,
+                              ax_render_counts *counts)
+{
+    const ax_ir_glyph_source *src =
+        ir->struct_size >= offsetof(ax_render_ir, glyphs) + sizeof(void *) ? ir->glyphs : NULL;
+    ax_ir_glyph_run_item run;
+    ax_color enc;
+    uint32_t k, n = 0, bucket;
+    float inv_scale;
+    memcpy(&run, h, sizeof run);
+    if (src == NULL || r->atlas.view == NULL || !(run.raster_scale > 0.0f) ||
+        !isfinite(run.raster_scale) || !finite4(&run.color.r) || !s->invertible) {
+        counts->skipped_items++;
+        return 0;
+    }
+    enc = ax_color_scale(run.color, s->opacity);
+    if (!r->linear_blend) {
+        enc = ax_color_to_srgb_premultiplied(enc);
+    }
+    enc.a = clampf(enc.a, 0.0f, 1.0f);
+    enc.r = clampf(enc.r, 0.0f, enc.a);
+    enc.g = clampf(enc.g, 0.0f, enc.a);
+    enc.b = clampf(enc.b, 0.0f, enc.a);
+    if (enc.a <= 0.0f) {
+        return 0;
+    }
+    bucket = ax_ir_text_lut_bucket(run.color);
+    inv_scale = 1.0f / run.raster_scale;
+    for (k = 0; k < run.glyph_count; ++k) {
+        ax_ir_glyph gl;
+        const rw_atlas_entry *e;
+        rw_instance *o;
+        memcpy(&gl, (const uint8_t *)h + sizeof run + sizeof gl * k, sizeof gl);
+        e = ax__rw_atlas_glyph(r, src, run.font_instance, gl.id, gl.bin);
+        if (e == NULL) {
+            continue; /* no bitmap (a space), or no room in the atlas */
+        }
+        o = &out[n++];
+        o->rect[0] = (float)(gl.x + e->left) * inv_scale;
+        o->rect[1] = (float)(gl.y - e->top) * inv_scale;
+        o->rect[2] = (float)e->w * inv_scale;
+        o->rect[3] = (float)e->h * inv_scale;
+        o->radii[0] = (float)e->x;
+        o->radii[1] = (float)e->y;
+        o->radii[2] = (float)(e->x + e->w);
+        o->radii[3] = (float)(e->y + e->h);
+        o->color[0] = enc.r;
+        o->color[1] = enc.g;
+        o->color[2] = enc.b;
+        o->color[3] = enc.a;
+        o->xform[0] = s->clip.a;
+        o->xform[1] = s->clip.b;
+        o->xform[2] = s->clip.c;
+        o->xform[3] = s->clip.d;
+        o->xlate[0] = s->clip.tx;
+        o->xlate[1] = s->clip.ty;
+        o->xlate[2] = (float)(RW_FLAG_GLYPH | ((uint32_t)e->page << 8) | (bucket << 16));
+        o->xlate[3] = (float)s->head;
+        o->inv[0] = s->inv.a;
+        o->inv[1] = s->inv.b;
+        o->inv[2] = s->inv.c;
+        o->inv[3] = s->inv.d;
+    }
+    return n;
+}
+
 static ax_result encode(ax_render_wgpu *r, const ax_render_ir *ir, uint32_t width, uint32_t height,
                         float scale, rw_instance **out, uint32_t *out_count, rw_clip **out_clips,
                         uint32_t *out_clip_count, ax_render_counts *counts)
@@ -488,6 +559,10 @@ static ax_result encode(ax_render_wgpu *r, const ax_render_ir *ir, uint32_t widt
             rw_instance *o;
             uint32_t flags = flags_extra;
             ++index;
+            if (h->type == AX_IR_ITEM_GLYPH_RUN) {
+                n += encode_glyphs(r, ir, h, s, inst + n, counts);
+                continue;
+            }
             if (h->type == AX_IR_ITEM_RECT) {
                 ax_ir_rect_item item;
                 memcpy(&item, h, sizeof item);
@@ -602,6 +677,7 @@ ax_result ax_render_wgpu_draw_ir(ax_render_wgpu *r, const ax_render_wgpu_draw *d
     if (ready && ir != NULL) {
         const uint64_t t0 = ax_time_monotonic_ns();
         uint64_t dt;
+        (void)ax__rw_atlas_begin(r); /* without its textures, glyph runs are skipped */
         res = encode(r, ir, draw->width, draw->height, draw->scale, &inst, &count, &clips,
                      &clip_count, &counts);
         if (res != AX_OK) {
@@ -647,15 +723,22 @@ ax_result ax_render_wgpu_draw_ir(ax_render_wgpu *r, const ax_render_wgpu_draw *d
         if (res == AX_OK) {
             WGPURenderPipeline pipeline = find_pipeline(r, draw->format)->pipeline;
             WGPUBindGroupLayout bgl = wgpuRenderPipelineGetBindGroupLayout(pipeline, 0);
-            WGPUBindGroupEntry entry = WGPU_BIND_GROUP_ENTRY_INIT;
+            WGPUBindGroupEntry entries[4] = {WGPU_BIND_GROUP_ENTRY_INIT, WGPU_BIND_GROUP_ENTRY_INIT,
+                                             WGPU_BIND_GROUP_ENTRY_INIT, WGPU_BIND_GROUP_ENTRY_INIT};
             WGPUBindGroupDescriptor bgd = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-            entry.binding = 0;
-            entry.buffer = clip_slice.buffer;
-            entry.offset = clip_slice.offset;
-            entry.size = clip_slice.size;
+            entries[0].binding = 0;
+            entries[0].buffer = clip_slice.buffer;
+            entries[0].offset = clip_slice.offset;
+            entries[0].size = clip_slice.size;
+            entries[1].binding = 1;
+            entries[1].textureView = r->atlas.view;
+            entries[2].binding = 2;
+            entries[2].textureView = r->atlas.lut_view;
+            entries[3].binding = 3;
+            entries[3].sampler = r->atlas.sampler;
             bgd.layout = bgl;
-            bgd.entryCount = 1;
-            bgd.entries = &entry;
+            bgd.entryCount = 4;
+            bgd.entries = entries;
             group = wgpuDeviceCreateBindGroup(device, &bgd);
             wgpuBindGroupLayoutRelease(bgl);
             wgpuRenderPassEncoderSetPipeline(pass, pipeline);

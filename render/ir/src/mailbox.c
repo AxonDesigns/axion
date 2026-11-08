@@ -112,3 +112,18 @@ bool ax_ir_mailbox_wait(ax_ir_mailbox *mb, uint64_t after_sequence, uint64_t tim
     ax_mutex_unlock(&mb->mutex);
     return available;
 }
+
+uint64_t ax_ir_mailbox_oldest_epoch(const ax_ir_mailbox *mb)
+{
+    /* The writer alone writes snapshot[]: a slot keeps its snapshot until the writer begins in it,
+     * which the triple buffer allows only once the reader has moved to another slot. */
+    uint64_t oldest = UINT64_MAX;
+    int i;
+    for (i = 0; i < 3; ++i) {
+        const ax_render_ir *ir = mb->snapshot[i];
+        if (ir != NULL && ir->resource_epoch < oldest) {
+            oldest = ir->resource_epoch;
+        }
+    }
+    return oldest;
+}

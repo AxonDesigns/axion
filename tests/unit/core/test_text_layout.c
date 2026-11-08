@@ -219,3 +219,71 @@ AX_TEST(text_measures_on_layout_workers)
     ax_world_destroy(w);
     ax_jobs_destroy(js);
 }
+
+/* ---- Recording (decisions 76 and 101) --------------------------------------------------------- */
+
+static ax_frame_counters record_frame(ax_world w, ax_node root, ax_ir_builder *b)
+{
+    const ax_render_ir *ir = NULL;
+    ax_frame_counters c;
+    (void)ax_world_apply_pending(w, UINT64_MAX);
+    (void)ax_world_set_root_viewport(w, root, 400.0f, 300.0f, 1.0f);
+    (void)ax_world_position(w);
+    ax_world_record_collect(w);
+    ax_world_get_frame_counters(w, &c, true);
+    ax_ir_builder_begin(b, 400.0f, 300.0f, 0, ax_color_make(1, 1, 1, 1));
+    (void)ax_world_record_root(w, root, b);
+    (void)ax_ir_builder_end(b, &ir);
+    ax_scene_clear_dirty(ax_world_scene(w));
+    ax_world_get_frame_counters(w, &c, true);
+    return c;
+}
+
+/* The owner's check: glyph runs live in decision 76's per-node item cache, so a change of composite
+ * properties alone never records text again. */
+AX_TEST(glyph_runs_are_cached_with_the_node_items)
+{
+    ax_world w = make_world();
+    ax_ir_builder b;
+    ax_txn *t;
+    ax_node root, label;
+    ax_frame_counters c;
+    AX_REQUIRE(!AX_HANDLE_IS_NULL(w));
+    ax_ir_builder_init(&b, ax_default_allocator());
+    t = ax_txn_begin(w);
+    root = ax_txn_create(t, AX_NODE_VIEW);
+    label = ax_txn_create(t, AX_NODE_VIEW);
+    text(t, label, "Cached glyph runs");
+    ax_txn_set_color(t, root, AX_PROP_BACKGROUND_COLOR, ax_rgba_from_srgb8(250, 250, 250, 255));
+    ax_txn_append_child(t, root, label);
+    AX_REQUIRE(ax_txn_commit(t, NULL) == AX_OK);
+    c = record_frame(w, root, &b);
+    AX_CHECK_EQ_U(c.glyph_runs, 1u);
+    AX_CHECK_EQ_U(c.glyph_runs_deferred, 0u);
+
+    /* The first opacity promotes the label to a layer: its items are recorded once in it. */
+    t = ax_txn_begin(w);
+    ax_txn_set_animated(t, false);
+    ax_txn_set_f32(t, label, AX_PROP_OPACITY, 0.5f);
+    AX_REQUIRE(ax_txn_commit(t, NULL) == AX_OK);
+    (void)record_frame(w, root, &b);
+    /* Later composite changes record nothing: the run is copied. */
+    t = ax_txn_begin(w);
+    ax_txn_set_animated(t, false);
+    ax_txn_set_f32(t, label, AX_PROP_OPACITY, 0.75f);
+    AX_REQUIRE(ax_txn_commit(t, NULL) == AX_OK);
+    c = record_frame(w, root, &b);
+    AX_CHECK_EQ_U(c.items_recorded, 0u);
+    AX_CHECK_EQ_U(c.glyph_runs, 0u);
+    AX_CHECK(c.items_reused >= 2u); /* the background and the run */
+
+    /* A new color records the run again (paint). */
+    t = ax_txn_begin(w);
+    ax_txn_set_animated(t, false);
+    ax_txn_set_color(t, label, AX_PROP_COLOR, ax_rgba_from_srgb8(200, 0, 0, 255));
+    AX_REQUIRE(ax_txn_commit(t, NULL) == AX_OK);
+    c = record_frame(w, root, &b);
+    AX_CHECK_EQ_U(c.glyph_runs, 1u);
+    ax_ir_builder_deinit(&b);
+    ax_world_destroy(w);
+}
