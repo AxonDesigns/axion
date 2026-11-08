@@ -7,3 +7,9 @@
 add_executable(bench_core bench_core.c)
 target_link_libraries(bench_core PRIVATE ax_core)
 ax_target_defaults(bench_core)
+
+# ax_render_soft on m1_nodes' scene (decision 87), recorded headless.
+add_executable(bench_soft bench_soft.c "${PROJECT_SOURCE_DIR}/examples/m1_nodes/m1_scene.c")
+target_include_directories(bench_soft PRIVATE "${PROJECT_SOURCE_DIR}/examples/m1_nodes")
+target_link_libraries(bench_soft PRIVATE ax_headless ax_render_soft ax_core)
+ax_target_defaults(bench_soft)
