@@ -165,6 +165,8 @@ static bool close_to(float actual, float expected)
 
 /* Lays the fixture out; returns the number of nodes whose frame differs, and describes the first.
  */
+static uint32_t g_cache_max; /* the most measurement-cache entries a node used */
+
 static uint32_t run_fixture(const yfx_test *t, char *why, size_t why_size)
 {
     ax_scene scene;
@@ -228,6 +230,13 @@ static uint32_t run_fixture(const yfx_test *t, char *why, size_t why_size)
             bad++;
         }
     }
+    for (i = 0; i < scene.store.row_count; ++i) {
+        uint32_t used = 0, k;
+        for (k = 0; k < AX_LAYOUT_MEASURE_CACHE; ++k) {
+            used += scene.store.layout[i].measures[k].valid != 0;
+        }
+        g_cache_max = used > g_cache_max ? used : g_cache_max;
+    }
     ax_scene_deinit(&scene);
     return bad;
 }
@@ -290,6 +299,8 @@ AX_TEST(flex_layout_matches_yoga_on_its_conformance_fixtures)
            "skipped upstream %u\n",
            (unsigned)passed, (unsigned)failed, (unsigned)accepted_count, (unsigned)unsupported,
            (unsigned)unsupported_passing, (unsigned)skipped);
+    printf("measurement cache: at most %u of %u entries used by a node\n", (unsigned)g_cache_max,
+           (unsigned)AX_LAYOUT_MEASURE_CACHE);
     AX_CHECK_EQ_U(failed, 0);
     AX_CHECK_EQ_U(stale_accepted, 0);
 }

@@ -164,8 +164,10 @@ typedef struct ax_layout_pass_desc {
  * pixel scale 1); a relayout boundary again with the constraints it last had. Boundaries whose
  * ancestors are not themselves being laid out are independent and run in parallel. Rounded frames
  * that changed are written to the store's layout column and reported.
- * Returns the number of changed frames; AX_ERR_OUT_OF_MEMORY is reported through ax_last_error
- * and every changed slot is then reported as changed (the caller treats them all as changed).
+ * Returns the number of changed frames. Frame jobs allocate nothing: the changed frames are listed
+ * through the layout column. If the scene thread cannot allocate the list of roots, it reports
+ * AX_ERR_OUT_OF_MEMORY through ax_last_error and lays every tree out, forced, which needs no
+ * memory.
  */
 AX_API uint32_t ax_layout_run(struct ax_scene *scene, const ax_layout_pass_desc *desc);
 

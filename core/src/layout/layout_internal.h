@@ -32,10 +32,9 @@ struct ax_layout_ctx {
     float scale;                  /* pixel scale for rounding; 0: none */
     bool force;                   /* every node counts as dirty (the root list overflowed) */
     ax_layout_counters counters;
-    /* Changed frames, reported after the pass. */
-    uint32_t *changed;
-    uint32_t changed_count, changed_capacity;
-    bool changed_overflow;
+    /* Changed frames, reported after the pass: a list threaded through the layout column
+     * (changed_next), so frame jobs never allocate. */
+    uint32_t changed_head, changed_tail; /* slots; AX_NODE_NONE when empty */
 };
 
 static inline uint32_t axl_row(const ax_node_store *s, uint32_t slot)

@@ -119,6 +119,8 @@ typedef struct pipeline {
     uint32_t surface;
     uint32_t driver_calls;
     uint64_t driver_time;
+    bool measure_in_driver;
+    ax_result driver_measure;
 } pipeline;
 
 static void driver(void *user, ax_world world, ax_node root, uint64_t t, float w, float h)
@@ -130,6 +132,10 @@ static void driver(void *user, ax_world world, ax_node root, uint64_t t, float w
     (void)root;
     p->driver_calls++;
     p->driver_time = t;
+    if (p->measure_in_driver) {
+        ax_rectf f;
+        p->driver_measure = ax_measure_sync(p->rt, p->card, &f); /* inside a scene step */
+    }
 }
 
 static ax_dimension pt(float v)
@@ -500,5 +506,35 @@ AX_TEST(host_frames_are_checked)
     AX_CHECK_RESULT(ax_rt_add_surface(p.rt, p.root, &(ax_rt_surface_desc){0}, NULL),
                     AX_ERR_INVALID_ARGUMENT); /* already attached */
     AX_CHECK(ax_jobs_is_inline(ax_rt_jobs(p.rt)));
+    pipeline_stop(&p);
+}
+
+/* ax_measure_sync (decision 92): lays out what was committed without a frame, counts the call,
+ * and refuses to run from inside the scene's own step. */
+AX_TEST(measure_sync_lays_out_what_was_committed_without_a_frame)
+{
+    static pipeline p;
+    ax_txn *t;
+    ax_rectf f;
+    ax_rt_counters c;
+    AX_REQUIRE(pipeline_start(&p));
+    AX_REQUIRE(frame_at(&p, 100 * MS));
+    t = ax_txn_begin(p.world);
+    ax_txn_set_dimension(t, p.card, AX_PROP_WIDTH, pt(140));
+    AX_REQUIRE(ax_txn_commit(t, NULL) == AX_OK);
+    AX_CHECK_RESULT(ax_measure_sync(p.rt, p.card, &f), AX_OK);
+    AX_CHECK(f.x == 10.0f && f.y == 20.0f && f.w == 140.0f && f.h == 50.0f);
+    ax_rt_get_counters(p.rt, &c);
+    AX_CHECK_EQ_U(c.measure_syncs, 1);
+    AX_CHECK_EQ_U(c.measure_ticks, 1);
+    /* Nothing was recorded: the next frame records the new width. */
+    AX_CHECK(strstr(p.presenter.dump, "(10 20 140 50)") == NULL);
+    AX_REQUIRE(frame_at(&p, 116 * MS));
+    AX_CHECK(strstr(p.presenter.dump, "rect (10 20 140 50)") != NULL);
+    /* From inside the scene's step (here, the examples' driver): it would wait for itself. */
+    p.measure_in_driver = true;
+    AX_REQUIRE(frame_at(&p, 132 * MS));
+    AX_CHECK_RESULT(p.driver_measure, AX_ERR_WRONG_THREAD);
+    AX_CHECK_RESULT(ax_measure_sync(p.rt, p.card, NULL), AX_ERR_INVALID_ARGUMENT);
     pipeline_stop(&p);
 }

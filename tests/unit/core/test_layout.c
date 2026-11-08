@@ -11,6 +11,7 @@
 
 #include "ax_test.h"
 #include "axion/ax_error.h"
+#include "axion/base/ax_jobs.h"
 #include "axion/base/ax_tracking_allocator.h"
 #include "axion/core/ax_layout.h"
 #include "axion/core/ax_scene.h"
@@ -312,4 +313,204 @@ AX_TEST(the_pass_lays_out_dirty_roots_and_reports_changed_frames)
     CHECK_FRAME(&f, item, 0, 0, 320, 20);
     ax_scene_clear_dirty(&f.scene);
     AX_CHECK_EQ_U(fixture_deinit(&f), 0);
+}
+
+/* ---- Relayout boundaries (decision 92)
+ * ----------------------------------------------------------- */
+
+typedef struct app_scene {
+    ax_node window, sidebar, main, list;
+    ax_node side_items[40];
+    ax_node list_items[60];
+} app_scene;
+
+/* A window with a fixed-size sidebar and a fixed-size list, both relayout boundaries. */
+static void build_app(fixture *f, app_scene *a)
+{
+    int i;
+    a->window = node(f, (ax_node)AX_HANDLE_NULL_INIT);
+    set_u32(f, a->window, AX_PROP_FLEX_DIRECTION, AX_FLEX_DIRECTION_ROW);
+    a->sidebar = node(f, a->window);
+    pts(f, a->sidebar, AX_PROP_WIDTH, 200);
+    pts(f, a->sidebar, AX_PROP_HEIGHT, 600);
+    a->main = node(f, a->window);
+    set_f32(f, a->main, AX_PROP_FLEX_GROW, 1);
+    pts(f, a->main, AX_PROP_PADDING, 8);
+    a->list = node(f, a->main);
+    pts(f, a->list, AX_PROP_WIDTH, 300);
+    pts(f, a->list, AX_PROP_HEIGHT, 580);
+    pts(f, a->list, AX_PROP_GAP, 2);
+    for (i = 0; i < 40; ++i) {
+        a->side_items[i] = node(f, a->sidebar);
+        pts(f, a->side_items[i], AX_PROP_HEIGHT, 12);
+    }
+    for (i = 0; i < 60; ++i) {
+        a->list_items[i] = node(f, a->list);
+        pts(f, a->list_items[i], AX_PROP_HEIGHT, 8);
+        pts(f, a->list_items[i], AX_PROP_MARGIN_LEFT, (float)(i % 5));
+    }
+}
+
+static bool app_viewport(void *user, ax_node root, float *w, float *h, float *scale)
+{
+    const app_scene *a = (const app_scene *)user;
+    if (root.h != a->window.h) {
+        return false;
+    }
+    *w = 800.0f;
+    *h = 600.0f;
+    *scale = 1.0f;
+    return true;
+}
+
+static uint32_t pass_of(fixture *f, ax_node n)
+{
+    return f->scene.store.layout[ax_node_store_row(&f->scene.store, n)].pass;
+}
+
+AX_TEST(editing_a_child_lays_out_nothing_outside_its_boundary)
+{
+    fixture f;
+    app_scene a;
+    ax_layout_pass_desc d;
+    ax_layout_counters c;
+    fixture_init(&f);
+    build_app(&f, &a);
+    memset(&d, 0, sizeof d);
+    d.viewport = app_viewport;
+    d.viewport_user = &a;
+    (void)ax_layout_run(&f.scene, &d);
+    ax_scene_clear_dirty(&f.scene);
+    CHECK_FRAME(&f, a.list, 8, 8, 300, 580);
+    CHECK_FRAME(&f, a.list_items[1], 1, 10, 299, 8);
+    ax_layout_get_counters(&f.scene, &c, true);
+
+    /* An item of the list grows: the list is the only layout root. */
+    pts(&f, a.list_items[10], AX_PROP_HEIGHT, 30);
+    AX_CHECK(ax_scene_is_relayout_boundary(&f.scene, a.list));
+    AX_CHECK_EQ_U(f.scene.dirty.layout_root_count, 1);
+    (void)ax_layout_run(&f.scene, &d);
+    ax_layout_get_counters(&f.scene, &c, true);
+    AX_CHECK_EQ_U(c.roots, 1);
+    /* Laid out: the list and the item that changed (measured, then laid out stretched, as in
+     * Yoga). The other 59 items keep their size: the cache answers them. Nothing outside the
+     * list is visited. */
+    AX_CHECK_EQ_U(c.layouts, 2);
+    AX_CHECK_EQ_U(c.measures, 1);
+    AX_CHECK(c.cached >= 59);
+    AX_CHECK(pass_of(&f, a.window) != f.scene.layout_pass);
+    AX_CHECK(pass_of(&f, a.main) != f.scene.layout_pass);
+    AX_CHECK(pass_of(&f, a.sidebar) != f.scene.layout_pass);
+    AX_CHECK(pass_of(&f, a.side_items[0]) != f.scene.layout_pass);
+    /* 1 resized + 49 moved down. */
+    AX_CHECK_EQ_U(c.frames_changed, 50);
+    CHECK_FRAME(&f, a.list_items[10], 0, 100, 300, 30);
+    CHECK_FRAME(&f, a.list_items[11], 1, 132, 299, 8);
+    CHECK_FRAME(&f, a.list, 8, 8, 300, 580);
+    ax_scene_clear_dirty(&f.scene);
+
+    /* Without the boundary (the list's height is auto), the edit climbs to the window. */
+    set_dim(&f, a.list, AX_PROP_HEIGHT, 0, AX_UNIT_AUTO);
+    (void)ax_layout_run(&f.scene, &d);
+    ax_scene_clear_dirty(&f.scene);
+    ax_layout_get_counters(&f.scene, &c, true);
+    pts(&f, a.list_items[20], AX_PROP_HEIGHT, 9);
+    AX_CHECK(!ax_scene_is_relayout_boundary(&f.scene, a.list));
+    (void)ax_layout_run(&f.scene, &d);
+    ax_layout_get_counters(&f.scene, &c, true);
+    AX_CHECK(pass_of(&f, a.window) == f.scene.layout_pass);
+    AX_CHECK(pass_of(&f, a.side_items[0]) != f.scene.layout_pass); /* still not visited */
+    ax_scene_clear_dirty(&f.scene);
+    AX_CHECK_EQ_U(fixture_deinit(&f), 0);
+}
+
+/* Two panels, each a relayout boundary with many items. */
+typedef struct two_panels {
+    ax_node window;
+    ax_node panel[2];
+    ax_node items[2][150];
+} two_panels;
+
+static void build_panels(fixture *f, two_panels *p)
+{
+    int k, i;
+    p->window = node(f, (ax_node)AX_HANDLE_NULL_INIT);
+    set_u32(f, p->window, AX_PROP_FLEX_DIRECTION, AX_FLEX_DIRECTION_ROW);
+    pts(f, p->window, AX_PROP_WIDTH, 900);
+    for (k = 0; k < 2; ++k) {
+        p->panel[k] = node(f, p->window);
+        pts(f, p->panel[k], AX_PROP_WIDTH, 400);
+        pts(f, p->panel[k], AX_PROP_HEIGHT, 700);
+        set_u32(f, p->panel[k], AX_PROP_FLEX_DIRECTION, AX_FLEX_DIRECTION_ROW);
+        set_u32(f, p->panel[k], AX_PROP_FLEX_WRAP, AX_FLEX_WRAP_WRAP);
+        for (i = 0; i < 150; ++i) {
+            ax_node n = node(f, p->panel[k]);
+            pts(f, n, AX_PROP_WIDTH, 30.0f + (float)(i % 7));
+            pts(f, n, AX_PROP_HEIGHT, 10.0f + (float)(i % 3));
+            set_f32(f, n, AX_PROP_FLEX_GROW, (float)(i % 2));
+            p->items[k][i] = n;
+        }
+    }
+}
+
+static void edit_panels(fixture *f, two_panels *p, int round)
+{
+    int k;
+    for (k = 0; k < 2; ++k) {
+        pts(f, p->items[k][(round * 13 + k * 7) % 150], AX_PROP_WIDTH, 50.0f + (float)round);
+        pts(f, p->items[k][(round * 29 + 3) % 150], AX_PROP_HEIGHT, 5.0f + (float)(round % 4));
+    }
+}
+
+AX_TEST(independent_boundaries_run_in_parallel_with_the_same_results)
+{
+    fixture fs, fp;
+    two_panels ps, pp;
+    ax_job_system *js = NULL;
+    ax_jobs_desc jd = ax_jobs_default_desc();
+    ax_layout_pass_desc serial, parallel;
+    ax_layout_counters cs, cp;
+    int round;
+    uint32_t i;
+    jd.worker_count = 4;
+    AX_REQUIRE(ax_jobs_create(&jd, &js) == AX_OK);
+    fixture_init(&fs);
+    fixture_init(&fp);
+    build_panels(&fs, &ps);
+    build_panels(&fp, &pp);
+    memset(&serial, 0, sizeof serial);
+    parallel = serial;
+    parallel.jobs = js;
+    parallel.parallel_min_nodes = 1;
+    ax_layout_tree(&fs.scene, ps.window, NAN, NAN, 1.0f);
+    ax_layout_tree(&fp.scene, pp.window, NAN, NAN, 1.0f);
+    ax_scene_clear_dirty(&fs.scene);
+    ax_scene_clear_dirty(&fp.scene);
+    ax_layout_get_counters(&fs.scene, &cs, true);
+    ax_layout_get_counters(&fp.scene, &cp, true);
+    for (round = 0; round < 20; ++round) {
+        edit_panels(&fs, &ps, round);
+        edit_panels(&fp, &pp, round);
+        AX_CHECK_EQ_U(fp.scene.dirty.layout_root_count, 2);
+        (void)ax_layout_run(&fs.scene, &serial);
+        (void)ax_layout_run(&fp.scene, &parallel);
+        ax_scene_clear_dirty(&fs.scene);
+        ax_scene_clear_dirty(&fp.scene);
+    }
+    ax_layout_get_counters(&fs.scene, &cs, true);
+    ax_layout_get_counters(&fp.scene, &cp, true);
+    AX_CHECK_EQ_U(cs.parallel_roots, 0);
+    AX_CHECK_EQ_U(cp.parallel_roots, 40); /* both panels, every round */
+    AX_CHECK_EQ_U(cp.roots, cs.roots);
+    AX_CHECK_EQ_U(cp.layouts, cs.layouts);
+    AX_CHECK_EQ_U(cp.frames_changed, cs.frames_changed);
+    /* Same rows in both scenes (built the same way): the same bits. */
+    AX_REQUIRE(fs.scene.store.row_count == fp.scene.store.row_count);
+    for (i = 0; i < fs.scene.store.row_count; ++i) {
+        AX_CHECK(memcmp(&fs.scene.store.layout[i].frame, &fp.scene.store.layout[i].frame,
+                        sizeof(ax_rect)) == 0);
+    }
+    AX_CHECK_EQ_U(fixture_deinit(&fs), 0);
+    AX_CHECK_EQ_U(fixture_deinit(&fp), 0);
+    ax_jobs_destroy(js);
 }

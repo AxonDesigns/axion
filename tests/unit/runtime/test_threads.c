@@ -499,3 +499,78 @@ AX_TEST(a_removal_that_times_out_can_be_retried)
     AX_CHECK_RESULT(ax_world_destroy(w), AX_OK);
     display_deinit(&d);
 }
+
+typedef struct measure_probe {
+    ax_runtime rt;
+    ax_atomic_u64 node; /* the handle to measure; 0 until set */
+    ax_atomic_u32 tried;
+    ax_atomic_u32 result;
+    ax_rt_counters counters; /* copied on the scene thread, as ax_rt_get_counters requires */
+} measure_probe;
+
+static void measure_from_scene(void *user, ax_runtime rt)
+{
+    measure_probe *m = (measure_probe *)user;
+    ax_rectf f;
+    (void)rt;
+    ax_node n;
+    n.h = ax_atomic_load_u64(&m->node, AX_MO_ACQUIRE);
+    if (ax_atomic_load_u32(&m->tried, AX_MO_ACQUIRE) == 0 && !AX_HANDLE_IS_NULL(n)) {
+        ax_atomic_store_u32(&m->result, (uint32_t)(int32_t)ax_measure_sync(m->rt, n, &f),
+                            AX_MO_RELAXED);
+        ax_rt_get_counters(m->rt, &m->counters);
+        ax_atomic_store_u32(&m->tried, 1, AX_MO_RELEASE);
+    }
+}
+
+/* ax_measure_sync with the threads running: the app thread blocks until the scene has laid out
+ * its commit; the scene thread itself is refused (decision 92). */
+AX_TEST(measure_sync_waits_for_the_scene_thread_and_refuses_it)
+{
+    static measure_probe m;
+    ax_world w;
+    ax_runtime rt;
+    ax_rt_desc rd;
+    ax_txn *t;
+    ax_node root, card;
+    ax_rectf f;
+    ax_rt_counters c;
+    int i;
+    REQUIRE_THREADS();
+    memset(&m, 0, sizeof m);
+    AX_REQUIRE(ax_world_create(NULL, &w) == AX_OK);
+    m.rt.h = 0;
+    memset(&rd, 0, sizeof rd);
+    rd.world = w;
+    rd.mode = AX_RUNTIME_THREADED;
+    rd.pump_events = measure_from_scene;
+    rd.pump_user = &m;
+    AX_REQUIRE(ax_rt_create(&rd, &rt) == AX_OK);
+    m.rt = rt; /* read by the scene thread only once node is published (release) */
+    for (i = 0; i < 5; ++i) {
+        t = ax_txn_begin(w);
+        root = ax_txn_create(t, AX_NODE_VIEW);
+        card = ax_txn_create(t, AX_NODE_VIEW);
+        ax_txn_set_dimension(t, card, AX_PROP_WIDTH, pt(100.0f + (float)i));
+        ax_txn_set_dimension(t, card, AX_PROP_HEIGHT, pt(20));
+        ax_txn_set_dimension(t, root, AX_PROP_PADDING, pt(4));
+        ax_txn_append_child(t, root, card);
+        AX_REQUIRE(ax_txn_commit(t, NULL) == AX_OK);
+        /* No frame comes (no surface): only the measurement lays it out. */
+        AX_CHECK_RESULT(ax_measure_sync(rt, card, &f), AX_OK);
+        AX_CHECK(f.x == 4.0f && f.y == 4.0f && f.w == 100.0f + (float)i && f.h == 20.0f);
+    }
+    ax_atomic_store_u64(&m.node, card.h, AX_MO_RELEASE);
+    /* The scene thread passes at least every 100 ms, forwarding events (the probe). */
+    for (i = 0; i < 300 && ax_atomic_load_u32(&m.tried, AX_MO_ACQUIRE) == 0; ++i) {
+        sleep_for(10 * MS);
+    }
+    AX_CHECK_EQ_U(ax_atomic_load_u32(&m.tried, AX_MO_ACQUIRE), 1);
+    AX_CHECK_EQ_I((int32_t)ax_atomic_load_u32(&m.result, AX_MO_RELAXED), AX_ERR_WRONG_THREAD);
+    c = m.counters; /* published by tried's release */
+    AX_CHECK_EQ_U(c.measure_syncs, 5);
+    AX_CHECK(c.measure_sync_ns > 0);
+    AX_CHECK(c.measure_ticks >= 5);
+    AX_CHECK_RESULT(ax_runtime_destroy(rt), AX_OK);
+    AX_CHECK_RESULT(ax_world_destroy(w), AX_OK);
+}

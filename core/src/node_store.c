@@ -785,6 +785,19 @@ void *ax_node_store_get_component(const ax_node_store *s, ax_node node, ax_compo
     return index == 0 ? NULL : cs->data + (size_t)(index - 1u) * cs->stride;
 }
 
+void *ax_node_store_peek_component(const ax_node_store *s, uint32_t slot, ax_component_type type)
+{
+    const ax_component_storage *cs;
+    uint32_t index;
+    if (slot >= s->slot_count || s->slots[slot].row >= AX_NODE_SLOT_RETIRED ||
+        type >= s->component_type_count) {
+        return NULL;
+    }
+    cs = &s->components[type];
+    index = sparse_get(cs, slot);
+    return index == 0 ? NULL : cs->data + (size_t)(index - 1u) * cs->stride;
+}
+
 /* Removes the slot's element (which must exist): on_remove, then swap-remove. Does not touch the
  * node's component mask. */
 static void remove_component_at(ax_node_store *s, ax_component_storage *cs, uint32_t slot)

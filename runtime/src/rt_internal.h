@@ -95,6 +95,14 @@ typedef struct rt_impl {
     ax_atomic_u32 scene_bound;
 
     ax_rt_counters counters; /* scene side */
+
+    /* ax_measure_sync: the newest sequence asked for and the newest answered. */
+    ax_atomic_u64 measure_req;
+    ax_atomic_u64 measure_done;
+    ax_atomic_u64 measure_syncs;   /* app side */
+    ax_atomic_u64 measure_sync_ns; /* app side */
+    ax_atomic_u64 scene_tid;       /* the scene thread's id (threaded mode) */
+    bool in_step;                  /* scene side: inside ax_rt_scene_step */
 } rt_impl;
 
 rt_impl *ax__rt_from_handle(ax_runtime rt);

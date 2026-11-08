@@ -57,12 +57,11 @@ const ax_layout_measure_fn *axl_measure_of(ax_layout_ctx *c, uint32_t row, void 
 {
     const ax_node_store *s = c->s;
     measure_component *m;
-    ax_node n;
     if ((s->component_mask[row] & (1u << c->scene->measure_component)) == 0) {
         return NULL;
     }
-    n = ax_node_store_handle(s, s->slot_of_row[row]);
-    m = (measure_component *)ax_node_store_get_component(s, n, c->scene->measure_component);
+    m = (measure_component *)ax_node_store_peek_component(s, s->slot_of_row[row],
+                                                          c->scene->measure_component);
     if (m == NULL || m->fn == NULL) {
         return NULL;
     }
@@ -402,30 +401,22 @@ static float round_grid(double value, double scale, bool force_ceil, bool force_
     return (float)(scaled / scale);
 }
 
-static void push_changed(ax_layout_ctx *ctx, uint32_t slot)
+static void note_changed(ax_layout_ctx *ctx, uint32_t row)
 {
-    if (ctx->changed_count == ctx->changed_capacity) {
-        uint32_t cap = ctx->changed_capacity < 64u ? 64u : ctx->changed_capacity * 2u;
-        uint32_t *fresh = (uint32_t *)ax_mem_alloc(&ctx->s->allocator, sizeof(uint32_t) * cap,
-                                                   AX_ALIGNOF(uint32_t));
-        if (fresh == NULL) {
-            ctx->changed_overflow = true;
-            return;
-        }
-        if (ctx->changed != NULL) {
-            memcpy(fresh, ctx->changed, sizeof(uint32_t) * ctx->changed_count);
-            ax_mem_free(&ctx->s->allocator, ctx->changed, sizeof(uint32_t) * ctx->changed_capacity);
-        }
-        ctx->changed = fresh;
-        ctx->changed_capacity = cap;
+    ax_node_layout *b = axl_box(ctx, row);
+    uint32_t slot = ctx->s->slot_of_row[row];
+    if (b->changed_pass == ctx->pass) {
+        return; /* listed already in this pass */
     }
-    ctx->changed[ctx->changed_count++] = slot;
-}
-
-static void note_changed(ax_layout_ctx *ctx, uint32_t slot)
-{
     ctx->counters.frames_changed++;
-    push_changed(ctx, slot);
+    b->changed_pass = ctx->pass;
+    b->changed_next = AX_NODE_NONE;
+    if (ctx->changed_tail == AX_NODE_NONE) {
+        ctx->changed_head = slot;
+    } else {
+        axl_box(ctx, axl_row(ctx->s, ctx->changed_tail))->changed_next = slot;
+    }
+    ctx->changed_tail = slot;
 }
 
 /* Rounds one node from its unrounded results and its parent's unrounded absolute position, and
@@ -454,7 +445,7 @@ static bool round_node(ax_layout_ctx *ctx, uint32_t row, double abs_left, double
     b->abs_y = ay;
     if (memcmp(&b->frame, &frame, sizeof frame) != 0) {
         b->frame = frame;
-        note_changed(ctx, ctx->s->slot_of_row[row]);
+        note_changed(ctx, row);
     }
     return moved;
 }
@@ -505,13 +496,12 @@ static void ctx_init(ax_layout_ctx *ctx, ax_scene *scene)
     ctx->viewport_row = AX_NODE_NONE;
     ctx->tree_root_row = AX_NODE_NONE;
     ctx->scale = 1.0f;
+    ctx->changed_head = ctx->changed_tail = AX_NODE_NONE;
 }
 
 static void ctx_free(ax_layout_ctx *ctx)
 {
-    ax_mem_free(&ctx->s->allocator, ctx->changed, sizeof(uint32_t) * ctx->changed_capacity);
-    ctx->changed = NULL;
-    ctx->changed_capacity = ctx->changed_count = 0;
+    (void)ctx; /* nothing allocated */
 }
 
 /* The node's position offsets from margins and relative insets (Yoga's setPosition), for a tree
@@ -682,17 +672,20 @@ static uint32_t depth_of(const ax_node_store *s, uint32_t row)
 
 static void merge(ax_layout_ctx *into, ax_layout_ctx *from)
 {
-    uint32_t i;
     into->counters.layouts += from->counters.layouts;
     into->counters.measures += from->counters.measures;
     into->counters.cached += from->counters.cached;
     into->counters.measure_calls += from->counters.measure_calls;
     into->counters.roots += from->counters.roots;
-    for (i = 0; i < from->changed_count; ++i) {
-        push_changed(into, from->changed[i]);
+    if (from->changed_head != AX_NODE_NONE) {
+        if (into->changed_tail == AX_NODE_NONE) {
+            into->changed_head = from->changed_head;
+        } else {
+            axl_box(into, axl_row(into->s, into->changed_tail))->changed_next = from->changed_head;
+        }
+        into->changed_tail = from->changed_tail;
     }
     into->counters.frames_changed += from->counters.frames_changed;
-    into->changed_overflow = into->changed_overflow || from->changed_overflow;
     ctx_free(from);
 }
 
@@ -741,7 +734,20 @@ uint32_t ax_layout_run(ax_scene *scene, const ax_layout_pass_desc *desc)
             roots = (pending_root *)ax_mem_alloc(&s->allocator, sizeof(pending_root) * n,
                                                  AX_ALIGNOF(pending_root));
             if (roots == NULL) {
-                (void)ax_set_error(AX_ERR_OUT_OF_MEMORY, "layout: out of memory");
+                /* No memory for the list: lay every tree out, forced, which needs none. */
+                (void)ax_set_error(AX_ERR_OUT_OF_MEMORY, "layout: out of memory; laying out all");
+                main_ctx.force = true;
+                for (i = 0; i < s->row_count; ++i) {
+                    if (s->links[i].parent == AX_NODE_NONE) {
+                        root_job j;
+                        j.ctx = main_ctx;
+                        j.desc = desc;
+                        j.row = i;
+                        j.tree = true;
+                        run_root(&j);
+                        main_ctx = j.ctx;
+                    }
+                }
             }
         }
         for (i = 0; roots != NULL && i < n; ++i) {
@@ -808,7 +814,9 @@ uint32_t ax_layout_run(ax_scene *scene, const ax_layout_pass_desc *desc)
             }
         }
         for (k = i; k < end; ++k) {
-            if (roots[k].row != AX_NODE_NONE && s->layout[roots[k].row].last_work >= min_nodes) {
+            /* Worth a job: it took many nodes last time, or it has never been a root (unknown). */
+            if (roots[k].row != AX_NODE_NONE && (s->layout[roots[k].row].last_work >= min_nodes ||
+                                                 s->layout[roots[k].row].last_work == 0)) {
                 big++;
             }
         }
@@ -865,14 +873,10 @@ uint32_t ax_layout_run(ax_scene *scene, const ax_layout_pass_desc *desc)
 
     changed = (uint32_t)main_ctx.counters.frames_changed;
     if (desc != NULL && desc->frame_changed != NULL) {
-        if (main_ctx.changed_overflow) {
-            for (i = 0; i < s->row_count; ++i) {
-                desc->frame_changed(desc->frame_changed_user, s->slot_of_row[i]);
-            }
-        } else {
-            for (i = 0; i < main_ctx.changed_count; ++i) {
-                desc->frame_changed(desc->frame_changed_user, main_ctx.changed[i]);
-            }
+        uint32_t slot;
+        for (slot = main_ctx.changed_head; slot != AX_NODE_NONE;
+             slot = s->layout[axl_row(s, slot)].changed_next) {
+            desc->frame_changed(desc->frame_changed_user, slot);
         }
     }
     {

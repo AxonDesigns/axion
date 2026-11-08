@@ -140,11 +140,13 @@ typedef struct ax_node_layout {
     float margin[4];     /* resolved by the last layout */
     float padding[4];
     float border[4];
-    uint32_t line;       /* flex line of the item */
-    uint32_t pass;       /* the layout pass that last visited the node */
-    uint32_t basis_pass; /* the pass that computed flex_basis */
-    uint32_t laid_out;   /* nonzero once the node has been laid out (`performed` is valid) */
-    uint32_t last_work;  /* nodes laid out or measured the last time it was a layout root */
+    uint32_t line;         /* flex line of the item */
+    uint32_t pass;         /* the layout pass that last visited the node */
+    uint32_t basis_pass;   /* the pass that computed flex_basis */
+    uint32_t laid_out;     /* nonzero once the node has been laid out (`performed` is valid) */
+    uint32_t last_work;    /* nodes laid out or measured the last time it was a layout root */
+    uint32_t changed_pass; /* the pass that listed its frame as changed */
+    uint32_t changed_next; /* the next slot of that list (AX_NODE_NONE: the last) */
     /* The cached layout; the request of the last layout (performed, not measured) and the
      * containing block it had, from which a relayout boundary is laid out again. */
     ax_layout_cache_entry last;
@@ -357,6 +359,12 @@ AX_API ax_result ax_node_store_add_component(ax_node_store *s, ax_node node, ax_
 /* The node's component, or NULL (no such component, stale handle or unknown type). */
 AX_API void *ax_node_store_get_component(const ax_node_store *s, ax_node node,
                                          ax_component_type type);
+
+/* The component of the live node in `slot`, or NULL, without the owner-thread check: for frame
+ * jobs that read the store while its owner thread waits for them (layout's parallel pass, decision
+ * 90). Nothing may modify the store meanwhile. */
+AX_API void *ax_node_store_peek_component(const ax_node_store *s, uint32_t slot,
+                                          ax_component_type type);
 
 /* Removes the component (calling on_remove). AX_ERR_INVALID_ARGUMENT when the node has none. */
 AX_API ax_result ax_node_store_remove_component(ax_node_store *s, ax_node node,
