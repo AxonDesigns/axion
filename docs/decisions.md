@@ -117,6 +117,7 @@ new entry that points back to the old one.
 | 101 | Glyph runs, atlases, coverage correction, scaled text    | Implementation |
 | 102 | Layout animations end on the pixel grid                  | Implementation |
 | 103 | The handshake bound with text; m1_nodes builds again     | Implementation |
+| 104 | Animations keep running while a window is resized        | Implementation |
 
 ---
 
@@ -4193,6 +4194,8 @@ approximated.
 
 > Amends decisions 67 (`ax_transition` is final), 76 (promotion is no longer sticky; frames and
 > clips draw presentation values) and 77 (the tick animates after layout).
+> Amended by decision 104: a viewport's resize no longer stops running animations, and is laid
+> out before the cycle's transactions.
 
 **Context.** "Animation system": every animatable property animates by default, on the scene thread,
 against the frame's predicted present time; transitions come from style (per property, per class,
@@ -4742,5 +4745,32 @@ measurement on their desktop.
 - **m1_nodes builds again:** PR #12 (commit 7ffa651) emptied `examples/m1_nodes/CMakeLists.txt`,
   so the example has not been built since; a build tree kept the older binary. Restored with
   `m1_cards.c` (and `ax_text`).
+
+**Status.** Implementation, pending the owner's approval.
+
+## 104. Animations keep running while a window is resized
+
+> Amends decision 94 (a viewport's resize and running animations).
+
+**Context.** Reviewing PR #14, the owner saw that no animation played while resizing a window.
+Decision 94 rightly keeps a window's resize from animating frames, but its implementation treated
+every frame change of a cycle with a viewport change as "not animated": it started no animation,
+even for a transaction applied in that cycle, and **stopped** the frame animations already running.
+Under a continuous resize every cycle has a new viewport, so every animation froze or snapped.
+
+**Decision.**
+- **A resize starts no animation and stops none.** A frame change caused by a viewport is marked
+  as such; the node takes its new frame at once, and a frame animation it is running goes on: the
+  presentation is the target plus an offset (decision 94), so the node follows the window and
+  finishes its motion from there. A transaction that does not animate (`ax_txn_set_animated`) still
+  snaps, as before.
+- **The viewport is laid out before the cycle's transactions** (`ax_world_layout_viewports`, called
+  by the runtime's tick): the changes of its pass are the resize's, those of the following pass the
+  transactions'. A node changed by both in one cycle animates from where the resize put it. Hosts
+  that lay out once (tests) keep the old rule for that pass: changes in a cycle with a new viewport
+  start nothing.
+- **Tests** (`core.anim_resize`): a box sliding with the default spring keeps sliding when the
+  window narrows mid-way, its width following at once; a move committed while the window changes
+  size every cycle animates. Both fail with the previous behavior.
 
 **Status.** Implementation, pending the owner's approval.

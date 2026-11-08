@@ -585,7 +585,14 @@ static void tick(rt_impl *r, uint32_t index, const ax_rt_request *q)
     s->last_time = t;
     deadline = t > q->refresh_ns ? t - q->refresh_ns : 0;
 
-    /* 2. Transactions committed up to the frame's latch point. */
+    /* 2. A new viewport first, laid out on its own, then the transactions committed up to the
+     * frame's latch point: what a window's resize moves takes its place at once (running
+     * animations go on), and what a transaction moves animates even mid-resize (decision 104). */
+    if (ax_node_store_is_live(&scene->store, s->root) &&
+        ax_world_set_root_viewport(world, s->root, q->logical_width, q->logical_height,
+                                   q->scale > 0.0f ? q->scale : 1.0f) == AX_OK) {
+        (void)ax_world_layout_viewports(world);
+    }
     r->counters.applied += ax_world_apply_pending(world, deadline);
     r->counters.ticks++;
     if (q->resize) {

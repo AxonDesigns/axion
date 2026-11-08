@@ -5,6 +5,7 @@
 
 set(_ax_core_tests
     test_anim.c
+    test_anim_resize.c
     test_anim_curves.c
     test_abi_headers.c
     test_apply.c

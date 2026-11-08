@@ -1046,3 +1046,15 @@ void ax_world_set_glyph_budget(ax_world world, uint32_t glyphs)
         f->glyph_budget_set = glyphs;
     }
 }
+
+uint32_t ax_world_layout_viewports(ax_world world)
+{
+    world_impl *w = scene_world(world);
+    uint32_t n;
+    if (w == NULL) {
+        return 0;
+    }
+    n = ax_world_position(world);
+    ax__anim_viewport_done(w); /* later layout passes of this cycle are the transactions' */
+    return n;
+}

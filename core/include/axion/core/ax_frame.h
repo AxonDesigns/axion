@@ -77,6 +77,15 @@ AX_API void ax_world_remove_root(ax_world world, ax_node root);
 AX_API uint32_t ax_world_position(ax_world world);
 
 /*
+ * Lays out what the window roots' new viewports made dirty, before the cycle's transactions apply
+ * (decision 104). Its frame changes are the window's resize: they start no animation and stop none
+ * (a running animation goes on from the node's new place), and the cycle's later passes are the
+ * transactions', whose changes animate as usual even while the window is being resized. Returns
+ * how many frames changed.
+ */
+AX_API uint32_t ax_world_layout_viewports(ax_world world);
+
+/*
  * Implicit animations (decision 94), after layout and before recording: starts or retargets the
  * animations of the frames layout changed (when an animated transaction caused the change and it
  * was not a viewport's resize), samples every running animation at frame_time_ns (the frame's

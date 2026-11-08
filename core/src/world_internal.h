@@ -279,6 +279,7 @@ void ax__anim_on_set(world_impl *w, uint64_t seq, ax_node node, ax_prop prop, co
                      bool animated);
 void ax__anim_on_frame_changed(world_impl *w, uint32_t slot);
 void ax__anim_viewport_changed(world_impl *w);
+void ax__anim_viewport_done(world_impl *w); /* the viewports' layout pass is over */
 uint32_t ax__anim_step(world_impl *w, uint64_t t, void (*on_root)(world_impl *, uint32_t));
 const struct axa_node *ax__anim_node(world_impl *w, uint32_t row);
 uint64_t ax__anim_time(world_impl *w); /* the last sample's time; 0 before the animator runs */

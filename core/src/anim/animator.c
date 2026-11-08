@@ -125,6 +125,7 @@ typedef struct frame_change {
     ax_rect prev;         /* the target frame before the first change since the last sample */
     uint32_t prev_parent; /* its parent then */
     bool had_frame;
+    bool viewport; /* caused by a window's resize: starts no animation and stops none */
 } frame_change;
 
 struct anim_state {
@@ -607,6 +608,14 @@ void ax__anim_on_frame_changed(world_impl *w, uint32_t slot)
     row = s->slots[slot].row;
     for (i = a->change_count; i-- > 0;) {
         if (a->changes[i].slot == slot && a->changes[i].generation == s->slots[slot].generation) {
+            if (a->changes[i].viewport && !a->viewport_changed) {
+                /* A transaction's change after the viewport's in the same cycle: it animates from
+                 * where the window's resize put the node. */
+                a->changes[i].viewport = false;
+                a->changes[i].prev = s->layout[row].prev_frame;
+                a->changes[i].prev_parent = s->layout[row].prev_parent;
+                a->changes[i].had_frame = (s->layout[row].had_frame & 2u) != 0;
+            }
             return; /* the first change since the last sample keeps its old frame */
         }
     }
@@ -620,11 +629,12 @@ void ax__anim_on_frame_changed(world_impl *w, uint32_t slot)
     c->prev = s->layout[row].prev_frame;
     c->prev_parent = s->layout[row].prev_parent;
     c->had_frame = (s->layout[row].had_frame & 2u) != 0;
+    c->viewport = a->viewport_changed;
 }
 
 static bool animated_ok(bool animate, const frame_change *c, const ax_node_store *s, uint32_t row)
 {
-    return animate && c->had_frame && c->prev_parent == s->links[row].parent;
+    return animate && !c->viewport && c->had_frame && c->prev_parent == s->links[row].parent;
 }
 
 /* Whether a node's frame change animates: an animated transaction caused it, not a viewport's
@@ -664,7 +674,7 @@ static bool under_resizing(const ax_node_store *s, const uint32_t *resizing, uin
 static void frames(world_impl *w, anim_state *a)
 {
     const ax_node_store *s = &w->scene.store;
-    const bool animate = a->any_animated && !a->viewport_changed;
+    const bool animate = a->any_animated;
     uint32_t i, resizing_count = 0, resizing_cap = 0;
     uint32_t *resizing = NULL;
     for (i = 0; i < a->change_count; ++i) {
@@ -691,6 +701,11 @@ static void frames(world_impl *w, anim_state *a)
             continue;
         }
         an = anim_node(w, node, false);
+        if (c->viewport) {
+            /* A window's resize: the node takes its new frame at once, and an animation it is
+             * running goes on (presentation = target + offset, so the offset still settles). */
+            continue;
+        }
         id = frame_curve(w, a, animate, c, row);
         if (id != 0 && under_resizing(s, resizing, resizing_count, row)) {
             id = 0;
@@ -857,4 +872,12 @@ void ax__anim_get_counters(world_impl *w, ax_anim_counters *out, bool reset)
 uint64_t ax__anim_time(world_impl *w)
 {
     return w->anim != NULL && w->anim->enabled ? w->anim->last_time : 0;
+}
+
+void ax__anim_viewport_done(world_impl *w)
+{
+    anim_state *a = w->anim;
+    if (a != NULL) {
+        a->viewport_changed = false;
+    }
 }
