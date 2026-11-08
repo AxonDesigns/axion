@@ -3519,7 +3519,7 @@ corrupt input under ASan.
     `AX_TEST_FAILURE_DIR` (default `golden-failures/` in the test's directory). CI sets it in every
     job and uploads it when a job fails (`golden-failures-<job>`);
   - with `AX_TEST_IMAGE_DIR` set, every image checked is written there too, for the cross-platform
-    comparison (decision 85's CI job).
+    comparison (decision 86's CI job).
 - **The goldens of this step** (`tests/unit/render_soft/test_goldens.c`): the seven coverage
   scenes, the rotating hairline fan (four frames, 1.7 degrees apart), the zone plate, the zone
   plate behind three nested rounded clips (the middle one turned 9 degrees), group opacity and
@@ -3695,6 +3695,41 @@ and automation and MCP (M2, M3) are out of scope.
     the test keeps them loaded and uses the gpu tests' LeakSanitizer suppressions.
   - Under ASan, TSan (3 runs) and in Node: clean. `core.txn` gains the committed sequence (aborted and
     failed transactions take none) and `AX_MAX_WORLDS` worlds at once.
+
+**Status.** Implementation, pending the owner's approval.
+
+## 87. Reference measurements: ax_render_soft on m1_nodes' scene
+
+**Context.** The owner asked for a reference measurement of ax_render_soft's frame time with
+m1_nodes' scene at scales 1 and 2, with one thread and with N.
+
+**Decision.** `tests/bench/bench_soft.c` (built with the tests, never a CI gate, like
+`bench_core`): m1_nodes' tree and scene driver moved to `examples/m1_nodes/m1_scene.{h,c}`, shared
+by the example and the benchmark. The benchmark records 60 frames of the animation headless
+(decision 85; 800 x 500 logical units, server decorations), then draws each snapshot 5 times with
+`ax_render_soft_draw_ir` into a BGRA8 buffer: scalar and SIMD, on the calling thread and on a job
+system of N workers with the caller helping. It reports the median and the 95th percentile per
+frame. `bench_soft [workers]`.
+
+**Measured** (Clang Release, AMD Ryzen 5 3400G, 4 cores and 8 threads, Linux; SSE2):
+
+| Path | 800 x 500 (scale 1) median / p95 | 1600 x 1000 (scale 2) median / p95 |
+| --- | --- | --- |
+| scalar, 1 thread | 8.33 / 10.60 ms | 32.05 / 35.44 ms |
+| SIMD, 1 thread | 3.10 / 3.49 ms | 12.08 / 12.99 ms |
+| scalar, 4 workers + caller | 2.67 / 3.10 ms | 10.35 / 11.14 ms |
+| SIMD, 4 workers + caller | 1.07 / 1.40 ms | 4.02 / 4.67 ms |
+| scalar, 7 workers + caller | 2.25 / 2.69 ms | 8.01 / 9.21 ms |
+| SIMD, 7 workers + caller | 0.93 / 1.10 ms | 3.38 / 4.03 ms |
+
+- The SIMD path is 2.7 times the scalar one; four workers add about 3 times more (the scene's
+  64 x 64 tiles are uneven: much of the window is background). Seven workers gain little over four
+  on a 4-core CPU with SMT.
+- In a window (decision 84), m1_nodes presents 60 frames a second with 0 missed with the software
+  renderer at 800 x 500 (Release); a 1600 x 1000 window at scale 2 fits a 60 Hz frame on this
+  machine with threads (4 ms), and on one thread only without SIMD to spare (12 ms).
+- Not optimized yet, and noted for when it matters: every frame redraws every tile (the IR's damage
+  is always full), and each item is tested against every tile (no binning).
 
 **Status.** Implementation, pending the owner's approval.
 

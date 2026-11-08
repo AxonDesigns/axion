@@ -85,8 +85,12 @@ int main(int argc, char **argv)
     ax_target_defaults(${_exe})
     if(EMSCRIPTEN)
         # Tests in Node: a heap that grows past Emscripten's default 16 MB, and the host's file
-        # system (goldens, artifacts) instead of an in-memory one.
-        target_link_options(${_exe} PRIVATE "-sALLOW_MEMORY_GROWTH=1" "-sNODERAWFS=1")
+        # system (goldens, artifacts) instead of an in-memory one, with the host's environment
+        # (harness/node_env.js).
+        target_link_options(${_exe} PRIVATE "-sALLOW_MEMORY_GROWTH=1" "-sNODERAWFS=1"
+            "--pre-js=${PROJECT_SOURCE_DIR}/tests/harness/node_env.js")
+        set_property(TARGET ${_exe} APPEND PROPERTY LINK_DEPENDS
+            "${PROJECT_SOURCE_DIR}/tests/harness/node_env.js")
     endif()
 
     foreach(_case IN LISTS _cases)

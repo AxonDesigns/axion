@@ -296,15 +296,6 @@ jobs:
         run: |
           mkdir -p "$AX_TEST_FAILURE_DIR" "$AX_TEST_IMAGE_DIR"
           ctest --preset emscripten-tests
-          echo "images written: $(ls "$AX_TEST_IMAGE_DIR" | wc -l)"
-          if [ -z "$(ls "$AX_TEST_IMAGE_DIR")" ]; then
-            # Diagnostics: does a test in Node see the variable and write the file?
-            node -e 'console.log("node sees AX_TEST_IMAGE_DIR =", process.env.AX_TEST_IMAGE_DIR)'
-            grep -m1 CMAKE_CROSSCOMPILING_EMULATOR build/emscripten-tests/CMakeCache.txt
-            (cd build/emscripten-tests &&
-              ctest --preset emscripten-tests -R 'render_soft.goldens.zone_plate$' -V | tail -20)
-            ls -la "$AX_TEST_IMAGE_DIR"
-          fi
 
       - name: Upload golden failures
         if: failure()
