@@ -3376,3 +3376,74 @@ work.
   priority tests and the stress test under TSan, 30 pinned to one CPU, 300 Release runs, all clean.
 
 **Status.** Implementation, pending the owner's approval.
+
+## 81. `ax_render_soft`: the software renderer and its determinism
+
+**Context.** The document's renderer table has a CPU rasterizer, "tiled, SIMD and
+multi-threaded", as the last-resort fallback, the reference for golden-image tests and the
+renderer of no-GPU CI and servers. The owner asked for the same semantics as `ax_render_wgpu`
+(exact coverage per pixel, sRGB-space blending by default with a linear option per layer,
+premultiplied alpha, never stretching the IR), the same bytes for the same IR on every platform
+and with any number of threads, a scalar reference path, and no transcendental function from libm
+anywhere on the path.
+
+**Decision.** `render/soft/` (library `ax_render_soft`, internal SDK
+`axion/render/ax_render_soft.h`). It needs no window and no GPU, so it builds everywhere, the web
+included; the window part comes with decision 83.
+- **API.** `ax_render_soft_create` (options: a job system, the scalar-only flag, and the
+  unsupported `AX_RENDER_SOFT_DIAG_LINEAR_BLEND` that mirrors ax_render_wgpu's diagnostic) and
+  `ax_render_soft_draw_ir` into an `ax_soft_target`: pixels, size, stride, `RGBA8` or `BGRA8`
+  (premultiplied, sRGB-encoded), the scale. The snapshot's background fills the whole target, and
+  the snapshot is drawn at the target's scale, anchored top-left, never stretched.
+- **Coverage: decision 55's mathematics, evaluated per pixel centre.** Each item becomes a shape
+  with its device-to-local transform; slabs, their product, and rounded corners treated as locally
+  straight, with the same per-slab constants the shader derives (the gradient's length and the
+  sorted components of the edge normal). Against the supersampled reference (decision 56's,
+  moved to `tests/unit/render_soft/`): 1/255 at edges (2/255 in the hairline fan), 1 to 12/255 near
+  corners, means 0.003 to 0.06/255; the GPU renderer measured the same.
+- **Blending.** The default space is the GPU renderer's (sRGB, decision 58), and it changes with it
+  when issue #4 is decided (M1's fifth prompt). A tile keeps four planes of floats (premultiplied,
+  sRGB-encoded) and rounds to 8 bits once, at the end; a GPU rounds after every blend into its
+  8-bit target, which differs by at most a rounding step per overlap. Layers with
+  `AX_IR_LAYER_LINEAR_BLEND` (inherited by their subtree) decode, blend in linear light and encode
+  again, which is what a GPU's sRGB view does.
+- **What it draws beyond ax_render_wgpu**, as the reference:
+  - **clips:** rect and rounded-rect clips, analytic, nested (each clip's coverage multiplies the
+    item's, innermost first, in its own layer's space). Path clips and unknown kinds skip the
+    layer, as the IR's rules say;
+  - **exact group opacity:** a layer with opacity below 1 and more than one item or a child is an
+    isolated group (a tile buffer per open group, composited at the group's end); with one item
+    and no child, multiplying the item's color is the same. `approximated` is always 0;
+  - other blend modes and effects draw as normal (`neutralized`), like the GPU renderer.
+- **Determinism.** Every pixel is a function of the snapshot alone, computed with IEEE single
+  precision in a fixed order:
+  - **No contraction anywhere in AXION.** `ax_target_defaults` builds every target with
+    `-ffp-contract=off` (GCC and Clang contract into fused multiply-adds by default on targets that
+    have them, arm64 for one) and MSVC with `/fp:precise`, its default, stated explicitly. MSVC does
+    not contract under `/fp:precise` since Visual Studio 2022 (contractions need `/fp:contract` or
+    `/fp:fast`, never used), and its x64 builds target SSE2, which has no FMA instruction. The
+    whole stack, not only the renderer: the IR's transforms come from base and core.
+  - **No transcendental function from libm.** The renderer uses `sqrtf` (which IEEE requires
+    correctly rounded) and nothing else from libm. base's `ax_affine2_rotate`,
+    `ax_srgb_to_linear` and `ax_linear_to_srgb` are now deterministic too: sine and cosine by a
+    three-part Cody-Waite reduction and Taylor polynomials (worst error 7.7e-8 over +-14.6 rad),
+    the transfer functions by their own log2 and exp2 (worst 2.3e-7 against the formulas in double
+    precision). `base.math.elementary_functions_give_the_same_bits_everywhere` pins a hash of
+    their bits, so CI checks them on every platform.
+  - **No denormals.** Coverage below 2^-16 is 0, accumulated channels below 2^-24 are 0, color
+    components below 2^-20 are 0, and transforms whose linear part or inverse has an entry beyond
+    1e6 make their items invalid, which bounds every gradient. So flush-to-zero and
+    denormals-are-zero modes cannot change a result; the default rounding mode is assumed.
+- **Counts** follow the IR's rules as the GPU renderer's do (`unknown_items`, `skipped_items`,
+  `skipped_layers`, `neutralized`, `invalid_items`, `instances`).
+- **Tests** (`tests/unit/render_soft/`, label `render_soft`, also in the Emscripten job): the
+  reference comparison on the coverage scenes and the hairline fan; sRGB-space and linear blending
+  (128 and 188 for 50% white over black) and the diagnostic; the IR's rules; invalid items; clips at
+  fractional edges and nested; group opacity (the overlap of two items in a 50% group shows only
+  the top one); never stretching; both formats, padded strides and the background without a
+  snapshot; argument errors.
+- The scenes are shared (`tests/scenes/axt_scenes.c`, library `ax_test_scenes`) by these tests,
+  the GPU renderer's comparison and the goldens, and use only deterministic math.
+
+**Status.** Implementation, pending the owner's approval.
+

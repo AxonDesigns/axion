@@ -43,6 +43,17 @@ function(ax_target_defaults target)
         target_compile_options(${target} PRIVATE "$<$<COMPILE_LANGUAGE:C>:${flag}>")
     endforeach()
 
+    # Floating point is deterministic across platforms (decision 81): no contraction of a multiply
+    # and an add into a fused multiply-add, which GCC and Clang do by default on targets that
+    # have FMA (arm64) and would change the last bits of the Render IR and of what the software
+    # renderer draws. MSVC's /fp:precise (its default, stated explicitly) does not contract since
+    # Visual Studio 2022; /fp:contract and /fp:fast are never used.
+    if(_AX_C_MSVC)
+        target_compile_options(${target} PRIVATE "$<$<COMPILE_LANGUAGE:C>:/fp:precise>")
+    else()
+        target_compile_options(${target} PRIVATE "$<$<COMPILE_LANGUAGE:C>:-ffp-contract=off>")
+    endif()
+
     if(AX_SANITIZE)
         if(_AX_C_MSVC)
             if(NOT AX_SANITIZE STREQUAL "address")

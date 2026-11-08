@@ -121,11 +121,11 @@ typedef struct ax_job_system ax_job_system;
 
 /* Counters for tests and profiling. Read while jobs run, they are approximate. */
 typedef struct ax_jobs_stats {
-    uint64_t jobs_run;      /* jobs finished, inline ones included */
-    uint64_t steals;        /* jobs taken from another worker's deque */
-    uint64_t injected;      /* jobs taken from the injection queue */
-    uint64_t ran_when_full; /* jobs the submitter ran because a queue was full */
-    uint64_t sleeps;        /* times a worker or a waiter went to sleep */
+    uint64_t jobs_run;       /* jobs finished, inline ones included */
+    uint64_t steals;         /* jobs taken from another worker's deque */
+    uint64_t injected;       /* jobs taken from the injection queue */
+    uint64_t ran_when_full;  /* jobs the submitter ran because a queue was full */
+    uint64_t sleeps;         /* times a worker or a waiter went to sleep */
     uint64_t background_run; /* of jobs_run, background jobs */
 } ax_jobs_stats;
 

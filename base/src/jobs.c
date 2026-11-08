@@ -469,8 +469,7 @@ static void free_system(ax_job_system *js)
     if (js->workers != NULL) {
         for (i = 0; i < js->worker_count; ++i) {
             for (p = 0; p < PRIORITIES; ++p) {
-                ax_mem_free(&a, js->workers[i].dq[p].buf,
-                            sizeof(deque_slot) * js->deque_capacity);
+                ax_mem_free(&a, js->workers[i].dq[p].buf, sizeof(deque_slot) * js->deque_capacity);
             }
         }
         ax_mem_free(&a, js->workers, sizeof(worker) * js->worker_count);

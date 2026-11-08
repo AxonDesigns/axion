@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 #include <math.h>
+#include <stdio.h>
+#include <string.h>
 
 #include "ax_test.h"
 #include "axion/base/ax_math.h"
@@ -194,4 +196,72 @@ AX_TEST(straight_srgb_to_premultiplied_linear)
         AX_CHECK_NEAR_F(s.r, 0.25f, 1e-6);
         AX_CHECK_NEAR_F(s.a, 0.25f, 0.0f);
     }
+}
+
+/* ---- Deterministic elementary functions (decision 81) ---------------------------------------- */
+
+AX_TEST(rotation_matches_sin_and_cos_within_a_few_ulps)
+{
+    double worst = 0.0;
+    int i;
+    for (i = -20000; i <= 20000; ++i) {
+        const float x = (float)i * 0.000731f; /* about +-14.6 rad */
+        const ax_affine2 m = ax_affine2_rotate(x);
+        const double es = fabs((double)m.b - sin((double)x));
+        const double ec = fabs((double)m.a - cos((double)x));
+        worst = es > worst ? es : worst;
+        worst = ec > worst ? ec : worst;
+        AX_CHECK(m.c == -m.b && m.d == m.a);
+    }
+    printf("rotation: worst absolute error %.3g\n", worst);
+    AX_CHECK(worst < 1.5e-7);
+    /* Exact where it matters. */
+    AX_CHECK(ax_affine2_rotate(0.0f).a == 1.0f && ax_affine2_rotate(0.0f).b == 0.0f);
+}
+
+AX_TEST(srgb_transfer_functions_match_the_formulas)
+{
+    double worst_dec = 0.0, worst_enc = 0.0;
+    int i;
+    for (i = 0; i <= 100000; ++i) {
+        const float x = (float)i / 100000.0f;
+        const double xd = (double)x;
+        const double dec = xd <= 0.04045 ? xd / 12.92 : pow((xd + 0.055) / 1.055, 2.4);
+        const double enc = xd <= 0.0031308 ? xd * 12.92 : 1.055 * pow(xd, 1.0 / 2.4) - 0.055;
+        const double ed = fabs((double)ax_srgb_to_linear(x) - dec);
+        const double ee = fabs((double)ax_linear_to_srgb(x) - enc);
+        worst_dec = ed > worst_dec ? ed : worst_dec;
+        worst_enc = ee > worst_enc ? ee : worst_enc;
+    }
+    printf("sRGB: worst decode error %.3g, encode error %.3g\n", worst_dec, worst_enc);
+    AX_CHECK(worst_dec < 3e-7);
+    AX_CHECK(worst_enc < 3e-7);
+    /* Extended range, signs and the ends. */
+    AX_CHECK(fabs((double)ax_srgb_to_linear(2.0f) - pow(2.055 / 1.055, 2.4)) < 1e-5);
+    AX_CHECK(ax_srgb_to_linear(-0.5f) == -ax_srgb_to_linear(0.5f));
+    AX_CHECK(ax_linear_to_srgb(1.0f) > 0.9999998f && ax_linear_to_srgb(1.0f) < 1.0000002f);
+    AX_CHECK(ax_linear_to_srgb(0.0f) == 0.0f);
+}
+
+/* Bit patterns that must not change across platforms or compilers: computed once, here, and
+ * checked everywhere CI runs (a change means the IR of every rotated or sRGB-specified node
+ * changes; update the constants only together with the goldens). */
+AX_TEST(elementary_functions_give_the_same_bits_everywhere)
+{
+    const float in[4] = {0.3f, 1.0f, 2.5f, -0.7f};
+    uint32_t h = 2166136261u;
+    int i;
+    for (i = 0; i < 4; ++i) {
+        const ax_affine2 m = ax_affine2_rotate(in[i]);
+        const float v[4] = {m.a, m.b, ax_srgb_to_linear(in[i] * 0.37f + 0.4f),
+                            ax_linear_to_srgb(in[i] * 0.21f + 0.3f)};
+        int k;
+        for (k = 0; k < 4; ++k) {
+            uint32_t bits;
+            memcpy(&bits, &v[k], sizeof bits);
+            h = (h ^ bits) * 16777619u;
+        }
+    }
+    printf("hash %08x\n", (unsigned)h);
+    AX_CHECK_EQ_U(h, 0x028cc3c1u);
 }

@@ -6,10 +6,11 @@
 
 ax_add_unit_test(render_wgpu test_coverage.c)
 target_sources(test_render_wgpu_coverage PRIVATE
-    coverage_reference.c "${PROJECT_SOURCE_DIR}/tests/unit/gpu/gpu_test_util.c")
+    "${PROJECT_SOURCE_DIR}/tests/unit/render_soft/coverage_reference.c"
+    "${PROJECT_SOURCE_DIR}/tests/unit/gpu/gpu_test_util.c")
 target_include_directories(test_render_wgpu_coverage PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}" "${PROJECT_SOURCE_DIR}/tests/unit/gpu"
-    "${PROJECT_SOURCE_DIR}/render/wgpu/src")
+    "${PROJECT_SOURCE_DIR}/tests/unit/render_soft" "${PROJECT_SOURCE_DIR}/render/wgpu/src")
 target_link_libraries(test_render_wgpu_coverage PRIVATE ax_render_wgpu ${CMAKE_DL_LIBS})
 
 if("address" IN_LIST AX_SANITIZE)

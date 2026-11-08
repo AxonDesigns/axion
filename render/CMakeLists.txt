@@ -4,6 +4,7 @@
 # render: the Render IR contract (ir/) and the renderers that consume it.
 
 add_subdirectory(ir)
+add_subdirectory(soft)
 if(AX_BUILD_GPU)
     add_subdirectory(wgpu)
 endif()

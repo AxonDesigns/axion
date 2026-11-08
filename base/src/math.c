@@ -5,6 +5,7 @@
 #include "axion/base/ax_math.h"
 
 #include <math.h>
+#include <string.h>
 
 ax_rect ax_rect_union(ax_rect r, ax_rect s)
 {
@@ -22,10 +23,132 @@ ax_rect ax_rect_union(ax_rect r, ax_rect s)
     return ax_rect_make(x0, y0, x1 - x0, y1 - y0);
 }
 
+/* ---- Deterministic elementary functions ------------------------------------------------------
+ *
+ * libm's sinf, cosf and powf may differ in the last bit between platforms, and a Render IR built
+ * from them would draw differently. These use only +, -, *, / and bit manipulation (and every
+ * AXION target is built without floating-point contraction), so they give the same bits
+ * everywhere (decision 81). Their error is below 1e-7 relative over the ranges UI code uses.
+ */
+
+/* sin and cos of x. Cody-Waite reduction by pi/2 in three parts (the first two have few
+ * significant bits, so k times them is exact for |k| < 2^12), then Taylor polynomials on
+ * [-pi/4, pi/4] (errors below 2e-9 there). Precision degrades for |x| beyond about 6000, but the
+ * result stays deterministic. */
+static void sin_cos(float x, float *out_s, float *out_c)
+{
+    const float p1 = 1.5703125f; /* pi/2 in three parts (Cephes' DP1-DP3, x2) */
+    const float p2 = 4.837512969970703125e-4f;
+    const float p3 = 7.54978995489188216e-8f;
+    float k, r, r2, s, c;
+    int32_t q;
+    if (!(x - x == 0.0f)) {
+        *out_s = *out_c = x - x; /* NaN for infinities and NaN */
+        return;
+    }
+    k = x * 0.636619772f; /* 2 / pi */
+    k = (float)(int64_t)(k < 0.0f ? k - 0.5f : k + 0.5f);
+    q = (int32_t)((int64_t)k & 3);
+    r = ((x - k * p1) - k * p2) - k * p3;
+    r2 = r * r;
+    s = r2 * (1.0f / 362880.0f) - 1.0f / 5040.0f;
+    s = s * r2 + 1.0f / 120.0f;
+    s = s * r2 - 1.0f / 6.0f;
+    s = s * r2 * r + r;
+    c = r2 * (-1.0f / 3628800.0f) + 1.0f / 40320.0f;
+    c = c * r2 - 1.0f / 720.0f;
+    c = c * r2 + 1.0f / 24.0f;
+    c = c * r2 - 0.5f;
+    c = c * r2 + 1.0f;
+    switch (q) {
+    case 0:
+        *out_s = s;
+        *out_c = c;
+        break;
+    case 1:
+        *out_s = c;
+        *out_c = -s;
+        break;
+    case 2:
+        *out_s = -s;
+        *out_c = -c;
+        break;
+    default:
+        *out_s = -c;
+        *out_c = s;
+        break;
+    }
+}
+
+/* log2 of a positive normal float: the mantissa brought to [sqrt(1/2), sqrt(2)], where
+ * ln(m) = 2 atanh(t) with t = (m - 1) / (m + 1), |t| <= 0.172; five terms of the series leave an
+ * error below 1e-9. */
+static float log2_pos(float x)
+{
+    uint32_t bits;
+    int32_t e;
+    float m, t, t2, p;
+    memcpy(&bits, &x, sizeof bits);
+    e = (int32_t)((bits >> 23) & 0xFFu) - 127;
+    bits = (bits & 0x007FFFFFu) | 0x3F800000u;
+    memcpy(&m, &bits, sizeof m);
+    if (m > 1.41421356f) {
+        m = m * 0.5f;
+        e += 1;
+    }
+    t = (m - 1.0f) / (m + 1.0f);
+    t2 = t * t;
+    p = t2 * (1.0f / 9.0f);
+    p = (p + 1.0f / 7.0f) * t2;
+    p = (p + 1.0f / 5.0f) * t2;
+    p = (p + 1.0f / 3.0f) * t2;
+    p = (p + 1.0f) * t;
+    return (float)e + (2.0f * p) * 1.44269504f; /* 1 / ln 2 */
+}
+
+/* 2^y: y = n + f with n the nearest integer and |f| <= 1/2; e^(f ln 2) by its Taylor series to
+ * degree 7 (error below 1e-8), then the exponent bits. 0 below 2^-126 (no denormals), infinity
+ * above 2^127. */
+static float exp2_det(float y)
+{
+    int32_t n;
+    float z, p, scale;
+    uint32_t bits;
+    if (y < -126.0f) {
+        return 0.0f;
+    }
+    if (y > 127.0f) {
+        return 3.402823466e+38f * 2.0f; /* infinity */
+    }
+    n = (int32_t)(y < 0.0f ? y - 0.5f : y + 0.5f);
+    z = (y - (float)n) * 0.693147181f;
+    p = 1.0f / 5040.0f;
+    p = p * z + 1.0f / 720.0f;
+    p = p * z + 1.0f / 120.0f;
+    p = p * z + 1.0f / 24.0f;
+    p = p * z + 1.0f / 6.0f;
+    p = p * z + 0.5f;
+    p = p * z + 1.0f;
+    p = p * z + 1.0f;
+    if (n < -125) { /* keep the scale normal: two steps */
+        p = p * 0.5f;
+        n += 1;
+    }
+    bits = (uint32_t)(n + 127) << 23;
+    memcpy(&scale, &bits, sizeof scale);
+    return p * scale;
+}
+
+/* x^e for x > 0 finite. */
+static float pow_pos(float x, float e)
+{
+    return exp2_det(e * log2_pos(x));
+}
+
 ax_affine2 ax_affine2_rotate(float radians)
 {
-    const float c = cosf(radians);
-    const float s = sinf(radians);
+    float c, s;
+    sin_cos(radians, &s, &c);
     return ax_affine2_make(c, s, -s, c, 0.0f, 0.0f);
 }
 
@@ -68,14 +191,22 @@ ax_rect ax_affine2_transform_rect(ax_affine2 m, ax_rect r)
 float ax_srgb_to_linear(float encoded)
 {
     const float x = fabsf(encoded);
-    const float y = x <= 0.04045f ? x / 12.92f : powf((x + 0.055f) / 1.055f, 2.4f);
+    float y;
+    if (!(x <= 3.402823466e+38f)) {
+        return encoded; /* infinities and NaN */
+    }
+    y = x <= 0.04045f ? x / 12.92f : pow_pos((x + 0.055f) / 1.055f, 2.4f);
     return encoded < 0.0f ? -y : y;
 }
 
 float ax_linear_to_srgb(float linear)
 {
     const float x = fabsf(linear);
-    const float y = x <= 0.0031308f ? x * 12.92f : 1.055f * powf(x, 1.0f / 2.4f) - 0.055f;
+    float y;
+    if (!(x <= 3.402823466e+38f)) {
+        return linear;
+    }
+    y = x <= 0.0031308f ? x * 12.92f : 1.055f * pow_pos(x, 1.0f / 2.4f) - 0.055f;
     return linear < 0.0f ? -y : y;
 }
 

@@ -694,7 +694,7 @@ static void prio_log_init(prio_log *log, ax_job_system *js)
 }
 
 static void make_prio_jobs(prio_log *log, prio_arg *args, ax_job *jobs, uint32_t first,
-                            uint32_t count, bool background)
+                           uint32_t count, bool background)
 {
     uint32_t i;
     for (i = 0; i < count; ++i) {
