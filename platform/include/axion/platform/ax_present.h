@@ -110,6 +110,33 @@ typedef enum ax_wake_reason {
 AX_API ax_result ax_surface_wait_frame(ax_surface surface, uint64_t timeout_ns,
                                        ax_wake_reason *out_reason);
 
+#define AX_SURFACE_WAIT_MAX 64u
+
+/*
+ * ax_surface_wait_frame over several surfaces of one app, for a thread presenting all of them
+ * (the render thread). Returns as soon as at least one surface has a reason other than
+ * AX_WAKE_TIMEOUT, or when timeout_ns passes; out_reasons[i] is surfaces[i]'s reason, with the
+ * rules of ax_surface_wait_frame for each. Every surface that is ready is reported, so a frame
+ * callback is never consumed without being returned.
+ * Errors: AX_ERR_INVALID_ARGUMENT (no surfaces, more than AX_SURFACE_WAIT_MAX, NULL arrays,
+ * surfaces of different apps), AX_ERR_INVALID_HANDLE. thread: presenter of every surface
+ */
+AX_API ax_result ax_surface_wait_frames(const ax_surface *surfaces, uint32_t count,
+                                        uint64_t timeout_ns, ax_wake_reason *out_reasons);
+
+/*
+ * Commit ids. Each successful ax_surface_prepare_commit gives the commit it prepares the next id,
+ * from 1; ax_surface_prepared_commit returns the last one (0 before any). The caller keeps what
+ * it drew with each id, and ax_surface_get_presented_commit tells which commit reached the screen
+ * last and when (the monotonic clock): measured by presentation feedback where the system has it,
+ * else estimated by the frame callback. Ids only move forward; a commit that failed
+ * (ax_surface_commit_failed) or was discarded is never reported, and a later one shown covers it.
+ * Both: thread: presenter
+ */
+AX_API uint64_t ax_surface_prepared_commit(ax_surface surface);
+AX_API ax_result ax_surface_get_presented_commit(ax_surface surface, uint64_t *out_commit,
+                                                 uint64_t *out_present_ns);
+
 typedef struct ax_present_stats {
     uint32_t struct_size;         /* set by the caller: sizeof(ax_present_stats) */
     uint64_t presented;           /* frames reported on screen */

@@ -42,7 +42,9 @@ static void frame_done(void *data, struct wl_callback *cb, uint32_t time_ms)
     if (wl_app_of(w->app)->presentation == NULL) {
         /* No presentation-time: the callback is the best estimate of when the last frame was
          * shown (it fires when the compositor is ready for the next one). */
-        ax_frame_clock_presented(&w->clock, ax_time_monotonic_ns(), 0, 0, false, 0);
+        uint64_t now = ax_time_monotonic_ns();
+        ax_frame_clock_presented(&w->clock, now, 0, 0, false, 0);
+        ax__surface_commit_presented(w, ww->frame_callback_commit, now);
     }
 }
 
@@ -79,6 +81,7 @@ static void feedback_presented(void *data, struct wp_presentation_feedback *fb, 
     (void)flags;
     /* A zero counter means the output has none (the protocol's convention). */
     ax_frame_clock_presented(&w->clock, t, refresh, msc, msc != 0, rec->configure_ns);
+    ax__surface_commit_presented(w, rec->commit_id, t);
     release_record(rec);
 }
 
@@ -111,9 +114,10 @@ ax_result ax_wl_surface_prepare_commit(ax_window_impl *w, const ax_frame_target 
     ww->prepared_record = NULL;
 
     /* 1. Acknowledge the configure this frame was drawn for. It applies with the caller's next
-     *    commit, together with the buffer of the configured size. */
+     *    commit, together with the buffer of the configured size. Through the surface's role:
+     *    only an xdg surface has xdg_surface.ack_configure (decision 72). */
     if (frame->acks_configure) {
-        xdg_surface_ack_configure(ww->xdg_surface, frame->configure_serial);
+        ww->role->ack_configure(ww, frame->configure_serial);
     }
 
     /* 2. Map the buffer (pixel_width x pixel_height) onto the logical size. With a viewport any
@@ -136,6 +140,7 @@ ax_result ax_wl_surface_prepare_commit(ax_window_impl *w, const ax_frame_target 
     /* 3. Ask when to draw next (one frame callback at a time). */
     if (ww->frame_callback == NULL) {
         ww->frame_callback = wl_surface_frame(ww->surface_wrapper);
+        ww->frame_callback_commit = w->presenter_commit_id + 1u; /* this commit, if made */
         wl_callback_add_listener(ww->frame_callback, &frame_listener, w);
         ww->prepared_callback = ww->frame_callback;
     }
@@ -148,6 +153,7 @@ ax_result ax_wl_surface_prepare_commit(ax_window_impl *w, const ax_frame_target 
                 rec->in_use = true;
                 rec->window = w;
                 rec->configure_ns = frame->acks_configure ? frame->configure_time_ns : 0;
+                rec->commit_id = w->presenter_commit_id + 1u; /* this commit, if made */
                 rec->feedback = wp_presentation_feedback(ww->presentation_wrapper, ww->surface);
                 wp_presentation_feedback_add_listener(rec->feedback, &feedback_listener, rec);
                 ww->prepared_record = rec;

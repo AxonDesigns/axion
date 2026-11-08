@@ -87,6 +87,7 @@ new entry that points back to the old one.
 | 71  | The IDL: `.axidl`, and the line between ABI and SDK      | Approved       |
 | 72  | Wayland layer-shell surfaces                             | Approved       |
 | 73  | Extension chains: the `next` header                      | Approved       |
+| 74  | Platform pieces for one render thread and the scene      | Implementation |
 
 ---
 
@@ -2887,3 +2888,40 @@ internal renderer interface already chains `{next, type}` (`ax_renderer_chain`, 
     in.
 
 **Status.** Approved by the owner.
+
+## 74. Platform pieces for one render thread and the scene
+
+**Context.** M1's pipeline has one render thread presenting every surface, a scene thread that
+consumes the platform's events, and `ax_txn_on_presented`, which must know when a snapshot reached
+the screen. Decision 72 also requires any rework of `wl_present.c` to acknowledge configures
+through a per-role function.
+
+**Decision.**
+- **Configure acknowledgement by role.** `wl_window` holds a `wl_role_ops` table chosen at
+  creation (`ax_wl_toplevel_role` today). `prepare_commit` calls `role->ack_configure`;
+  `xdg_surface_ack_configure` appears only in the toplevel role. The other three couplings listed
+  in decision 72 are left for M3.
+- **`ax_surface_wait_frames`** (`ax_present.h`): `ax_surface_wait_frame` over up to 64 surfaces
+  of one app. It dispatches every surface's queue, applies decision 40's rules to each, and
+  returns when at least one has a reason, reporting every surface that is ready, so a frame
+  callback is never consumed without being returned. The single-surface wait is now this function
+  with one surface; the shared wake (`wake_gen`) already covers any number of surfaces.
+- **Commit ids.** Each successful `ax_surface_prepare_commit` numbers its commit from 1
+  (`ax_surface_prepared_commit`). The backend tags the presentation feedback and the frame
+  callback it requests with that id, and `ax_surface_get_presented_commit` returns the newest
+  commit shown and when (monotonic clock): measured by `wp_presentation` where the compositor has
+  it, else at the frame callback. Ids only move forward; failed and discarded commits are never
+  reported, a later commit shown covers them. The render thread maps ids to the snapshots it drew.
+- **`ax_app_set_event_notify`** (new internal SDK header `ax_event_notify.h`): a hook the main
+  thread calls after queueing events, for a consumer that sleeps on its own wait (the scene
+  thread waits for frame requests and events together). The call is made under a mutex the setter
+  also takes, so clearing the hook waits for a call in progress; when no hook is set the producer
+  pays one atomic load.
+- **Tests** (headless weston): `wayland.present.presented_commits_are_reported_by_id` (ids follow
+  the commits, the presented id only grows and never passes the last commit),
+  `wayland.present.one_presenter_waits_on_two_surfaces` (one thread keeps two windows at their
+  frame rate; argument errors), `wayland.window.event_notify_is_called_when_events_are_queued`
+  (called for RESIZED and CLOSE_REQUESTED, not after clearing).
+
+**Status.** Implementation, pending the owner's approval (part of the approved plan for the
+thread split).

@@ -11,6 +11,7 @@
 #include "axion/ax_error.h"
 #include "axion/base/ax_atomic.h"
 #include "axion/base/ax_thread.h"
+#include "axion/platform/ax_event_notify.h"
 #include "wayland/wl_testing.h"
 #include "wl_test_util.h"
 
@@ -414,4 +415,57 @@ AX_TEST(waiting_calls_fail_when_the_app_is_destroyed)
     AX_REQUIRE(ax_thread_create(&th, create_window_call, &c) == AX_OK);
     ax_thread_join(&th);
     AX_CHECK_RESULT(c.result, AX_ERR_INVALID_HANDLE);
+}
+
+/* ---- a consumer that sleeps on its own wait is told when events are queued --------------------
+ */
+
+static void count_notify(void *user)
+{
+    ax_atomic_fetch_add_u32((ax_atomic_u32 *)user, 1, AX_MO_RELAXED);
+}
+
+static void drain_events(ax_app app)
+{
+    ax_event e;
+    e.struct_size = sizeof e;
+    do {
+        ax_app_poll_event(app, &e);
+    } while (e.type != AX_EVENT_NONE);
+}
+
+AX_TEST(event_notify_is_called_when_events_are_queued)
+{
+    axt_app t;
+    ax_window_desc d = axt_window_desc(200, 200, AX_DECORATIONS_NATIVE);
+    ax_window w;
+    ax_atomic_u32 calls;
+    uint32_t before;
+    AXT_REQUIRE_COMPOSITOR();
+    ax_atomic_init_u32(&calls, 0);
+    AX_REQUIRE(axt_app_create(&t, 0) == AX_OK);
+    AX_CHECK_RESULT(ax_app_set_event_notify((ax_app){0}, count_notify, &calls),
+                    AX_ERR_INVALID_HANDLE);
+    AX_REQUIRE(ax_app_set_event_notify(t.app, count_notify, &calls) == AX_OK);
+    AX_REQUIRE(ax_window_create(t.app, &d, &w) == AX_OK);
+
+    /* The first configure queues RESIZED. */
+    AX_CHECK(axt_wait_event(t.app, AX_EVENT_RESIZED, w, NULL, AXT_SECONDS(5)));
+    AX_CHECK(ax_atomic_load_u32(&calls, AX_MO_RELAXED) >= 1);
+    drain_events(t.app);
+
+    before = ax_atomic_load_u32(&calls, AX_MO_RELAXED);
+    ax__wl_test_inject_close(w);
+    AX_CHECK(axt_wait_event(t.app, AX_EVENT_CLOSE_REQUESTED, w, NULL, AXT_SECONDS(5)));
+    AX_CHECK(ax_atomic_load_u32(&calls, AX_MO_RELAXED) > before);
+
+    /* Cleared: no more calls. */
+    AX_CHECK_RESULT(ax_app_set_event_notify(t.app, NULL, NULL), AX_OK);
+    before = ax_atomic_load_u32(&calls, AX_MO_RELAXED);
+    ax__wl_test_inject_close(w);
+    AX_CHECK(axt_wait_event(t.app, AX_EVENT_CLOSE_REQUESTED, w, NULL, AXT_SECONDS(5)));
+    AX_CHECK_EQ_U(ax_atomic_load_u32(&calls, AX_MO_RELAXED), before);
+
+    AX_CHECK_RESULT(ax_window_destroy(w), AX_OK);
+    AX_CHECK_EQ_U(axt_app_destroy(&t), 0);
 }

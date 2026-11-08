@@ -8,6 +8,7 @@
 
 #include "axion/base/ax_assert.h"
 #include "axion/base/ax_memory.h"
+#include "axion/platform/ax_event_notify.h"
 #include "platform_internal.h"
 
 /* ---- app handle table --------------------------------------------------------------------------
@@ -444,6 +445,16 @@ ax_result ax_app_poll_event(ax_app app, ax_event *out_event)
     if (!ax_evq_pop(&impl->events, out_event)) {
         out_event->type = AX_EVENT_NONE;
     }
+    return AX_OK;
+}
+
+ax_result ax_app_set_event_notify(ax_app app, ax_event_notify_fn fn, void *user)
+{
+    ax_app_impl *impl = ax__app_from_handle(app);
+    if (impl == NULL) {
+        return invalid_app("ax_app_set_event_notify");
+    }
+    ax_evq_set_notify(&impl->events, fn, user);
     return AX_OK;
 }
 

@@ -69,12 +69,29 @@ typedef struct wl_frame_record {
     struct wp_presentation_feedback *feedback;
     struct ax_window_impl *window;
     uint64_t configure_ns; /* configure this frame acknowledged, or 0 */
+    uint64_t commit_id;    /* the prepared commit it measures (ax_surface_prepared_commit) */
     bool in_use;
 } wl_frame_record;
 
 #define AX_WL_MAX_FRAMES_IN_FLIGHT 8
 
+struct wl_window;
+
+/*
+ * What depends on the surface's role (decision 72): an xdg toplevel today, a layer surface and
+ * popups later. Chosen when the window is created; the rest of the backend calls through it
+ * instead of naming a role's protocol objects.
+ */
+typedef struct wl_role_ops {
+    /* Presenter thread: acknowledges a configure; applies with the presenter's next commit. */
+    void (*ack_configure)(struct wl_window *ww, uint32_t serial);
+} wl_role_ops;
+
+/* wl_window.c: the xdg_toplevel role. */
+extern const wl_role_ops ax_wl_toplevel_role;
+
 typedef struct wl_window {
+    const wl_role_ops *role;
     struct wl_surface *surface;
     struct xdg_surface *xdg_surface;
     struct xdg_toplevel *toplevel;
@@ -87,6 +104,7 @@ typedef struct wl_window {
     struct wl_surface *surface_wrapper;
     struct wp_presentation *presentation_wrapper;
     struct wl_callback *frame_callback; /* pending frame callback, presenter-owned */
+    uint64_t frame_callback_commit;     /* the prepared commit that requested it */
     /* presenter-owned: what the last prepare_commit created (NULL if it created nothing) */
     struct wl_callback *prepared_callback;
     wl_frame_record *prepared_record;

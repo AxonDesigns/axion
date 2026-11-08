@@ -93,6 +93,11 @@ struct ax_window_impl {
     uint64_t presenter_prev_target_ns;     /* the frame clock's target before it */
     uint64_t presenter_frame_requested_ns; /* when the outstanding frame callback was requested */
     uint64_t presenter_lost_frames;        /* statistics: failed commits and lost frames */
+    /* Commit ids (ax_surface_prepared_commit): the backend tags what it asks the compositor about
+     * a commit with presenter_commit_id + 1 while preparing it. */
+    uint64_t presenter_commit_id; /* the last successful prepare_commit, from 1 */
+    uint64_t presented_commit_id; /* the newest commit reported on screen */
+    uint64_t presented_commit_ns; /* when it was shown (monotonic clock) */
 };
 
 /* A command handed to the main thread by ax__app_call. Lives on the caller's stack. */
@@ -191,6 +196,10 @@ ax_result ax__window_destroy_on_main(ax_window_impl *w);
 
 /* Runs commands handed over by other threads. Main thread. */
 void ax__app_run_commands(ax_app_impl *app);
+
+/* Presenter thread: the backend learned that commit `id` reached the screen at present_ns. Ids
+ * only move forward: a later commit shown covers the earlier ones. */
+void ax__surface_commit_presented(ax_window_impl *w, uint64_t id, uint64_t present_ns);
 
 /* Wakes every presenter waiting in ax_surface_wait_frame. Main thread (any thread is safe). */
 void ax__app_wake_presenters(ax_app_impl *app);
