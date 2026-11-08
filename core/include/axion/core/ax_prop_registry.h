@@ -7,7 +7,10 @@
  *
  * Built-in properties (ax_prop.h) are a static table: their values live in the node store's hot
  * columns (style, paint, composite), at a fixed offset. Adding a property group (flex, text) means
- * adding rows to that table and fields to a hot column or a side component.
+ * adding rows to that table and fields to a hot column or a side component. A protocol whose data
+ * should not grow the hot style column (grid's tracks, an item's grid placement) will keep it in a
+ * side component the scene registers at init, and its rows will name that component and the
+ * field's offset in it (AX_PROP_IN_COMPONENT): decision 89.
  *
  * Properties registered at run time (IDL-generated kit properties with a fixed id in
  * 0x8000-0xFFFF, plugin properties that get an id from 0x10000) keep their values in a side
@@ -67,6 +70,8 @@ typedef struct ax_prop_desc {
     float max_value;
     ax_prop longhands[AX_PROP_MAX_LONGHANDS]; /* AX_PROP_EXPANDS */
     uint32_t longhand_count;
+    /* A U32 enumeration kept in one byte of its column (values above 255 are out of range). */
+    bool stored_u8;
 } ax_prop_desc;
 
 typedef struct ax_prop_registry {
@@ -92,9 +97,9 @@ AX_API const ax_prop_desc *ax_prop_builtin(ax_prop id);
 
 /*
  * Checks a value against a descriptor: the type must be the property's, numbers finite and in
- * the property's range, units known. AX_ERR_INVALID_ARGUMENT, or AX_ERR_UNSUPPORTED for a
- * percentage until layout exists; records ax_last_error with the property's name. Pure: callable
- * from any thread.
+ * the property's range (U32 enumerations: their known values), units known.
+ * AX_ERR_INVALID_ARGUMENT; records ax_last_error with the property's name. Pure: callable from any
+ * thread.
  */
 AX_API ax_result ax_prop_check_value(const ax_prop_desc *desc, ax_value_type type,
                                      const ax_value *value);

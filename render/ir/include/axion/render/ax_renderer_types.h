@@ -39,6 +39,8 @@ typedef struct ax_render_counts {
     uint32_t approximated;   /* layers whose group opacity was applied to each item */
     uint32_t invalid_items;  /* items with non-finite or degenerate geometry, skipped */
     uint32_t instances;      /* primitives drawn */
+    uint32_t clips_approximated; /* clips beyond a renderer's chain limit, drawn as their
+                                  * bounding box (ax_render_wgpu, decision 93) */
 } ax_render_counts;
 
 AX_EXTERN_C_END

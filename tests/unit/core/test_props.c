@@ -76,6 +76,64 @@ AX_TEST(builtin_properties_match_the_documented_table)
         {AX_PROP_HEIGHT, "height", AX_VALUE_DIMENSION, AX_EFFECT_LAYOUT, AX_PROP_ANIMATABLE},
         {AX_PROP_LEFT, "left", AX_VALUE_DIMENSION, AX_EFFECT_LAYOUT, AX_PROP_ANIMATABLE},
         {AX_PROP_TOP, "top", AX_VALUE_DIMENSION, AX_EFFECT_LAYOUT, AX_PROP_ANIMATABLE},
+        {AX_PROP_RIGHT, "right", AX_VALUE_DIMENSION, AX_EFFECT_LAYOUT, AX_PROP_ANIMATABLE},
+        {AX_PROP_BOTTOM, "bottom", AX_VALUE_DIMENSION, AX_EFFECT_LAYOUT, AX_PROP_ANIMATABLE},
+        {AX_PROP_MIN_WIDTH, "min-width", AX_VALUE_DIMENSION, AX_EFFECT_LAYOUT, AX_PROP_ANIMATABLE},
+        {AX_PROP_MIN_HEIGHT, "min-height", AX_VALUE_DIMENSION, AX_EFFECT_LAYOUT,
+         AX_PROP_ANIMATABLE},
+        {AX_PROP_MAX_WIDTH, "max-width", AX_VALUE_DIMENSION, AX_EFFECT_LAYOUT, AX_PROP_ANIMATABLE},
+        {AX_PROP_MAX_HEIGHT, "max-height", AX_VALUE_DIMENSION, AX_EFFECT_LAYOUT,
+         AX_PROP_ANIMATABLE},
+        {AX_PROP_POSITION, "position", AX_VALUE_U32, AX_EFFECT_LAYOUT, 0},
+        {AX_PROP_DISPLAY, "display", AX_VALUE_U32, AX_EFFECT_LAYOUT, 0},
+        {AX_PROP_OVERFLOW, "overflow", AX_VALUE_U32, AX_EFFECT_LAYOUT, 0},
+        {AX_PROP_ASPECT_RATIO, "aspect-ratio", AX_VALUE_F32, AX_EFFECT_LAYOUT, AX_PROP_ANIMATABLE},
+        {AX_PROP_BOX_SIZING, "box-sizing", AX_VALUE_U32, AX_EFFECT_LAYOUT, 0},
+        {AX_PROP_FLEX_DIRECTION, "flex-direction", AX_VALUE_U32, AX_EFFECT_LAYOUT, 0},
+        {AX_PROP_FLEX_WRAP, "flex-wrap", AX_VALUE_U32, AX_EFFECT_LAYOUT, 0},
+        {AX_PROP_FLEX_GROW, "flex-grow", AX_VALUE_F32, AX_EFFECT_LAYOUT, AX_PROP_ANIMATABLE},
+        {AX_PROP_FLEX_SHRINK, "flex-shrink", AX_VALUE_F32, AX_EFFECT_LAYOUT, AX_PROP_ANIMATABLE},
+        {AX_PROP_FLEX_BASIS, "flex-basis", AX_VALUE_DIMENSION, AX_EFFECT_LAYOUT,
+         AX_PROP_ANIMATABLE},
+        {AX_PROP_JUSTIFY_CONTENT, "justify-content", AX_VALUE_U32, AX_EFFECT_LAYOUT, 0},
+        {AX_PROP_ALIGN_ITEMS, "align-items", AX_VALUE_U32, AX_EFFECT_LAYOUT, 0},
+        {AX_PROP_ALIGN_SELF, "align-self", AX_VALUE_U32, AX_EFFECT_LAYOUT, 0},
+        {AX_PROP_ALIGN_CONTENT, "align-content", AX_VALUE_U32, AX_EFFECT_LAYOUT, 0},
+        {AX_PROP_COLUMN_GAP, "column-gap", AX_VALUE_DIMENSION, AX_EFFECT_LAYOUT,
+         AX_PROP_ANIMATABLE},
+        {AX_PROP_ROW_GAP, "row-gap", AX_VALUE_DIMENSION, AX_EFFECT_LAYOUT, AX_PROP_ANIMATABLE},
+        {AX_PROP_GAP, "gap", AX_VALUE_DIMENSION, AX_EFFECT_LAYOUT,
+         AX_PROP_ANIMATABLE | AX_PROP_SHORTHAND},
+        {AX_PROP_MARGIN_LEFT, "margin-left", AX_VALUE_DIMENSION, AX_EFFECT_LAYOUT,
+         AX_PROP_ANIMATABLE},
+        {AX_PROP_MARGIN_TOP, "margin-top", AX_VALUE_DIMENSION, AX_EFFECT_LAYOUT,
+         AX_PROP_ANIMATABLE},
+        {AX_PROP_MARGIN_RIGHT, "margin-right", AX_VALUE_DIMENSION, AX_EFFECT_LAYOUT,
+         AX_PROP_ANIMATABLE},
+        {AX_PROP_MARGIN_BOTTOM, "margin-bottom", AX_VALUE_DIMENSION, AX_EFFECT_LAYOUT,
+         AX_PROP_ANIMATABLE},
+        {AX_PROP_MARGIN, "margin", AX_VALUE_DIMENSION, AX_EFFECT_LAYOUT,
+         AX_PROP_ANIMATABLE | AX_PROP_SHORTHAND},
+        {AX_PROP_PADDING_LEFT, "padding-left", AX_VALUE_DIMENSION, AX_EFFECT_LAYOUT,
+         AX_PROP_ANIMATABLE},
+        {AX_PROP_PADDING_TOP, "padding-top", AX_VALUE_DIMENSION, AX_EFFECT_LAYOUT,
+         AX_PROP_ANIMATABLE},
+        {AX_PROP_PADDING_RIGHT, "padding-right", AX_VALUE_DIMENSION, AX_EFFECT_LAYOUT,
+         AX_PROP_ANIMATABLE},
+        {AX_PROP_PADDING_BOTTOM, "padding-bottom", AX_VALUE_DIMENSION, AX_EFFECT_LAYOUT,
+         AX_PROP_ANIMATABLE},
+        {AX_PROP_PADDING, "padding", AX_VALUE_DIMENSION, AX_EFFECT_LAYOUT,
+         AX_PROP_ANIMATABLE | AX_PROP_SHORTHAND},
+        {AX_PROP_BORDER_LEFT_WIDTH, "border-left-width", AX_VALUE_F32, AX_EFFECT_LAYOUT,
+         AX_PROP_ANIMATABLE},
+        {AX_PROP_BORDER_TOP_WIDTH, "border-top-width", AX_VALUE_F32, AX_EFFECT_LAYOUT,
+         AX_PROP_ANIMATABLE},
+        {AX_PROP_BORDER_RIGHT_WIDTH, "border-right-width", AX_VALUE_F32, AX_EFFECT_LAYOUT,
+         AX_PROP_ANIMATABLE},
+        {AX_PROP_BORDER_BOTTOM_WIDTH, "border-bottom-width", AX_VALUE_F32, AX_EFFECT_LAYOUT,
+         AX_PROP_ANIMATABLE},
+        {AX_PROP_BORDER_WIDTH, "border-width", AX_VALUE_F32, AX_EFFECT_LAYOUT,
+         AX_PROP_ANIMATABLE | AX_PROP_SHORTHAND},
         {AX_PROP_BACKGROUND_COLOR, "background-color", AX_VALUE_COLOR, AX_EFFECT_PAINT,
          AX_PROP_ANIMATABLE},
         {AX_PROP_CORNER_RADIUS_TOP_LEFT, "corner-radius-top-left", AX_VALUE_F32, AX_EFFECT_PAINT,
@@ -112,7 +170,7 @@ AX_TEST(builtin_properties_match_the_documented_table)
         AX_CHECK(ax_prop_registry_find_by_name(&f.scene.props, name) == d);
     }
     AX_CHECK(ax_prop_registry_find(&f.scene.props, AX_PROP_INVALID) == NULL);
-    AX_CHECK(ax_prop_registry_find(&f.scene.props, 0x0105) == NULL);
+    AX_CHECK(ax_prop_registry_find(&f.scene.props, 0x0150) == NULL);
     AX_CHECK(ax_prop_registry_find(&f.scene.props, 0x12345) == NULL);
     AX_CHECK(ax_prop_registry_find_by_name(&f.scene.props, AX_STR("color")) == NULL);
     AX_CHECK_EQ_U(fixture_deinit(&f), 0);
@@ -154,7 +212,7 @@ AX_TEST(set_and_get_every_builtin)
     row = ax_node_store_row(&f.scene.store, n);
     AX_CHECK(f.scene.store.style[row].width.value == 120.0f);
     AX_CHECK_EQ_U(f.scene.store.style[row].width.unit, AX_UNIT_POINTS);
-    AX_CHECK(f.scene.store.style[row].left.value == -10.0f);
+    AX_CHECK(f.scene.store.style[row].inset[AX_EDGE_LEFT].value == -10.0f);
     AX_CHECK(f.scene.store.paint[row].background.g == 0.25f);
     AX_CHECK(f.scene.store.paint[row].corner_radius[2] == 3.0f);
     AX_CHECK(f.scene.store.composite[row].opacity == 0.25f);
@@ -215,10 +273,18 @@ AX_TEST(invalid_values_are_rejected_and_change_nothing)
     v = dimv(1.0f, (ax_unit)7);
     AX_CHECK_RESULT(ax_scene_set(&f.scene, n, AX_PROP_LEFT, AX_VALUE_DIMENSION, &v),
                     AX_ERR_INVALID_ARGUMENT);
-    /* Percentages wait for layout. */
-    v = dimv(50.0f, AX_UNIT_PERCENT);
+    /* Percentages are checked against the same range as points; enumerations against their
+     * values. */
+    v = dimv(-50.0f, AX_UNIT_PERCENT);
     AX_CHECK_RESULT(ax_scene_set(&f.scene, n, AX_PROP_WIDTH, AX_VALUE_DIMENSION, &v),
-                    AX_ERR_UNSUPPORTED);
+                    AX_ERR_INVALID_ARGUMENT);
+    memset(&v, 0, sizeof v);
+    v.u32 = AX_FLEX_DIRECTION_ROW_REVERSE + 1u;
+    AX_CHECK_RESULT(ax_scene_set(&f.scene, n, AX_PROP_FLEX_DIRECTION, AX_VALUE_U32, &v),
+                    AX_ERR_INVALID_ARGUMENT);
+    v.u32 = 256u + AX_FLEX_DIRECTION_ROW; /* would alias ROW in the stored byte */
+    AX_CHECK_RESULT(ax_scene_set(&f.scene, n, AX_PROP_FLEX_DIRECTION, AX_VALUE_U32, &v),
+                    AX_ERR_INVALID_ARGUMENT);
     memset(&v, 0, sizeof v);
     v.color = ax_color_make(0.0f, NAN, 0.0f, 1.0f);
     AX_CHECK_RESULT(ax_scene_set(&f.scene, n, AX_PROP_BACKGROUND_COLOR, AX_VALUE_COLOR, &v),
@@ -358,5 +424,91 @@ AX_TEST(registered_properties_live_in_side_components)
     AX_CHECK_RESULT(ax_scene_set(&f.scene, other, idl, AX_VALUE_BOOL, &v), AX_OK);
     AX_CHECK_RESULT(ax_scene_get(&f.scene, other, idl, &out), AX_OK);
     AX_CHECK(out.boolean);
+    AX_CHECK_EQ_U(fixture_deinit(&f), 0);
+}
+
+/* Layout's properties (decision 89): defaults read back as the registry documents them (Yoga's),
+ * enumerations live in one byte, margins default to 0 points with AUTO meaning an auto margin, and
+ * the shorthands expand. */
+AX_TEST(layout_properties_have_documented_defaults_and_shorthands)
+{
+    fixture f;
+    ax_node n;
+    ax_value v;
+    ax_value out;
+    uint32_t count = 0;
+    uint32_t i;
+    uint32_t row;
+    const ax_prop_desc *all = ax_prop_registry_builtins(&count);
+    fixture_init(&f);
+    n = make(&f.scene);
+
+    /* Every non-shorthand reads its registry default on a new node. */
+    for (i = 0; i < count; ++i) {
+        if (all[i].storage == AX_PROP_EXPANDS) {
+            continue;
+        }
+        AX_CHECK_RESULT(ax_scene_get(&f.scene, n, all[i].id, &out), AX_OK);
+        switch (all[i].type) {
+        case AX_VALUE_DIMENSION:
+            AX_CHECK(out.dimension.value == all[i].default_value.dimension.value);
+            AX_CHECK_EQ_U(out.dimension.unit, all[i].default_value.dimension.unit);
+            break;
+        case AX_VALUE_U32:
+            AX_CHECK_EQ_U(out.u32, all[i].default_value.u32);
+            break;
+        case AX_VALUE_F32:
+            AX_CHECK(out.f32 == all[i].default_value.f32);
+            break;
+        default:
+            break;
+        }
+    }
+    AX_CHECK_RESULT(ax_scene_get(&f.scene, n, AX_PROP_FLEX_DIRECTION, &out), AX_OK);
+    AX_CHECK_EQ_U(out.u32, AX_FLEX_DIRECTION_COLUMN);
+    AX_CHECK_RESULT(ax_scene_get(&f.scene, n, AX_PROP_ALIGN_ITEMS, &out), AX_OK);
+    AX_CHECK_EQ_U(out.u32, AX_ALIGN_STRETCH);
+    AX_CHECK_RESULT(ax_scene_get(&f.scene, n, AX_PROP_MARGIN_LEFT, &out), AX_OK);
+    AX_CHECK_EQ_U(out.dimension.unit, AX_UNIT_POINTS);
+
+    /* One byte per enumeration; setting the same value marks nothing. */
+    ax_scene_clear_dirty(&f.scene);
+    memset(&v, 0, sizeof v);
+    v.u32 = AX_JUSTIFY_SPACE_EVENLY;
+    AX_CHECK_RESULT(ax_scene_set(&f.scene, n, AX_PROP_JUSTIFY_CONTENT, AX_VALUE_U32, &v), AX_OK);
+    row = ax_node_store_row(&f.scene.store, n);
+    AX_CHECK_EQ_U(f.scene.store.style[row].justify_content, AX_JUSTIFY_SPACE_EVENLY);
+    AX_CHECK_EQ_U(f.scene.store.style[row].align_items, AX_ALIGN_STRETCH); /* neighbour intact */
+    AX_CHECK(ax_scene_dirty_flags(&f.scene, n) & AX_DIRTY_LAYOUT);
+    ax_scene_clear_dirty(&f.scene);
+    AX_CHECK_RESULT(ax_scene_set(&f.scene, n, AX_PROP_JUSTIFY_CONTENT, AX_VALUE_U32, &v), AX_OK);
+    AX_CHECK_EQ_U(ax_scene_dirty_flags(&f.scene, n), 0);
+    AX_CHECK_RESULT(ax_scene_get(&f.scene, n, AX_PROP_JUSTIFY_CONTENT, &out), AX_OK);
+    AX_CHECK_EQ_U(out.u32, AX_JUSTIFY_SPACE_EVENLY);
+
+    /* Shorthands: margin (AUTO allowed), padding, gap, border width. */
+    v = dimv(0.0f, AX_UNIT_AUTO);
+    AX_CHECK_RESULT(ax_scene_set(&f.scene, n, AX_PROP_MARGIN, AX_VALUE_DIMENSION, &v), AX_OK);
+    AX_CHECK_EQ_U(f.scene.store.style[row].margin[AX_EDGE_BOTTOM].unit, AX_UNIT_AUTO);
+    v = dimv(10.0f, AX_UNIT_PERCENT);
+    AX_CHECK_RESULT(ax_scene_set(&f.scene, n, AX_PROP_PADDING, AX_VALUE_DIMENSION, &v), AX_OK);
+    AX_CHECK(f.scene.store.style[row].padding[AX_EDGE_RIGHT].value == 10.0f);
+    AX_CHECK_EQ_U(f.scene.store.style[row].padding[AX_EDGE_TOP].unit, AX_UNIT_PERCENT);
+    v = dimv(-1.0f, AX_UNIT_POINTS); /* padding is never negative */
+    AX_CHECK_RESULT(ax_scene_set(&f.scene, n, AX_PROP_PADDING, AX_VALUE_DIMENSION, &v),
+                    AX_ERR_INVALID_ARGUMENT);
+    v = dimv(8.0f, AX_UNIT_POINTS);
+    AX_CHECK_RESULT(ax_scene_set(&f.scene, n, AX_PROP_GAP, AX_VALUE_DIMENSION, &v), AX_OK);
+    AX_CHECK(f.scene.store.style[row].gap[0].value == 8.0f &&
+             f.scene.store.style[row].gap[1].value == 8.0f);
+    AX_CHECK_RESULT(ax_scene_get(&f.scene, n, AX_PROP_GAP, &out), AX_OK);
+    AX_CHECK(out.dimension.value == 8.0f);
+    v = f32v(2.0f);
+    AX_CHECK_RESULT(ax_scene_set(&f.scene, n, AX_PROP_BORDER_WIDTH, AX_VALUE_F32, &v), AX_OK);
+    AX_CHECK(f.scene.store.style[row].border[AX_EDGE_LEFT] == 2.0f);
+    v = f32v(3.0f);
+    AX_CHECK_RESULT(ax_scene_set(&f.scene, n, AX_PROP_BORDER_TOP_WIDTH, AX_VALUE_F32, &v), AX_OK);
+    AX_CHECK_RESULT(ax_scene_get(&f.scene, n, AX_PROP_BORDER_WIDTH, &out),
+                    AX_ERR_INVALID_ARGUMENT); /* the longhands differ */
     AX_CHECK_EQ_U(fixture_deinit(&f), 0);
 }

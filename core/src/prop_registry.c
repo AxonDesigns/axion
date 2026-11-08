@@ -17,16 +17,72 @@
 #define ANIM AX_PROP_ANIMATABLE
 
 /* Designated initializers keep each row readable; unnamed fields are zero. */
-#define DIM_PROP(id_, name_, field_)                      \
-    {.id = (id_),                                         \
-     .name = (name_),                                     \
-     .type = AX_VALUE_DIMENSION,                          \
-     .flags = ANIM,                                       \
-     .effect = AX_EFFECT_LAYOUT,                          \
-     .storage = AX_PROP_IN_STYLE,                         \
-     .offset = (uint32_t)offsetof(ax_node_style, field_), \
-     .min_value = -FLT_MAX,                               \
+#define STYLE_AT(field_) ((uint32_t)offsetof(ax_node_style, field_))
+#define EDGE_AT(array_, edge_) \
+    ((uint32_t)(offsetof(ax_node_style, array_) + sizeof(ax_dimension) * (edge_)))
+
+/* A dimension in the style column; min_ is the lowest value in points or percent. */
+#define DIM_AT(id_, name_, offset_, min_) \
+    {.id = (id_),                         \
+     .name = (name_),                     \
+     .type = AX_VALUE_DIMENSION,          \
+     .flags = ANIM,                       \
+     .effect = AX_EFFECT_LAYOUT,          \
+     .storage = AX_PROP_IN_STYLE,         \
+     .offset = (offset_),                 \
+     .min_value = (min_),                 \
      .max_value = FLT_MAX}
+
+/* A dimension whose default is 0 points (margins). */
+#define DIM_ZERO_AT(id_, name_, offset_)                     \
+    {.id = (id_),                                            \
+     .name = (name_),                                        \
+     .type = AX_VALUE_DIMENSION,                             \
+     .flags = ANIM,                                          \
+     .effect = AX_EFFECT_LAYOUT,                             \
+     .storage = AX_PROP_IN_STYLE,                            \
+     .offset = (offset_),                                    \
+     .default_value = {.dimension = {0.0f, AX_UNIT_POINTS}}, \
+     .min_value = -FLT_MAX,                                  \
+     .max_value = FLT_MAX}
+
+/* An f32 in the style column. */
+#define F32_AT(id_, name_, offset_, def_) \
+    {.id = (id_),                         \
+     .name = (name_),                     \
+     .type = AX_VALUE_F32,                \
+     .flags = ANIM,                       \
+     .effect = AX_EFFECT_LAYOUT,          \
+     .storage = AX_PROP_IN_STYLE,         \
+     .offset = (offset_),                 \
+     .default_value = {.f32 = (def_)},    \
+     .min_value = 0.0f,                   \
+     .max_value = FLT_MAX}
+
+/* A layout enumeration, one byte in the style column; values 0..max_. */
+#define ENUM_AT(id_, name_, field_, def_, max_) \
+    {.id = (id_),                               \
+     .name = (name_),                           \
+     .type = AX_VALUE_U32,                      \
+     .effect = AX_EFFECT_LAYOUT,                \
+     .storage = AX_PROP_IN_STYLE,               \
+     .offset = STYLE_AT(field_),                \
+     .default_value = {.u32 = (def_)},          \
+     .min_value = 0.0f,                         \
+     .max_value = (float)(max_),                \
+     .stored_u8 = true}
+
+#define SHORTHAND4(id_, name_, type_, min_, a_, b_, c_, d_) \
+    {.id = (id_),                                           \
+     .name = (name_),                                       \
+     .type = (type_),                                       \
+     .flags = ANIM | AX_PROP_SHORTHAND,                     \
+     .effect = AX_EFFECT_LAYOUT,                            \
+     .storage = AX_PROP_EXPANDS,                            \
+     .min_value = (min_),                                   \
+     .max_value = FLT_MAX,                                  \
+     .longhands = {(a_), (b_), (c_), (d_)},                 \
+     .longhand_count = 4}
 
 #define RADIUS_PROP(id_, name_, corner_)                                                       \
     {.id = (id_),                                                                              \
@@ -39,28 +95,70 @@
      .min_value = 0.0f,                                                                        \
      .max_value = FLT_MAX}
 
+#define BORDER_AT(edge_) ((uint32_t)(offsetof(ax_node_style, border) + sizeof(float) * (edge_)))
+
 /* Sorted by id. Defaults match the store's row defaults (ax_node_store.c, init_row). */
 static const ax_prop_desc BUILTINS[] = {
-    {.id = AX_PROP_WIDTH,
-     .name = "width",
+    DIM_AT(AX_PROP_WIDTH, "width", STYLE_AT(width), 0.0f),
+    DIM_AT(AX_PROP_HEIGHT, "height", STYLE_AT(height), 0.0f),
+    DIM_AT(AX_PROP_LEFT, "left", EDGE_AT(inset, AX_EDGE_LEFT), -FLT_MAX),
+    DIM_AT(AX_PROP_TOP, "top", EDGE_AT(inset, AX_EDGE_TOP), -FLT_MAX),
+    DIM_AT(AX_PROP_RIGHT, "right", EDGE_AT(inset, AX_EDGE_RIGHT), -FLT_MAX),
+    DIM_AT(AX_PROP_BOTTOM, "bottom", EDGE_AT(inset, AX_EDGE_BOTTOM), -FLT_MAX),
+    DIM_AT(AX_PROP_MIN_WIDTH, "min-width", STYLE_AT(min_width), 0.0f),
+    DIM_AT(AX_PROP_MIN_HEIGHT, "min-height", STYLE_AT(min_height), 0.0f),
+    DIM_AT(AX_PROP_MAX_WIDTH, "max-width", STYLE_AT(max_width), 0.0f),
+    DIM_AT(AX_PROP_MAX_HEIGHT, "max-height", STYLE_AT(max_height), 0.0f),
+    ENUM_AT(AX_PROP_POSITION, "position", position, AX_POSITION_RELATIVE, AX_POSITION_STATIC),
+    ENUM_AT(AX_PROP_DISPLAY, "display", display, AX_DISPLAY_FLEX, AX_DISPLAY_NONE),
+    ENUM_AT(AX_PROP_OVERFLOW, "overflow", overflow, AX_OVERFLOW_VISIBLE, AX_OVERFLOW_HIDDEN),
+    F32_AT(AX_PROP_ASPECT_RATIO, "aspect-ratio", STYLE_AT(aspect_ratio), 0.0f),
+    ENUM_AT(AX_PROP_BOX_SIZING, "box-sizing", box_sizing, AX_BOX_SIZING_BORDER_BOX,
+            AX_BOX_SIZING_CONTENT_BOX),
+    ENUM_AT(AX_PROP_FLEX_DIRECTION, "flex-direction", flex_direction, AX_FLEX_DIRECTION_COLUMN,
+            AX_FLEX_DIRECTION_ROW_REVERSE),
+    ENUM_AT(AX_PROP_FLEX_WRAP, "flex-wrap", flex_wrap, AX_FLEX_WRAP_NO_WRAP,
+            AX_FLEX_WRAP_WRAP_REVERSE),
+    F32_AT(AX_PROP_FLEX_GROW, "flex-grow", STYLE_AT(flex_grow), 0.0f),
+    F32_AT(AX_PROP_FLEX_SHRINK, "flex-shrink", STYLE_AT(flex_shrink), 0.0f),
+    DIM_AT(AX_PROP_FLEX_BASIS, "flex-basis", STYLE_AT(flex_basis), 0.0f),
+    ENUM_AT(AX_PROP_JUSTIFY_CONTENT, "justify-content", justify_content, AX_JUSTIFY_FLEX_START,
+            AX_JUSTIFY_SPACE_EVENLY),
+    ENUM_AT(AX_PROP_ALIGN_ITEMS, "align-items", align_items, AX_ALIGN_STRETCH,
+            AX_ALIGN_SPACE_EVENLY),
+    ENUM_AT(AX_PROP_ALIGN_SELF, "align-self", align_self, AX_ALIGN_AUTO, AX_ALIGN_SPACE_EVENLY),
+    ENUM_AT(AX_PROP_ALIGN_CONTENT, "align-content", align_content, AX_ALIGN_FLEX_START,
+            AX_ALIGN_SPACE_EVENLY),
+    DIM_AT(AX_PROP_COLUMN_GAP, "column-gap", EDGE_AT(gap, 0), 0.0f),
+    DIM_AT(AX_PROP_ROW_GAP, "row-gap", EDGE_AT(gap, 1), 0.0f),
+    {.id = AX_PROP_GAP,
+     .name = "gap",
      .type = AX_VALUE_DIMENSION,
-     .flags = ANIM,
+     .flags = ANIM | AX_PROP_SHORTHAND,
      .effect = AX_EFFECT_LAYOUT,
-     .storage = AX_PROP_IN_STYLE,
-     .offset = (uint32_t)offsetof(ax_node_style, width),
+     .storage = AX_PROP_EXPANDS,
      .min_value = 0.0f,
-     .max_value = FLT_MAX},
-    {.id = AX_PROP_HEIGHT,
-     .name = "height",
-     .type = AX_VALUE_DIMENSION,
-     .flags = ANIM,
-     .effect = AX_EFFECT_LAYOUT,
-     .storage = AX_PROP_IN_STYLE,
-     .offset = (uint32_t)offsetof(ax_node_style, height),
-     .min_value = 0.0f,
-     .max_value = FLT_MAX},
-    DIM_PROP(AX_PROP_LEFT, "left", left),
-    DIM_PROP(AX_PROP_TOP, "top", top),
+     .max_value = FLT_MAX,
+     .longhands = {AX_PROP_COLUMN_GAP, AX_PROP_ROW_GAP},
+     .longhand_count = 2},
+    DIM_ZERO_AT(AX_PROP_MARGIN_LEFT, "margin-left", EDGE_AT(margin, AX_EDGE_LEFT)),
+    DIM_ZERO_AT(AX_PROP_MARGIN_TOP, "margin-top", EDGE_AT(margin, AX_EDGE_TOP)),
+    DIM_ZERO_AT(AX_PROP_MARGIN_RIGHT, "margin-right", EDGE_AT(margin, AX_EDGE_RIGHT)),
+    DIM_ZERO_AT(AX_PROP_MARGIN_BOTTOM, "margin-bottom", EDGE_AT(margin, AX_EDGE_BOTTOM)),
+    SHORTHAND4(AX_PROP_MARGIN, "margin", AX_VALUE_DIMENSION, -FLT_MAX, AX_PROP_MARGIN_LEFT,
+               AX_PROP_MARGIN_TOP, AX_PROP_MARGIN_RIGHT, AX_PROP_MARGIN_BOTTOM),
+    DIM_AT(AX_PROP_PADDING_LEFT, "padding-left", EDGE_AT(padding, AX_EDGE_LEFT), 0.0f),
+    DIM_AT(AX_PROP_PADDING_TOP, "padding-top", EDGE_AT(padding, AX_EDGE_TOP), 0.0f),
+    DIM_AT(AX_PROP_PADDING_RIGHT, "padding-right", EDGE_AT(padding, AX_EDGE_RIGHT), 0.0f),
+    DIM_AT(AX_PROP_PADDING_BOTTOM, "padding-bottom", EDGE_AT(padding, AX_EDGE_BOTTOM), 0.0f),
+    SHORTHAND4(AX_PROP_PADDING, "padding", AX_VALUE_DIMENSION, 0.0f, AX_PROP_PADDING_LEFT,
+               AX_PROP_PADDING_TOP, AX_PROP_PADDING_RIGHT, AX_PROP_PADDING_BOTTOM),
+    F32_AT(AX_PROP_BORDER_LEFT_WIDTH, "border-left-width", BORDER_AT(AX_EDGE_LEFT), 0.0f),
+    F32_AT(AX_PROP_BORDER_TOP_WIDTH, "border-top-width", BORDER_AT(AX_EDGE_TOP), 0.0f),
+    F32_AT(AX_PROP_BORDER_RIGHT_WIDTH, "border-right-width", BORDER_AT(AX_EDGE_RIGHT), 0.0f),
+    F32_AT(AX_PROP_BORDER_BOTTOM_WIDTH, "border-bottom-width", BORDER_AT(AX_EDGE_BOTTOM), 0.0f),
+    SHORTHAND4(AX_PROP_BORDER_WIDTH, "border-width", AX_VALUE_F32, 0.0f, AX_PROP_BORDER_LEFT_WIDTH,
+               AX_PROP_BORDER_TOP_WIDTH, AX_PROP_BORDER_RIGHT_WIDTH, AX_PROP_BORDER_BOTTOM_WIDTH),
     {.id = AX_PROP_BACKGROUND_COLOR,
      .name = "background-color",
      .type = AX_VALUE_COLOR,
@@ -312,18 +410,16 @@ ax_result ax_prop_check_value(const ax_prop_desc *d, ax_value_type type, const a
         case AX_UNIT_AUTO:
             break;
         case AX_UNIT_POINTS:
+        case AX_UNIT_PERCENT:
             if (!isfinite(v->dimension.value) || v->dimension.value < d->min_value ||
                 v->dimension.value > d->max_value) {
                 return ax_set_error(AX_ERR_INVALID_ARGUMENT,
-                                    "property %s: %g points is not finite or outside [%g, %g]",
-                                    d->name, (double)v->dimension.value, (double)d->min_value,
-                                    (double)d->max_value);
+                                    "property %s: %g %s is not finite or outside [%g, %g]", d->name,
+                                    (double)v->dimension.value,
+                                    v->dimension.unit == AX_UNIT_POINTS ? "points" : "percent",
+                                    (double)d->min_value, (double)d->max_value);
             }
             break;
-        case AX_UNIT_PERCENT:
-            return ax_set_error(AX_ERR_UNSUPPORTED,
-                                "property %s: percentages need layout, which is not implemented",
-                                d->name);
         default:
             return ax_set_error(AX_ERR_INVALID_ARGUMENT, "property %s: unknown unit %u", d->name,
                                 (unsigned)v->dimension.unit);
@@ -346,6 +442,12 @@ ax_result ax_prop_check_value(const ax_prop_desc *d, ax_value_type type, const a
         }
         break;
     case AX_VALUE_U32:
+        if (d->min_value != d->max_value &&
+            ((double)v->u32 < (double)d->min_value || (double)v->u32 > (double)d->max_value)) {
+            return ax_set_error(AX_ERR_INVALID_ARGUMENT, "property %s: unknown value %u", d->name,
+                                (unsigned)v->u32);
+        }
+        break;
     case AX_VALUE_BOOL:
         break;
     }

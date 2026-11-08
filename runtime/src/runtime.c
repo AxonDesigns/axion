@@ -80,6 +80,9 @@ static void free_runtime(rt_impl *r)
 {
     ax_allocator a = r->allocator;
     if (r->jobs != NULL) {
+        if (ax_world_is_valid(r->desc.world)) {
+            ax_world_set_jobs(r->desc.world, NULL); /* the scene role is the caller's again */
+        }
         ax_jobs_destroy(r->jobs);
     }
     ax_spsc_ring_deinit(&r->scene_cmds);
@@ -184,7 +187,9 @@ ax_result ax_rt_create(const ax_rt_desc *desc, ax_runtime *out_runtime)
     r->slot = slot;
     *out_runtime = handle_of(r);
 
-    if (desc->mode == AX_RUNTIME_THREADED) {
+    if (desc->mode != AX_RUNTIME_THREADED) {
+        ax_world_set_jobs(desc->world, r->jobs); /* inline: the caller is the scene thread */
+    } else {
         res = ax__rt_start_threads(r);
         if (res != AX_OK) {
             ax_atomic_store_ptr(&g_runtimes[slot], NULL, AX_MO_RELEASE);
@@ -549,7 +554,8 @@ static void tick(rt_impl *r, uint32_t index, const ax_rt_request *q)
         return; /* the root's transaction has not applied yet */
     }
     /* 3. The root's viewport. 4. The examples' driver, which may read it. */
-    if (ax_world_set_root_viewport(world, s->root, q->logical_width, q->logical_height) != AX_OK) {
+    if (ax_world_set_root_viewport(world, s->root, q->logical_width, q->logical_height,
+                                   q->scale > 0.0f ? q->scale : 1.0f) != AX_OK) {
         return; /* out of memory, or the root has gained a parent: nothing to record */
     }
     if (r->desc.driver != NULL) {
@@ -620,6 +626,23 @@ static void presentation(rt_impl *r)
     (void)ax_world_flush_events(world);
 }
 
+/* Answers ax_measure_sync: an off-cycle layout of everything committed, published to the mirror.
+ * The dirty flags stay for the next tick, which records what changed (decision 92). */
+static void measure(rt_impl *r)
+{
+    ax_world world = r->desc.world;
+    uint64_t want = ax_atomic_load_u64(&r->measure_req, AX_MO_ACQUIRE);
+    if (want <= ax_atomic_load_u64(&r->measure_done, AX_MO_RELAXED)) {
+        return;
+    }
+    r->counters.applied += ax_world_apply_pending(world, UINT64_MAX);
+    (void)ax_world_position(world);
+    (void)ax_world_publish_mirror(world);
+    r->counters.measure_ticks++;
+    ax_atomic_store_u64(&r->measure_done, want, AX_MO_RELEASE);
+    ax__rt_signal_ack(r);
+}
+
 uint32_t ax_rt_scene_step(ax_runtime rt)
 {
     rt_impl *r = ax__rt_from_handle(rt);
@@ -627,7 +650,9 @@ uint32_t ax_rt_scene_step(ax_runtime rt)
     if (r == NULL) {
         return 0;
     }
+    r->in_step = true;
     scene_commands(r);
+    measure(r);
     if (r->desc.pump_events != NULL) {
         r->desc.pump_events(r->desc.pump_user, rt);
     }
@@ -640,6 +665,7 @@ uint32_t ax_rt_scene_step(ax_runtime rt)
         }
     }
     presentation(r);
+    r->in_step = false;
     return ticks;
 }
 
@@ -658,7 +684,68 @@ void ax_rt_get_counters(ax_runtime rt, ax_rt_counters *out)
     memset(out, 0, sizeof *out);
     if (r != NULL) {
         *out = r->counters;
+        out->measure_syncs = ax_atomic_load_u64(&r->measure_syncs, AX_MO_RELAXED);
+        out->measure_sync_ns = ax_atomic_load_u64(&r->measure_sync_ns, AX_MO_RELAXED);
     }
+}
+
+/* ---- Synchronous measurement ----------------------------------------------------------------- */
+
+#define MEASURE_TIMEOUT_NS 1000000000ull
+
+ax_result ax_measure_sync(ax_runtime runtime, ax_node node, ax_rectf *out_frame)
+{
+    rt_impl *r = ax__rt_from_handle(runtime);
+    ax_world world;
+    uint64_t want, start;
+    ax_result res;
+    if (out_frame != NULL) {
+        memset(out_frame, 0, sizeof *out_frame);
+    }
+    if (r == NULL || out_frame == NULL) {
+        return ax_set_error(r == NULL ? AX_ERR_INVALID_HANDLE : AX_ERR_INVALID_ARGUMENT,
+                            "ax_measure_sync: invalid runtime or NULL frame");
+    }
+    world = r->desc.world;
+    if ((!r->threads_running && r->in_step) || ax_jobs_current_worker(r->jobs) != UINT32_MAX ||
+        (r->threads_running &&
+         ax_thread_current_id() == ax_atomic_load_u64(&r->scene_tid, AX_MO_ACQUIRE))) {
+        return ax_set_error(AX_ERR_WRONG_THREAD,
+                            "ax_measure_sync: called from the scene's own work; it would wait for "
+                            "itself");
+    }
+    start = ax_time_monotonic_ns();
+    want = ax_world_last_committed_seq(world);
+    if (want == 0) {
+        want = 1; /* nothing committed: still lay out what the scene has */
+    }
+    if (ax_atomic_load_u64(&r->measure_req, AX_MO_RELAXED) < want) {
+        ax_atomic_store_u64(&r->measure_req, want, AX_MO_RELEASE);
+    }
+    if (!r->threads_running) {
+        (void)ax_rt_scene_step(runtime); /* single-threaded: the caller is the scene */
+    } else {
+        uint64_t deadline = start + MEASURE_TIMEOUT_NS;
+        ax__rt_wake_scene(r);
+        ax_mutex_lock(&r->ack_lock);
+        while (ax_atomic_load_u64(&r->measure_done, AX_MO_ACQUIRE) < want) {
+            uint64_t now = ax_time_monotonic_ns();
+            if (now >= deadline) {
+                break;
+            }
+            (void)ax_cond_wait_timeout(&r->ack_cond, &r->ack_lock, deadline - now);
+        }
+        ax_mutex_unlock(&r->ack_lock);
+        if (ax_atomic_load_u64(&r->measure_done, AX_MO_ACQUIRE) < want) {
+            return ax_set_error(AX_ERR_TIMEOUT,
+                                "ax_measure_sync: the scene thread did not answer within 1 s");
+        }
+    }
+    (void)ax_world_mirror_sync(world);
+    ax_atomic_fetch_add_u64(&r->measure_syncs, 1, AX_MO_RELAXED);
+    ax_atomic_fetch_add_u64(&r->measure_sync_ns, ax_time_monotonic_ns() - start, AX_MO_RELAXED);
+    res = ax_mirror_get_frame(world, node, out_frame);
+    return res;
 }
 
 /* ---- Single-threaded frames ------------------------------------------------------------------ */

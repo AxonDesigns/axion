@@ -31,6 +31,8 @@ static int scene_main(void *arg)
     ax_runtime rt;
     rt.h = ax_handle_make(r->slot, r->generation);
     ax_world_bind_scene_thread(r->desc.world);
+    ax_world_set_jobs(r->desc.world, r->jobs); /* layout's boundaries as frame jobs */
+    ax_atomic_store_u64(&r->scene_tid, ax_thread_current_id(), AX_MO_RELEASE);
     ax_atomic_store_u32(&r->scene_bound, 1, AX_MO_RELEASE);
     while (ax_atomic_load_u32(&r->stop, AX_MO_ACQUIRE) == 0) {
         uint64_t gen = ax_atomic_load_u64(&r->scene_gen, AX_MO_SEQ_CST);

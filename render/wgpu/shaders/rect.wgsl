@@ -17,16 +17,34 @@
 // transform's linear part and passes it in `inv`: exact, and identical on every implementation.
 // FLAG_FOOTPRINT_FROM_DERIVATIVES takes it from dpdxFine/dpdyFine instead, for transforms with
 // perspective (not used yet).
+//
+// Clips (decision 93): rect and rounded-rect clips are records in a storage buffer, each with its
+// device-to-local transform, so a clip is evaluated in its own layer's space with the same
+// coverage as an item; an instance names the innermost record of its chain and each record its
+// parent. The coverages multiply, innermost first, as in ax_render_soft (decision 81). Clips that
+// are plain rects aligned with the device's axes are intersected on the CPU into one record in
+// device space; a chain is at most MAX_CLIPS records long (the CPU approximates beyond).
 
 const FLAG_ROUNDED: u32 = 1u;
 const FLAG_FOOTPRINT_FROM_DERIVATIVES: u32 = 2u;
+const MAX_CLIPS: u32 = 5u; // RW_MAX_CLIP_CHAIN complex clips and one device rect
+
+struct Clip {
+    m: vec4f,     // device pixel -> local, linear part: a, b, c, d (as `inv`)
+    t: vec4f,     // translation tx, ty; z = flags; w = parent record + 1 (0: none)
+    rect: vec4f,  // x, y, w, h in the clip's local units
+    radii: vec4f, // clamped
+};
+
+@group(0) @binding(0) var<storage, read> clips: array<Clip>;
 
 struct Instance {
     @location(0) rect: vec4f,   // x, y, w, h in local units
     @location(1) radii: vec4f,  // top-left, top-right, bottom-right, bottom-left (clamped)
     @location(2) color: vec4f,  // sRGB-encoded, premultiplied
     @location(3) xform: vec4f,  // local -> clip space, linear part: a, b, c, d
-    @location(4) xlate: vec4f,  // local -> clip space, translation: tx, ty; z = flags
+    @location(4) xlate: vec4f,  // local -> clip space, translation: tx, ty; z = flags;
+                                // w = the innermost clip record + 1 (0: none)
     @location(5) inv: vec4f,    // device pixel -> local: (ia, ib) = d(local)/dX, (ic, id) = d/dY
 };
 
@@ -38,6 +56,7 @@ struct VOut {
     @location(3) @interpolate(flat) color: vec4f,
     @location(4) @interpolate(flat) inv: vec4f,
     @location(5) @interpolate(flat) flags: u32,
+    @location(6) @interpolate(flat) clip: u32,
 };
 
 @vertex
@@ -58,6 +77,7 @@ fn vs(@builtin(vertex_index) vi: u32, inst: Instance) -> VOut {
     o.color = inst.color;
     o.inv = inst.inv;
     o.flags = u32(inst.xlate.z);
+    o.clip = u32(inst.xlate.w);
     return o;
 }
 
@@ -120,6 +140,30 @@ fn corner_coverage(p: vec2f, vertex: vec2f, r: f32, inward: vec2f, inv: vec4f) -
     return half_plane(r - dist, grad);
 }
 
+// Coverage of a rect, or a rounded rect with `rounded`, at local point p whose footprint in device
+// pixels is given by inv.
+fn shape_coverage(p: vec2f, rect: vec4f, radii: vec4f, rounded: bool, inv: vec4f) -> f32 {
+    let gx = vec2f(inv.x, inv.z); // gradient of local x in device pixels
+    let gy = vec2f(inv.y, inv.w); // gradient of local y
+    let x0 = rect.x;
+    let y0 = rect.y;
+    let x1 = rect.x + rect.z;
+    let y1 = rect.y + rect.w;
+
+    var cov = slab_coverage(p.x, x0, x1, gx) * slab_coverage(p.y, y0, y1, gy);
+
+    if (rounded) {
+        // A corner's arc applies where the pixel centre lies beyond the corner's centre on both
+        // axes. Check all four: with CSS radii one corner's arc can reach past the middle of a
+        // side, and opposite corners' regions can overlap.
+        cov = min(cov, corner_coverage(p, vec2f(x0, y0), radii.x, vec2f(1.0, 1.0), inv));
+        cov = min(cov, corner_coverage(p, vec2f(x1, y0), radii.y, vec2f(-1.0, 1.0), inv));
+        cov = min(cov, corner_coverage(p, vec2f(x1, y1), radii.z, vec2f(-1.0, -1.0), inv));
+        cov = min(cov, corner_coverage(p, vec2f(x0, y1), radii.w, vec2f(1.0, -1.0), inv));
+    }
+    return cov;
+}
+
 @fragment
 fn fs(in: VOut) -> @location(0) vec4f {
     // Derivatives in uniform control flow; only used with FLAG_FOOTPRINT_FROM_DERIVATIVES.
@@ -129,24 +173,16 @@ fn fs(in: VOut) -> @location(0) vec4f {
     if ((in.flags & FLAG_FOOTPRINT_FROM_DERIVATIVES) != 0u) {
         inv = vec4f(ddx.x, ddx.y, ddy.x, ddy.y);
     }
-    let gx = vec2f(inv.x, inv.z); // gradient of local x in device pixels
-    let gy = vec2f(inv.y, inv.w); // gradient of local y
-    let p = in.local;
-    let x0 = in.rect.x;
-    let y0 = in.rect.y;
-    let x1 = in.rect.x + in.rect.z;
-    let y1 = in.rect.y + in.rect.w;
+    var cov = shape_coverage(in.local, in.rect, in.radii, (in.flags & FLAG_ROUNDED) != 0u, inv);
 
-    var cov = slab_coverage(p.x, x0, x1, gx) * slab_coverage(p.y, y0, y1, gy);
-
-    if ((in.flags & FLAG_ROUNDED) != 0u) {
-        // A corner's arc applies where the pixel centre lies beyond the corner's centre on both
-        // axes. Check all four: with CSS radii one corner's arc can reach past the middle of a
-        // side, and opposite corners' regions can overlap.
-        cov = min(cov, corner_coverage(p, vec2f(x0, y0), in.radii.x, vec2f(1.0, 1.0), inv));
-        cov = min(cov, corner_coverage(p, vec2f(x1, y0), in.radii.y, vec2f(-1.0, 1.0), inv));
-        cov = min(cov, corner_coverage(p, vec2f(x1, y1), in.radii.z, vec2f(-1.0, -1.0), inv));
-        cov = min(cov, corner_coverage(p, vec2f(x0, y1), in.radii.w, vec2f(1.0, -1.0), inv));
+    // The clips, innermost first, each in its own space (the pixel centre is in.pos.xy).
+    var ci = in.clip;
+    for (var n = 0u; n < MAX_CLIPS && ci != 0u; n = n + 1u) {
+        let c = clips[ci - 1u];
+        let q = vec2f(c.m.x * in.pos.x + c.m.z * in.pos.y + c.t.x,
+                      c.m.y * in.pos.x + c.m.w * in.pos.y + c.t.y);
+        cov = cov * shape_coverage(q, c.rect, c.radii, (u32(c.t.z) & FLAG_ROUNDED) != 0u, c.m);
+        ci = u32(c.t.w);
     }
     return in.color * cov;
 }

@@ -232,6 +232,16 @@ void ax_world_bind_scene_thread(ax_world world)
     }
 }
 
+void ax_world_set_jobs(ax_world world, struct ax_job_system *jobs)
+{
+    world_impl *w = ax__world_from_handle(world);
+    AX_ASSERT(w != NULL);
+    if (w != NULL) {
+        AX_ASSERT_MSG(ax__world_on_scene_thread(w), "ax_world_set_jobs: not the scene thread");
+        w->jobs = jobs;
+    }
+}
+
 void ax_world_bind_app_thread(ax_world world)
 {
     world_impl *w = ax__world_from_handle(world);

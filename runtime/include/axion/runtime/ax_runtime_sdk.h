@@ -173,6 +173,9 @@ typedef struct ax_rt_counters {
     uint64_t snapshots;       /* published */
     uint64_t applied;         /* transactions applied or rejected by ticks */
     uint64_t presented_until; /* the last presentation watermark reported */
+    uint64_t measure_ticks;   /* off-cycle layouts answering ax_measure_sync */
+    uint64_t measure_syncs;   /* app side: ax_measure_sync calls that waited for the scene */
+    uint64_t measure_sync_ns; /* app side: the time they blocked */
 } ax_rt_counters;
 
 /* Scene side, or any thread once the scene thread stopped. */

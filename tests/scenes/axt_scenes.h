@@ -16,7 +16,7 @@
 #include "axion/render/ax_render_ir.h"
 
 /* axt_scene.flags: what ax_render_wgpu cannot draw exactly yet. */
-#define AXT_SCENE_CLIPS   0x1u /* clipped layers (ax_render_wgpu skips them) */
+#define AXT_SCENE_CLIPS   0x1u /* clipped layers (ax_render_wgpu draws them since decision 93) */
 #define AXT_SCENE_GROUPS  0x2u /* group opacity (ax_render_wgpu approximates it) */
 #define AXT_SCENE_LINEAR  0x4u /* AX_IR_LAYER_LINEAR_BLEND (ax_render_wgpu blends in sRGB) */
 #define AXT_SCENE_TORTURE 0x8u /* an antialiasing torture scene */

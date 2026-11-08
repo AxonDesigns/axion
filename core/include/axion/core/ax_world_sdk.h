@@ -39,6 +39,10 @@ AX_API void ax_world_bind_scene_thread(ax_world world);
 /* The calling thread becomes the world's app thread. The previous one must not be using it. */
 AX_API void ax_world_bind_app_thread(ax_world world);
 
+/* The job system the scene's frame stages may use for frame jobs (layout's independent relayout
+ * boundaries), or NULL (the default) for one thread. It must outlive its use. thread: scene */
+AX_API void ax_world_set_jobs(ax_world world, struct ax_job_system *jobs);
+
 /* True for a live world. thread: any */
 AX_API bool ax_world_is_valid(ax_world world);
 

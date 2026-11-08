@@ -5,6 +5,7 @@
  * The node store: dense hot columns indexed by row, a slot table for stable handles, hierarchy
  * links by slot, and side components.
  */
+#include <math.h>
 #include <string.h>
 
 #include <axion/base/ax_assert.h>
@@ -12,10 +13,33 @@
 #include <axion/base/ax_thread.h>
 #include <axion/core/ax_node_store.h>
 
-#define CHECK_THREAD(s)                                                                       \
-    AX_ASSERT_MSG((s)->owner_thread == ax_thread_current_id(),                                \
-                  "ax_node_store used from a thread that does not own it (the scene thread; " \
-                  "see ax_node_store_bind_thread)")
+#define CHECK_THREAD(s)                                                                        \
+    do {                                                                                       \
+        AX_ASSERT_MSG(!ax_node_store_in_measure(),                                             \
+                      "a layout measure function touched the node store; it may only use its " \
+                      "node's data and the constraints (decision 90)");                        \
+        AX_ASSERT_MSG((s)->owner_thread == ax_thread_current_id(),                             \
+                      "ax_node_store used from a thread that does not own it (the scene "      \
+                      "thread; see ax_node_store_bind_thread)");                               \
+    } while (0)
+
+static AX_THREAD_LOCAL uint32_t tl_measure_depth;
+
+void ax_node_store_enter_measure(void)
+{
+    tl_measure_depth++;
+}
+
+void ax_node_store_leave_measure(void)
+{
+    AX_ASSERT(tl_measure_depth > 0);
+    tl_measure_depth--;
+}
+
+bool ax_node_store_in_measure(void)
+{
+    return tl_measure_depth != 0;
+}
 
 #define MIN_ROWS          64u
 #define MIN_SLOTS         64u
@@ -228,8 +252,15 @@ static void init_row(ax_node_store *s, uint32_t slot, ax_node_kind kind)
     s->dirty[row] = 0;
     s->component_mask[row] = 0;
     l->parent = l->first_child = l->last_child = l->prev_sibling = l->next_sibling = AX_NODE_NONE;
-    memset(st, 0, sizeof *st); /* every dimension AX_UNIT_AUTO */
+    memset(st, 0, sizeof *st); /* every dimension AX_UNIT_AUTO, every enum its first value */
+    for (int e = 0; e < 4; ++e) {
+        st->margin[e].unit = AX_UNIT_POINTS; /* 0 points: AUTO is an auto margin */
+    }
+    st->flex_direction = AX_FLEX_DIRECTION_COLUMN; /* Yoga's defaults (decision 89) */
+    st->align_items = AX_ALIGN_STRETCH;
+    st->align_content = AX_ALIGN_FLEX_START;
     memset(&s->layout[row], 0, sizeof s->layout[row]);
+    s->layout[row].flex_basis = NAN;
     memset(p, 0, sizeof *p); /* transparent, square corners */
     c->transform = ax_affine2_identity();
     c->opacity = 1.0f;
@@ -774,6 +805,19 @@ void *ax_node_store_get_component(const ax_node_store *s, ax_node node, ax_compo
     }
     cs = &s->components[type];
     index = sparse_get(cs, ax_handle_slot(node.h));
+    return index == 0 ? NULL : cs->data + (size_t)(index - 1u) * cs->stride;
+}
+
+void *ax_node_store_peek_component(const ax_node_store *s, uint32_t slot, ax_component_type type)
+{
+    const ax_component_storage *cs;
+    uint32_t index;
+    if (slot >= s->slot_count || s->slots[slot].row >= AX_NODE_SLOT_RETIRED ||
+        type >= s->component_type_count) {
+        return NULL;
+    }
+    cs = &s->components[type];
+    index = sparse_get(cs, slot);
     return index == 0 ? NULL : cs->data + (size_t)(index - 1u) * cs->stride;
 }
 

@@ -49,11 +49,13 @@ AX_API bool ax_mirror_is_live(ax_world world, ax_node node);
 AX_API ax_node ax_mirror_parent(ax_world world, ax_node node);
 
 /*
- * A core property's value in the latched publication. The getter must match the property's
- * value type. A shorthand reads like the scene (decision 63): its longhands' common value, or
- * AX_ERR_INVALID_ARGUMENT when they differ. Errors: AX_ERR_INVALID_HANDLE (not live there),
- * AX_ERR_INVALID_ARGUMENT (unknown property, wrong type), AX_ERR_UNSUPPORTED (a property
- * registered at run time). thread: app
+ * A core paint or composite property's value in the latched publication. The getter must match the
+ * property's value type. A shorthand reads like the scene (decision 63): its longhands' common
+ * value, or AX_ERR_INVALID_ARGUMENT when they differ. Layout's inputs (WIDTH, PADDING,
+ * FLEX_GROW...) are not mirrored: read the frame layout computed from them with
+ * ax_mirror_get_frame. Errors: AX_ERR_INVALID_HANDLE (not live there), AX_ERR_INVALID_ARGUMENT
+ * (unknown property, wrong type), AX_ERR_UNSUPPORTED (a layout input, or a property registered at
+ * run time). thread: app
  */
 AX_API ax_result ax_mirror_get_f32(ax_world world, ax_node node, ax_prop prop, float *out);
 AX_API ax_result ax_mirror_get_dimension(ax_world world, ax_node node, ax_prop prop,
@@ -62,8 +64,9 @@ AX_API ax_result ax_mirror_get_color(ax_world world, ax_node node, ax_prop prop,
 AX_API ax_result ax_mirror_get_transform(ax_world world, ax_node node, ax_prop prop,
                                          ax_transform2d *out);
 
-/* The frame layout computed for the node (in its parent's space, before its transform), as of the
- * latched publication. Zero until layout exists. Errors: AX_ERR_INVALID_HANDLE. thread: app */
+/* The frame layout computed for the node (in its parent's space, before its transform, rounded to
+ * its window's pixel grid), as of the latched publication. Errors: AX_ERR_INVALID_HANDLE.
+ * thread: app */
 AX_API ax_result ax_mirror_get_frame(ax_world world, ax_node node, ax_rectf *out);
 
 AX_EXTERN_C_END

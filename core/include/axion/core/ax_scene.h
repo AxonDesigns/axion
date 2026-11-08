@@ -46,6 +46,7 @@
 
 #include "../ax_node.h"
 #include "../ax_prop.h"
+#include "ax_layout.h"
 #include "ax_node_store.h"
 #include "ax_prop_registry.h"
 #include <axion/ax_types.h>
@@ -72,6 +73,10 @@ typedef struct ax_scene {
     ax_node_store store;
     ax_prop_registry props;
     ax_dirty_set dirty;
+    /* Layout (ax_layout.h). */
+    ax_component_type measure_component; /* a leaf's measure function */
+    uint32_t layout_pass;                /* the newest pass */
+    ax_layout_counters layout_counters;
 } ax_scene;
 
 /* Never fails. desc is the node store's (allocator, slot mode). */

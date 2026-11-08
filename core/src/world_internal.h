@@ -52,16 +52,17 @@ struct ax_txn {
     struct ax_txn *next_all;  /* every object of the world, for teardown */
 };
 
-/* One node in a mirror copy (ax_mirror.h). Dead or unknown slots are zero. */
+/* One node in a mirror copy (ax_mirror.h). Dead or unknown slots are zero. Each entry is copied
+ * into three copies, so it holds only what the app reads back (decision 89, amending 69): the
+ * computed frame and the paint and composite values. Layout's inputs are not mirrored. */
 typedef struct mirror_node {
     uint64_t handle; /* the live node's handle; 0 when the slot holds none */
     uint64_t parent;
     uint32_t kind;
     uint32_t reserved;
-    ax_node_style style;
+    ax_rect frame;
     ax_node_paint paint;
     ax_node_composite composite;
-    ax_node_layout layout;
 } mirror_node;
 
 /* A published copy, indexed by slot. */
@@ -179,19 +180,21 @@ typedef struct world_impl {
     ax_node *removed; /* subtrees removed by the transaction being applied */
     uint32_t removed_capacity;
     bool scene_ready;
-    frame_state *frame; /* frame.c: window roots, the recording cache (scene thread) */
+    frame_state *frame;         /* frame.c: window roots, the recording cache (scene thread) */
+    struct ax_job_system *jobs; /* frame jobs for the scene's stages, or NULL */
 } world_impl;
 
 world_impl *ax__world_from_handle(ax_world world);
 
+/* Both roles are refused inside a layout measure function (decision 90). */
 static inline bool ax__world_on_app_thread(const world_impl *w)
 {
-    return w->app_thread == ax_thread_current_id();
+    return w->app_thread == ax_thread_current_id() && !ax_node_store_in_measure();
 }
 
 static inline bool ax__world_on_scene_thread(const world_impl *w)
 {
-    return w->scene_thread == ax_thread_current_id();
+    return w->scene_thread == ax_thread_current_id() && !ax_node_store_in_measure();
 }
 
 static inline uint64_t ax__world_now(const world_impl *w)

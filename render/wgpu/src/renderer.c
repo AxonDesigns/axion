@@ -58,7 +58,9 @@ ax_result ax_render_wgpu_create(const ax_allocator *allocator, const ax_render_w
         r->owns_gpu = true;
     }
     ax_arena_init(&r->scratch, allocator, 0);
-    res = ax_gpu_upload_ring_create(r->gpu, WGPUBufferUsage_Vertex, 64u * 1024u, &r->ring);
+    /* Instances (vertex) and clip records (storage) share the ring. */
+    res = ax_gpu_upload_ring_create(r->gpu, WGPUBufferUsage_Vertex | WGPUBufferUsage_Storage,
+                                    64u * 1024u, &r->ring);
     if (res != AX_OK) {
         ax_arena_deinit(&r->scratch);
         if (r->owns_gpu) {
@@ -302,12 +304,113 @@ typedef struct rw_layer_state {
     float opacity;
     bool skip;
     bool invertible;
+    /* Clip regions in force (decision 93): a chain of records evaluated in their own spaces, and
+     * the intersection of the axis-aligned rect clips in device pixels. */
+    uint32_t chain;     /* innermost record of the chain + 1; 0: none */
+    uint32_t chain_len; /* records in the chain */
+    bool has_box;
+    float box[4];  /* device pixels: x0, y0, x1, y1 */
+    uint32_t head; /* what the layer's items name: the box's record, else the chain */
 } rw_layer_state;
+
+/* Applies a layer's clip to its state. False when the clip hides everything. */
+static bool apply_clip(rw_layer_state *s, const ax_ir_clip *clip, rw_clip *records,
+                       uint32_t *record_count, ax_render_counts *counts)
+{
+    const bool rounded_kind = clip->kind == AX_IR_CLIP_ROUNDED_RECT;
+    float radii[4] = {0, 0, 0, 0};
+    float rect[4];
+    ax_affine2 inv;
+    bool rounded;
+    memcpy(rect, &clip->rect, sizeof rect);
+    if (!isfinite(rect[0] + rect[1] + rect[2] + rect[3]) || !(rect[2] > 0.0f) ||
+        !(rect[3] > 0.0f) || !ax_affine2_invert(s->world, &inv)) {
+        return false; /* empty or degenerate: nothing shows through it */
+    }
+    if (rounded_kind) {
+        clamp_radii(clip->radii, rect[2], rect[3], radii);
+    }
+    rounded = rounded_kind && radii[0] + radii[1] + radii[2] + radii[3] > 0.0f;
+    if (!rounded && s->world.b == 0.0f && s->world.c == 0.0f) {
+        /* An axis-aligned rect: intersected exactly into the device-space box. */
+        float xa = s->world.a * rect[0] + s->world.tx;
+        float xb = s->world.a * (rect[0] + rect[2]) + s->world.tx;
+        float ya = s->world.d * rect[1] + s->world.ty;
+        float yb = s->world.d * (rect[1] + rect[3]) + s->world.ty;
+        float b[4] = {fminf(xa, xb), fminf(ya, yb), fmaxf(xa, xb), fmaxf(ya, yb)};
+        if (s->has_box) {
+            b[0] = fmaxf(b[0], s->box[0]);
+            b[1] = fmaxf(b[1], s->box[1]);
+            b[2] = fminf(b[2], s->box[2]);
+            b[3] = fminf(b[3], s->box[3]);
+        }
+        memcpy(s->box, b, sizeof b);
+        s->has_box = true;
+    } else if (s->chain_len >= RW_MAX_CLIP_CHAIN) {
+        /* Past the chain's limit: its bounding box in device pixels, intersected into the box. */
+        float xs[4], ys[4], b[4];
+        int k;
+        for (k = 0; k < 4; ++k) {
+            const float lx = rect[0] + ((k == 1 || k == 2) ? rect[2] : 0.0f);
+            const float ly = rect[1] + ((k >= 2) ? rect[3] : 0.0f);
+            xs[k] = s->world.a * lx + s->world.c * ly + s->world.tx;
+            ys[k] = s->world.b * lx + s->world.d * ly + s->world.ty;
+        }
+        b[0] = fminf(fminf(xs[0], xs[1]), fminf(xs[2], xs[3]));
+        b[1] = fminf(fminf(ys[0], ys[1]), fminf(ys[2], ys[3]));
+        b[2] = fmaxf(fmaxf(xs[0], xs[1]), fmaxf(xs[2], xs[3]));
+        b[3] = fmaxf(fmaxf(ys[0], ys[1]), fmaxf(ys[2], ys[3]));
+        if (s->has_box) {
+            b[0] = fmaxf(b[0], s->box[0]);
+            b[1] = fmaxf(b[1], s->box[1]);
+            b[2] = fminf(b[2], s->box[2]);
+            b[3] = fminf(b[3], s->box[3]);
+        }
+        memcpy(s->box, b, sizeof b);
+        s->has_box = true;
+        counts->clips_approximated++;
+    } else {
+        rw_clip *c = &records[(*record_count)++];
+        c->m[0] = inv.a;
+        c->m[1] = inv.b;
+        c->m[2] = inv.c;
+        c->m[3] = inv.d;
+        c->t[0] = inv.tx;
+        c->t[1] = inv.ty;
+        c->t[2] = rounded ? (float)RW_FLAG_ROUNDED : 0.0f;
+        c->t[3] = (float)s->chain;
+        memcpy(c->rect, rect, sizeof rect);
+        memcpy(c->radii, radii, sizeof radii);
+        s->chain = *record_count;
+        s->chain_len++;
+    }
+    if (s->has_box) {
+        rw_clip *c = &records[(*record_count)++];
+        if (!(s->box[2] > s->box[0]) || !(s->box[3] > s->box[1])) {
+            return false; /* the rects do not meet */
+        }
+        c->m[0] = 1.0f;
+        c->m[1] = 0.0f;
+        c->m[2] = 0.0f;
+        c->m[3] = 1.0f;
+        c->t[0] = c->t[1] = c->t[2] = 0.0f;
+        c->t[3] = (float)s->chain;
+        c->rect[0] = s->box[0];
+        c->rect[1] = s->box[1];
+        c->rect[2] = s->box[2] - s->box[0];
+        c->rect[3] = s->box[3] - s->box[1];
+        memset(c->radii, 0, sizeof c->radii);
+        s->head = *record_count;
+    } else {
+        s->head = s->chain;
+    }
+    return true;
+}
 
 /* Turns the snapshot into instances in painting order. */
 static ax_result encode(ax_render_wgpu *r, const ax_render_ir *ir, uint32_t width, uint32_t height,
-                        float scale, rw_instance **out, uint32_t *out_count,
-                        ax_render_counts *counts)
+                        float scale, rw_instance **out, uint32_t *out_count, rw_clip **out_clips,
+                        uint32_t *out_clip_count, ax_render_counts *counts)
 {
     const ax_affine2 to_device = ax_affine2_scale(scale, scale);
     const ax_affine2 to_clip =
@@ -317,13 +420,17 @@ static ax_result encode(ax_render_wgpu *r, const ax_render_ir *ir, uint32_t widt
                                      : 0u;
     rw_layer_state *ls;
     rw_instance *inst;
-    uint32_t max_items, n = 0, i;
+    rw_clip *clips;
+    uint32_t max_items, n = 0, i, clip_count = 0;
 
     ax_arena_reset(&r->scratch);
     max_items = ir->items_size / (uint32_t)sizeof(ax_ir_item_header) + 1u;
     ls = AX_ARENA_NEW_ARRAY(&r->scratch, rw_layer_state, ir->layer_count);
     inst = AX_ARENA_NEW_ARRAY(&r->scratch, rw_instance, max_items);
-    if (ls == NULL || inst == NULL) {
+    /* At most two records per layer (its clip and the box), and one so the buffer is never
+     * empty. */
+    clips = AX_ARENA_NEW_ARRAY(&r->scratch, rw_clip, 2u * ir->layer_count + 1u);
+    if (ls == NULL || inst == NULL || clips == NULL) {
         return ax_set_error(AX_ERR_OUT_OF_MEMORY, "ax_render_wgpu: out of memory");
     }
 
@@ -341,9 +448,25 @@ static ax_result encode(ax_render_wgpu *r, const ax_render_ir *ir, uint32_t widt
         if (s->skip) {
             continue;
         }
-        if (l->clip.kind != AX_IR_CLIP_NONE) {
-            /* No clips in M0: never draw what a clip should hide. */
-            s->skip = true;
+        s->chain = parent != NULL ? parent->chain : 0u;
+        s->chain_len = parent != NULL ? parent->chain_len : 0u;
+        s->has_box = parent != NULL && parent->has_box;
+        if (s->has_box) {
+            memcpy(s->box, parent->box, sizeof s->box);
+        }
+        s->head = parent != NULL ? parent->head : 0u;
+        if (l->clip.kind == AX_IR_CLIP_RECT || l->clip.kind == AX_IR_CLIP_ROUNDED_RECT) {
+            if (l->clip.kind == AX_IR_CLIP_ROUNDED_RECT && !finite4(l->clip.radii)) {
+                s->skip = true; /* a clip it cannot apply: never draw what it should hide */
+                counts->skipped_layers++;
+                continue;
+            }
+            if (!apply_clip(s, &l->clip, clips, &clip_count, counts)) {
+                s->skip = true; /* the clip hides everything */
+                continue;
+            }
+        } else if (l->clip.kind != AX_IR_CLIP_NONE) {
+            s->skip = true; /* path clips and unknown kinds */
             counts->skipped_layers++;
             continue;
         }
@@ -427,16 +550,22 @@ static ax_result encode(ax_render_wgpu *r, const ax_render_ir *ir, uint32_t widt
             o->xlate[0] = s->clip.tx;
             o->xlate[1] = s->clip.ty;
             o->xlate[2] = (float)flags;
-            o->xlate[3] = 0.0f;
+            o->xlate[3] = (float)s->head;
             o->inv[0] = s->inv.a;
             o->inv[1] = s->inv.b;
             o->inv[2] = s->inv.c;
             o->inv[3] = s->inv.d;
         }
     }
+    if (clip_count == 0) {
+        memset(&clips[0], 0, sizeof clips[0]); /* a storage binding is never empty */
+        clip_count = 1;
+    }
     counts->instances = n;
     *out = inst;
     *out_count = n;
+    *out_clips = clips;
+    *out_clip_count = clip_count;
     return AX_OK;
 }
 
@@ -456,7 +585,8 @@ ax_result ax_render_wgpu_draw_ir(ax_render_wgpu *r, const ax_render_wgpu_draw *d
     ax_render_counts counts;
     ax_color bg;
     rw_instance *inst = NULL;
-    uint32_t count = 0;
+    rw_clip *clips = NULL;
+    uint32_t count = 0, clip_count = 0;
     bool ready;
     ax_result res;
 
@@ -472,7 +602,8 @@ ax_result ax_render_wgpu_draw_ir(ax_render_wgpu *r, const ax_render_wgpu_draw *d
     if (ready && ir != NULL) {
         const uint64_t t0 = ax_time_monotonic_ns();
         uint64_t dt;
-        res = encode(r, ir, draw->width, draw->height, draw->scale, &inst, &count, &counts);
+        res = encode(r, ir, draw->width, draw->height, draw->scale, &inst, &count, &clips,
+                     &clip_count, &counts);
         if (res != AX_OK) {
             return res;
         }
@@ -500,7 +631,8 @@ ax_result ax_render_wgpu_draw_ir(ax_render_wgpu *r, const ax_render_wgpu_draw *d
     encoder = wgpuDeviceCreateCommandEncoder(device, NULL);
     pass = wgpuCommandEncoderBeginRenderPass(encoder, &pass_desc);
     if (count != 0) {
-        ax_gpu_upload_slice slice;
+        ax_gpu_upload_slice slice, clip_slice;
+        WGPUBindGroup group = NULL;
         /* Each draw is submitted before the next one writes, so the ring restarts per draw. */
         res = ax_gpu_upload_ring_begin_frame(r->ring);
         if (res == AX_OK) {
@@ -508,9 +640,29 @@ ax_result ax_render_wgpu_draw_ir(ax_render_wgpu *r, const ax_render_wgpu_draw *d
                                           &slice);
         }
         if (res == AX_OK) {
-            wgpuRenderPassEncoderSetPipeline(pass, find_pipeline(r, draw->format)->pipeline);
+            /* 256: WebGPU's minimum guaranteed storage-buffer offset alignment. */
+            res = ax_gpu_upload_ring_push(r->ring, clips, (uint64_t)clip_count * sizeof(rw_clip),
+                                          256, &clip_slice);
+        }
+        if (res == AX_OK) {
+            WGPURenderPipeline pipeline = find_pipeline(r, draw->format)->pipeline;
+            WGPUBindGroupLayout bgl = wgpuRenderPipelineGetBindGroupLayout(pipeline, 0);
+            WGPUBindGroupEntry entry = WGPU_BIND_GROUP_ENTRY_INIT;
+            WGPUBindGroupDescriptor bgd = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+            entry.binding = 0;
+            entry.buffer = clip_slice.buffer;
+            entry.offset = clip_slice.offset;
+            entry.size = clip_slice.size;
+            bgd.layout = bgl;
+            bgd.entryCount = 1;
+            bgd.entries = &entry;
+            group = wgpuDeviceCreateBindGroup(device, &bgd);
+            wgpuBindGroupLayoutRelease(bgl);
+            wgpuRenderPassEncoderSetPipeline(pass, pipeline);
+            wgpuRenderPassEncoderSetBindGroup(pass, 0, group, 0, NULL);
             wgpuRenderPassEncoderSetVertexBuffer(pass, 0, slice.buffer, slice.offset, slice.size);
             wgpuRenderPassEncoderDraw(pass, 4, count, 0, 0);
+            wgpuBindGroupRelease(group);
         } else {
             count = 0;
         }

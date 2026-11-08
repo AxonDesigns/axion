@@ -1,0 +1,43 @@
+// Copyright 2026 Axon Works
+// SPDX-License-Identifier: Apache-2.0
+//
+// AXION interface description: the runtime module's stable ABI (draft, M1). Decision 71 describes
+// the format; C: runtime/include/axion/ax_runtime.h and ax_runtime_window.h. The internal SDK
+// (runtime/include/axion/runtime/: surfaces, the presenter, counters) is not described here.
+
+axidl 0.1;
+
+module runtime {
+    import base;  // result, handle
+    import core;  // world, node, rectf
+
+    handle runtime;  // C: AX_DECLARE_HANDLE(ax_runtime)
+
+    enum runtime_mode : u32 { threaded = 0; single_threaded = 1; }
+
+    // [extensible]: struct_size and next are prepended (decision 71).
+    [extensible]
+    struct runtime_desc {
+        world world;        // required; the caller must be its app thread
+        runtime_mode mode;
+    }
+
+    [thread(app)]  fn runtime_create(runtime_desc desc, out runtime runtime) -> result;
+    [thread(app)]  fn runtime_destroy(runtime runtime) -> result;
+    // Single-threaded mode: one frame of the surface whose root is `root` (world clock).
+    [thread(app)]  fn host_frame(runtime runtime, node root, u64 target_time_ns) -> result;
+    // The one blocking call (decision 92): lays out everything committed and returns the node's
+    // frame; latches the mirror. wrong_thread from the scene's own work, timeout after 1 s.
+    // Bindings should name it as blocking (C#: MeasureSync, never an async wrapper that hides it).
+    [thread(app), blocking]  fn measure_sync(runtime runtime, node node, out rectf frame) -> result;
+
+    // Platform builds (ax_runtime_window.h). `app` and `window` are the platform module's handles;
+    // its description (platform.axidl) is written with the C# binding in M2, which imports it here.
+    [requires(platform), thread(app)]
+    fn runtime_create_for_app(runtime_desc desc, platform.app app, out runtime runtime) -> result;
+    [requires(platform), thread(app)]
+    fn runtime_add_window(runtime runtime, platform.window window, out node root) -> result;
+    // timeout: the threads did not let the window go within 1 s; call again before destroying it.
+    [requires(platform), thread(app)]
+    fn runtime_remove_window(runtime runtime, platform.window window) -> result;
+}

@@ -28,6 +28,7 @@
 
 #include <axion/ax_config.h>
 #include <axion/ax_handle.h>
+#include <axion/ax_mirror.h>
 #include <axion/ax_node.h>
 #include <axion/ax_types.h>
 #include <axion/ax_world.h>
@@ -68,6 +69,20 @@ AX_API ax_result ax_runtime_destroy(ax_runtime runtime);
  * mode), and those of the presenter. thread: app
  */
 AX_API ax_result ax_host_frame(ax_runtime runtime, ax_node root, uint64_t target_time_ns);
+
+/*
+ * Synchronous measurement, the one blocking call (rare): lays out everything committed so far and
+ * returns the node's frame. The app thread waits until the scene has applied every transaction
+ * committed before the call, laid the tree out and published the mirror; the mirror is then
+ * latched (as ax_world_mirror_sync does) and stays at that publication. Recording and presenting
+ * keep their own cadence. Every call is counted, with the time it blocked, in the runtime's
+ * counters (measure_syncs, measure_sync_ns): profiles flag it (decision 92). In single-threaded
+ * mode the stages run at once on the caller.
+ * Errors: AX_ERR_INVALID_HANDLE (runtime; the node is not live once laid out), AX_ERR_WRONG_THREAD
+ * (from the scene thread, a frame job, or inside a scene step: it would wait for itself),
+ * AX_ERR_TIMEOUT (the scene thread did not answer within a second). thread: app
+ */
+AX_API ax_result ax_measure_sync(ax_runtime runtime, ax_node node, ax_rectf *out_frame);
 
 AX_EXTERN_C_END
 

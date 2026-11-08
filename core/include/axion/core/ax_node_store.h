@@ -72,19 +72,88 @@ typedef struct ax_node_links {
     uint32_t next_sibling;
 } ax_node_links;
 
-/* Style inputs of layout. Flex (direction, wrap, grow, shrink, basis, padding, gap...) adds
- * fields here when layout lands; text inputs go to a side component. */
+/* Edges, in the order of the style's per-edge arrays. */
+enum { AX_EDGE_LEFT = 0, AX_EDGE_TOP = 1, AX_EDGE_RIGHT = 2, AX_EDGE_BOTTOM = 3 };
+
+/*
+ * Style inputs of layout (decision 89). This hot column holds the box model, common to every layout
+ * protocol (sizes, insets, margins, padding, border widths, box alignment and gaps, which grid
+ * shares with flex), and flex's own item and container fields, packed. Data that only one other
+ * protocol needs (grid's tracks and areas, an item's grid placement) lives in a side component that
+ * the protocol registers, reached through the registry's AX_PROP_IN_COMPONENT storage with an
+ * offset, so adding a protocol never reshapes this struct. Enumerations are stored in one byte
+ * (AX_PROP_STORED_U8) and read and written as AX_VALUE_U32.
+ */
 typedef struct ax_node_style {
     ax_dimension width;
     ax_dimension height;
-    ax_dimension left;
-    ax_dimension top;
+    ax_dimension inset[4]; /* LEFT, TOP, RIGHT, BOTTOM; AUTO = not set */
+    ax_dimension min_width;
+    ax_dimension min_height;
+    ax_dimension max_width;
+    ax_dimension max_height;
+    ax_dimension margin[4];  /* AUTO = an auto margin; default 0 points */
+    ax_dimension padding[4]; /* AUTO = 0 */
+    ax_dimension gap[2];     /* column gap (between columns), row gap; AUTO = 0 */
+    ax_dimension flex_basis;
+    float border[4]; /* widths, points */
+    float flex_grow;
+    float flex_shrink;
+    float aspect_ratio; /* width / height; 0 = none */
+    uint8_t display;    /* ax_display */
+    uint8_t position;   /* ax_position */
+    uint8_t overflow;   /* ax_overflow */
+    uint8_t box_sizing; /* ax_box_sizing */
+    uint8_t flex_direction;
+    uint8_t flex_wrap;
+    uint8_t justify_content; /* ax_justify */
+    uint8_t align_items;     /* ax_align */
+    uint8_t align_self;
+    uint8_t align_content;
+    uint8_t reserved[2]; /* grid: justify-items, justify-self */
 } ax_node_style;
 
-/* Layout outputs: the frame in the parent's coordinate space, before the node's transform. Zero
- * until layout exists; published to the app thread's mirror. */
+/* One measurement cached by layout: the constraints it was asked with and the size it gave. */
+typedef struct ax_layout_cache_entry {
+    float avail_w, avail_h; /* NaN: undefined */
+    uint8_t mode_w, mode_h; /* ax_layout_mode */
+    uint8_t valid;
+    uint8_t reserved;
+    float w, h;
+} ax_layout_cache_entry;
+
+#define AX_LAYOUT_MEASURE_CACHE 8u
+
+/*
+ * Layout's state and outputs. `frame` is the result: the node's frame in its parent's space, before
+ * its transform, rounded to its root's pixel grid; published to the app thread's mirror. The rest
+ * belongs to the layout engine (ax_layout.h): unrounded results, the resolved box, the constraints
+ * the node was last laid out with, and measurements cached by constraint.
+ */
 typedef struct ax_node_layout {
     ax_rect frame;
+    /* Unrounded results. */
+    float pos[4]; /* offsets from the parent's edges, by edge (Yoga's layout positions) */
+    float measured_w, measured_h;
+    float flex_basis;    /* NaN until computed */
+    double abs_x, abs_y; /* unrounded position from the root, for rounding */
+    float margin[4];     /* resolved by the last layout */
+    float padding[4];
+    float border[4];
+    uint32_t line;         /* flex line of the item */
+    uint32_t pass;         /* the layout pass that last visited the node */
+    uint32_t basis_pass;   /* the pass that computed flex_basis */
+    uint32_t laid_out;     /* nonzero once the node has been laid out (`performed` is valid) */
+    uint32_t last_work;    /* nodes laid out or measured the last time it was a layout root */
+    uint32_t changed_pass; /* the pass that listed its frame as changed */
+    uint32_t changed_next; /* the next slot of that list (AX_NODE_NONE: the last) */
+    /* The cached layout; the request of the last layout (performed, not measured) and the
+     * containing block it had, from which a relayout boundary is laid out again. */
+    ax_layout_cache_entry last;
+    ax_layout_cache_entry performed;
+    float owner_w, owner_h;
+    ax_layout_cache_entry measures[AX_LAYOUT_MEASURE_CACHE];
+    uint32_t next_measure;
 } ax_node_layout;
 
 /* Paint properties. Corners in order top-left, top-right, bottom-right, bottom-left. */
@@ -182,6 +251,14 @@ AX_API void ax_node_store_deinit(ax_node_store *s);
 AX_API void ax_node_store_bind_thread(ax_node_store *s);
 
 AX_API bool ax_node_store_on_owner_thread(const ax_node_store *s);
+
+/* The calling thread is running a layout measure function (decision 90's contract): while it
+ * runs, every store function asserts in debug builds, and the world's role checks fail, so a
+ * measure function that touches the store or the world is caught on any thread. Counted, so the
+ * calls nest. Cheap (a thread-local counter); used by the layout engine around each call. */
+AX_API void ax_node_store_enter_measure(void);
+AX_API void ax_node_store_leave_measure(void);
+AX_API bool ax_node_store_in_measure(void);
 
 /* ---- Nodes ----------------------------------------------------------------------------------- */
 
@@ -290,6 +367,12 @@ AX_API ax_result ax_node_store_add_component(ax_node_store *s, ax_node node, ax_
 /* The node's component, or NULL (no such component, stale handle or unknown type). */
 AX_API void *ax_node_store_get_component(const ax_node_store *s, ax_node node,
                                          ax_component_type type);
+
+/* The component of the live node in `slot`, or NULL, without the owner-thread check: for frame
+ * jobs that read the store while its owner thread waits for them (layout's parallel pass, decision
+ * 90). Nothing may modify the store meanwhile. */
+AX_API void *ax_node_store_peek_component(const ax_node_store *s, uint32_t slot,
+                                          ax_component_type type);
 
 /* Removes the component (calling on_remove). AX_ERR_INVALID_ARGUMENT when the node has none. */
 AX_API ax_result ax_node_store_remove_component(ax_node_store *s, ax_node node,

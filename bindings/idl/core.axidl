@@ -30,6 +30,17 @@ module core {
                             u32 = 6; bool = 7; /* 8 reserved: str */ }
     enum effect_class : u32 { layout = 1; paint = 2; composite = 3; }
     enum transition_kind : u32 { none = 1; timing = 2; spring = 3; }
+    // Layout enumerations (decision 89); values fixed forever, stored in one byte.
+    enum display : u32 { flex = 0; none = 1; }
+    enum position : u32 { relative = 0; absolute = 1; static = 2; }
+    enum overflow : u32 { visible = 0; hidden = 1; }
+    enum box_sizing : u32 { border_box = 0; content_box = 1; }
+    enum flex_direction : u32 { column = 0; column_reverse = 1; row = 2; row_reverse = 3; }
+    enum flex_wrap : u32 { no_wrap = 0; wrap = 1; wrap_reverse = 2; }
+    enum justify : u32 { flex_start = 0; center = 1; flex_end = 2; space_between = 3;
+                         space_around = 4; space_evenly = 5; }
+    enum align : u32 { auto = 0; flex_start = 1; center = 2; flex_end = 3; stretch = 4;
+                       baseline = 5; space_between = 6; space_around = 7; space_evenly = 8; }
     flags prop_flags : u32 { inherited = 0x1; animatable = 0x2; shorthand = 0x4; }
 
     struct dimension { f32 value; unit unit; }
@@ -87,8 +98,10 @@ module core {
 
     // ---- Properties ---------------------------------------------------------------------------
     // Each row generates the C enum value (AX_PROP_<NAME>), the registry's built-in row (type,
-    // flags, effect, range, storage) and, in bindings, a typed accessor on transactions and the
-    // mirror: `t.Set(card, Prop.Width, 120.Points())` or `card.Width = 120.Points()` in a builder.
+    // flags, effect, range, storage) and, in bindings, a typed accessor on transactions and, for
+    // paint and composite properties, the mirror (layout inputs are not mirrored: the computed
+    // frame is, decision 89): `t.Set(card, Prop.Width, 120.Points())` or
+    // `card.Width = 120.Points()` in a builder. Enumerations are u32 on the wire.
     // Ids are fixed forever; core ids stay below 0x8000, kit ids come from kit's own .axidl files
     // in 0x8000-0xFFFF, plugins register theirs at run time.
 
@@ -98,6 +111,49 @@ module core {
         0x0102  height                       : dimension   layout     [animatable] min(0);
         0x0103  left                         : dimension   layout     [animatable];
         0x0104  top                          : dimension   layout     [animatable];
+        0x0105  right                        : dimension   layout     [animatable];
+        0x0106  bottom                       : dimension   layout     [animatable];
+        0x0107  min_width                    : dimension   layout     [animatable] min(0);
+        0x0108  min_height                   : dimension   layout     [animatable] min(0);
+        0x0109  max_width                    : dimension   layout     [animatable] min(0);
+        0x010A  max_height                   : dimension   layout     [animatable] min(0);
+        0x010B  position                     : position    layout     default(relative);
+        0x010C  display                      : display     layout     default(flex);
+        0x010D  overflow                     : overflow    layout     default(visible);
+        0x010E  aspect_ratio                 : f32         layout     [animatable] min(0);
+        0x010F  box_sizing                   : box_sizing  layout     default(border_box);
+        0x0110  flex_direction               : flex_direction layout  default(column);
+        0x0111  flex_wrap                    : flex_wrap   layout     default(no_wrap);
+        0x0112  flex_grow                    : f32         layout     [animatable] min(0);
+        0x0113  flex_shrink                  : f32         layout     [animatable] min(0);
+        0x0114  flex_basis                   : dimension   layout     [animatable] min(0);
+        0x0115  justify_content              : justify     layout     default(flex_start);
+        0x0116  align_items                  : align       layout     default(stretch);
+        0x0117  align_self                   : align       layout     default(auto);
+        0x0118  align_content                : align       layout     default(flex_start);
+        0x0119  column_gap                   : dimension   layout     [animatable] min(0);
+        0x011A  row_gap                      : dimension   layout     [animatable] min(0);
+        0x011B  gap                          : dimension   layout     [animatable]
+                shorthand(column_gap, row_gap);
+        0x0120  margin_left                  : dimension   layout     [animatable] default(0pt);
+        0x0121  margin_top                   : dimension   layout     [animatable] default(0pt);
+        0x0122  margin_right                 : dimension   layout     [animatable] default(0pt);
+        0x0123  margin_bottom                : dimension   layout     [animatable] default(0pt);
+        0x0124  margin                       : dimension   layout     [animatable]
+                shorthand(margin_left, margin_top, margin_right, margin_bottom);
+        0x0128  padding_left                 : dimension   layout     [animatable] min(0);
+        0x0129  padding_top                  : dimension   layout     [animatable] min(0);
+        0x012A  padding_right                : dimension   layout     [animatable] min(0);
+        0x012B  padding_bottom               : dimension   layout     [animatable] min(0);
+        0x012C  padding                      : dimension   layout     [animatable]
+                shorthand(padding_left, padding_top, padding_right, padding_bottom);
+        0x0130  border_left_width            : f32         layout     [animatable] min(0);
+        0x0131  border_top_width             : f32         layout     [animatable] min(0);
+        0x0132  border_right_width           : f32         layout     [animatable] min(0);
+        0x0133  border_bottom_width          : f32         layout     [animatable] min(0);
+        0x0134  border_width                 : f32         layout     [animatable]
+                shorthand(border_left_width, border_top_width, border_right_width,
+                          border_bottom_width);
         0x0201  background_color             : color       paint      [animatable];
         0x0202  corner_radius_top_left       : f32         paint      [animatable] min(0);
         0x0203  corner_radius_top_right      : f32         paint      [animatable] min(0);

@@ -375,9 +375,8 @@ AX_TEST(fractional_and_integer_device_scales)
     env_deinit(&e);
 }
 
-/* Antialiasing torture scenes ("Antialiasing and image quality", Verification). The zone plate
- * behind nested rounded clips is compared once ax_render_wgpu draws clips (it skips clipped layers
- * until then); the software renderer's golden covers it meanwhile. */
+/* Antialiasing torture scenes ("Antialiasing and image quality", Verification), the zone plate
+ * also behind three nested rounded clips, the middle one turned (decision 93). */
 AX_TEST(rotating_hairlines)
 {
     env e;
@@ -394,6 +393,7 @@ AX_TEST(zone_plate)
     env e;
     ENV_INIT(&e);
     check_shared(&e, "zone_plate");
+    check_shared(&e, "zone_plate_clipped");
     env_deinit(&e);
 }
 
@@ -498,10 +498,16 @@ AX_TEST(unknown_items_and_clips_follow_the_ir_rules)
     ax_ir_rect(&e.b, ax_rect_make(25, 1, 6, 6), white());
     ax_ir_pop_layer(&e.b);
     d = ax_ir_layer_desc_default();
-    d.clip.kind = AX_IR_CLIP_RECT; /* no clips in M0: the layer is skipped */
-    d.clip.rect = ax_rect_make(0, 0, 100, 100);
+    d.clip.kind = AX_IR_CLIP_PATH; /* a path clip it cannot apply: the layer is skipped */
+    d.clip.path = 0;
     ax_ir_push_layer(&e.b, &d);
     ax_ir_rect(&e.b, ax_rect_make(33, 1, 6, 6), white());
+    ax_ir_pop_layer(&e.b);
+    d = ax_ir_layer_desc_default();
+    d.clip.kind = AX_IR_CLIP_RECT; /* a rect clip is drawn: the left half of the rect shows */
+    d.clip.rect = ax_rect_make(41, 0, 3, 16);
+    ax_ir_push_layer(&e.b, &d);
+    ax_ir_rect(&e.b, ax_rect_make(41, 1, 6, 6), white());
     ax_ir_pop_layer(&e.b);
     ir = finish(&e);
     if (ir == NULL) {
@@ -514,15 +520,92 @@ AX_TEST(unknown_items_and_clips_follow_the_ir_rules)
         AX_CHECK_EQ_U(counts.skipped_items, 1);
         AX_CHECK_EQ_U(counts.skipped_layers, 1);
         AX_CHECK_EQ_U(counts.neutralized, 1);
-        AX_CHECK_EQ_U(counts.instances, 3);
+        AX_CHECK_EQ_U(counts.instances, 4);
         AX_CHECK_EQ_U(got[(4 * 48 + 4) * 4], 255);  /* drawn */
         AX_CHECK_EQ_U(got[(4 * 48 + 12) * 4], 255); /* drawn after the unknown item */
         AX_CHECK_EQ_U(got[(4 * 48 + 20) * 4], 255); /* drawn with normal blending */
         AX_CHECK_EQ_U(got[(4 * 48 + 28) * 4], 0);   /* skipped after the REQUIRED item */
-        AX_CHECK_EQ_U(got[(4 * 48 + 36) * 4], 0);   /* skipped: clipped layer */
+        AX_CHECK_EQ_U(got[(4 * 48 + 36) * 4], 0);   /* skipped: path clip */
+        AX_CHECK_EQ_U(got[(4 * 48 + 42) * 4], 255); /* inside the rect clip */
+        AX_CHECK_EQ_U(got[(4 * 48 + 45) * 4], 0);   /* outside it */
         free(got);
     }
-    /* No image comparison: the software renderer draws the clipped layer this one skips. */
+    env_deinit(&e);
+}
+
+/* Clip chains (decision 93): axis-aligned rect clips nested in translated layers intersect into
+ * one device rect on the CPU; rounded and turned clips each take a record, up to the chain's limit,
+ * beyond which a clip is drawn as its bounding box and counted. The picture matches the software
+ * renderer's within the tolerance while the chain fits. */
+AX_TEST(nested_clips_intersect_and_long_chains_are_counted)
+{
+    env e;
+    const ax_render_ir *ir;
+    ax_render_counts counts;
+    ax_frame_status status;
+    uint8_t *got;
+    int k;
+    ENV_INIT(&e);
+    /* Three translated rect clips and two rounded ones, one turned: no approximation. */
+    ax_ir_builder_begin(&e.b, 96, 64, 0, ax_color_make(0.05f, 0.05f, 0.1f, 1));
+    for (k = 0; k < 5; ++k) {
+        ax_ir_layer_desc d = ax_ir_layer_desc_default();
+        d.transform = k == 3 ? ax_affine2_mul(ax_affine2_translate(48, 32), ax_affine2_rotate(0.2f))
+                             : ax_affine2_translate(2.5f, 1.75f);
+        if (k == 3) {
+            d.transform = ax_affine2_mul(d.transform, ax_affine2_translate(-40, -24));
+        }
+        d.clip.kind = k >= 3 ? AX_IR_CLIP_ROUNDED_RECT : AX_IR_CLIP_RECT;
+        d.clip.rect = ax_rect_make(1.25f * (float)k, 0.5f * (float)k, 84.0f - 6.0f * (float)k,
+                                   58.0f - 5.0f * (float)k);
+        d.clip.radii[0] = d.clip.radii[1] = d.clip.radii[2] = d.clip.radii[3] = 7.5f;
+        d.clip.path = AX_IR_NO_INDEX;
+        ax_ir_push_layer(&e.b, &d);
+    }
+    for (k = 0; k < 12; ++k) {
+        ax_ir_rect(&e.b, ax_rect_make(-10.0f + 9.0f * (float)k, -10.0f, 4.5f, 90.0f),
+                   ax_color_make(1.0f, 0.8f - 0.05f * (float)k, 0.2f, 1.0f));
+    }
+    for (k = 0; k < 5; ++k) {
+        ax_ir_pop_layer(&e.b);
+    }
+    ir = finish(&e);
+    if (ir != NULL) {
+        got = render(&e, ir, 96, 64, 1.0f, &status, &counts);
+        if (got != NULL) {
+            AX_CHECK_EQ_U(counts.skipped_layers, 0);
+            AX_CHECK_EQ_U(counts.clips_approximated, 0);
+            free(got);
+        }
+        check_scene(&e, "clip_chain", ir, 96, 64, 1.0f, NULL);
+    }
+
+    /* Six turned rounded clips: four in the chain, two drawn as their bounding boxes. */
+    ax_ir_builder_begin(&e.b, 64, 64, 0, ax_color_make(0, 0, 0, 1));
+    for (k = 0; k < 6; ++k) {
+        ax_ir_layer_desc d = ax_ir_layer_desc_default();
+        d.transform = ax_affine2_mul(ax_affine2_translate(32, 32), ax_affine2_rotate(0.1f));
+        d.transform = ax_affine2_mul(d.transform, ax_affine2_translate(-32, -32));
+        d.clip.kind = AX_IR_CLIP_ROUNDED_RECT;
+        d.clip.rect = ax_rect_make(2.0f * (float)k, 2.0f * (float)k, 64.0f - 4.0f * (float)k,
+                                   64.0f - 4.0f * (float)k);
+        d.clip.radii[0] = d.clip.radii[1] = d.clip.radii[2] = d.clip.radii[3] = 6.0f;
+        d.clip.path = AX_IR_NO_INDEX;
+        ax_ir_push_layer(&e.b, &d);
+    }
+    ax_ir_rect(&e.b, ax_rect_make(0, 0, 64, 64), white());
+    for (k = 0; k < 6; ++k) {
+        ax_ir_pop_layer(&e.b);
+    }
+    ir = finish(&e);
+    if (ir != NULL) {
+        got = render(&e, ir, 64, 64, 1.0f, &status, &counts);
+        if (got != NULL) {
+            AX_CHECK_EQ_U(counts.clips_approximated, 2);
+            AX_CHECK_EQ_U(counts.instances, 1);
+            free(got);
+        }
+    }
     env_deinit(&e);
 }
 
