@@ -7,18 +7,31 @@
 #include <string.h>
 
 #include "axion/ax_error.h"
+#include "axion/base/ax_atomic.h"
 #include "axion/base/ax_error_set.h"
 #include "axion/base/ax_memory.h"
 #include "axion/base/ax_thread.h"
 #include "soft_internal.h"
 
+/* Tile contexts: one per thread drawing tiles at once (claimed through a bitmask). */
+#define SOFT_MAX_CTX 64u
+
 struct ax_render_soft {
     ax_allocator allocator;
     ax_render_soft_desc desc;
     ax_arena scratch; /* the frame's commands */
-    soft_tile_ctx ctx;
+    soft_tile_ctx ctx[SOFT_MAX_CTX];
+    uint32_t ctx_count;
+    ax_atomic_u64 free_ctx; /* bit i: ctx[i] is free */
     ax_render_soft_stats stats;
 };
+
+/* One job: every `step`-th tile from `first`. */
+typedef struct tile_job {
+    ax_render_soft *r;
+    const soft_frame *f;
+    uint32_t first, step, total, tiles_x;
+} tile_job;
 
 ax_result ax_render_soft_create(const ax_allocator *allocator, const ax_render_soft_desc *desc,
                                 ax_render_soft **out)
@@ -37,6 +50,16 @@ ax_result ax_render_soft_create(const ax_allocator *allocator, const ax_render_s
         r->desc = *desc;
     }
     ax_arena_init(&r->scratch, &r->allocator, 0);
+    r->ctx_count = 1;
+    if (r->desc.jobs != NULL && !ax_jobs_is_inline(r->desc.jobs)) {
+        /* Workers, the caller, and frame threads that may help while they wait. */
+        r->ctx_count = ax_jobs_worker_count(r->desc.jobs) + 4u;
+        if (r->ctx_count > SOFT_MAX_CTX) {
+            r->ctx_count = SOFT_MAX_CTX;
+        }
+    }
+    ax_atomic_init_u64(&r->free_ctx,
+                       r->ctx_count == 64u ? UINT64_MAX : (((uint64_t)1 << r->ctx_count) - 1u));
     *out = r;
     return AX_OK;
 }
@@ -73,7 +96,10 @@ void ax_render_soft_destroy(ax_render_soft *r)
     if (r == NULL) {
         return;
     }
-    free_ctx(r, &r->ctx);
+    uint32_t i;
+    for (i = 0; i < r->ctx_count; ++i) {
+        free_ctx(r, &r->ctx[i]);
+    }
     ax_arena_deinit(&r->scratch);
     a = r->allocator;
     ax_mem_free(&a, r, sizeof *r);
@@ -81,7 +107,87 @@ void ax_render_soft_destroy(ax_render_soft *r)
 
 bool ax_render_soft_has_simd(void)
 {
-    return false;
+    return ax__soft_simd_available();
+}
+
+static uint32_t claim_ctx(ax_render_soft *r)
+{
+    for (;;) {
+        uint64_t m = ax_atomic_load_u64(&r->free_ctx, AX_MO_ACQUIRE);
+        uint32_t bit = 0;
+        if (m == 0) {
+            ax_thread_yield(); /* more threads than contexts draw at once: rare, wait */
+            continue;
+        }
+        while (((m >> bit) & 1u) == 0) {
+            bit++;
+        }
+        if (ax_atomic_compare_exchange_u64(&r->free_ctx, &m, m & ~((uint64_t)1 << bit),
+                                           AX_MO_ACQ_REL, AX_MO_RELAXED)) {
+            return bit;
+        }
+    }
+}
+
+static void release_ctx(ax_render_soft *r, uint32_t bit)
+{
+    uint64_t m = ax_atomic_load_u64(&r->free_ctx, AX_MO_RELAXED);
+    while (!ax_atomic_compare_exchange_u64(&r->free_ctx, &m, m | ((uint64_t)1 << bit),
+                                           AX_MO_RELEASE, AX_MO_RELAXED)) {
+    }
+}
+
+static void tile_job_fn(void *arg)
+{
+    const tile_job *j = (const tile_job *)arg;
+    const uint32_t c = claim_ctx(j->r);
+    uint32_t t;
+    for (t = j->first; t < j->total; t += j->step) {
+        ax__soft_draw_tile(j->f, &j->r->ctx[c], t % j->tiles_x, t / j->tiles_x);
+    }
+    release_ctx(j->r, c);
+}
+
+/* Draws every tile: as frame jobs on the job system (the caller helps while it waits), or on the
+ * calling thread. Tiles are independent and each writes only its own pixels, so the result is
+ * the same either way. */
+static ax_result draw_tiles(ax_render_soft *r, const soft_frame *f, uint32_t tiles_x,
+                            uint32_t tiles_y)
+{
+    const uint32_t total = tiles_x * tiles_y;
+    ax_job_system *js = r->desc.jobs;
+    uint32_t i, jobs;
+    tile_job *args;
+    ax_job *list;
+    ax_job_counter done = AX_JOB_COUNTER_INIT;
+
+    if (js == NULL || ax_jobs_is_inline(js) || total == 1u) {
+        for (i = 0; i < total; ++i) {
+            ax__soft_draw_tile(f, &r->ctx[0], i % tiles_x, i / tiles_x);
+        }
+        return AX_OK;
+    }
+    /* A few jobs per thread, interleaved, so uneven tiles balance. */
+    jobs = 4u * (ax_jobs_worker_count(js) + 1u);
+    jobs = jobs < total ? jobs : total;
+    args = AX_ARENA_NEW_ARRAY(&r->scratch, tile_job, jobs);
+    list = AX_ARENA_NEW_ARRAY(&r->scratch, ax_job, jobs);
+    if (args == NULL || list == NULL) {
+        return ax_set_error(AX_ERR_OUT_OF_MEMORY, "ax_render_soft: out of memory");
+    }
+    for (i = 0; i < jobs; ++i) {
+        args[i].r = r;
+        args[i].f = f;
+        args[i].first = i;
+        args[i].step = jobs;
+        args[i].total = total;
+        args[i].tiles_x = tiles_x;
+        list[i].fn = tile_job_fn;
+        list[i].arg = &args[i];
+    }
+    ax_jobs_submit(js, list, jobs, &done);
+    ax_jobs_wait(js, &done);
+    return AX_OK;
 }
 
 static float clamp01(float v)
@@ -112,7 +218,7 @@ ax_result ax_render_soft_draw_ir(ax_render_soft *r, const ax_soft_target *target
     const uint64_t start = ax_time_monotonic_ns();
     ax_render_counts counts;
     soft_frame f;
-    uint32_t tiles_x, tiles_y, tx, ty;
+    uint32_t tiles_x, tiles_y, i;
     uint64_t elapsed;
     ax_result res;
 
@@ -147,16 +253,18 @@ ax_result ax_render_soft_draw_ir(ax_render_soft *r, const ax_soft_target *target
     f.pixels = target->pixels;
     f.stride = target->stride;
     f.format = target->format;
-    if (!ensure_ctx(r, &r->ctx, f.group_depth)) {
-        return ax_set_error(AX_ERR_OUT_OF_MEMORY, "ax_render_soft: out of memory");
+    f.simd = ax__soft_simd_available() && (r->desc.flags & AX_RENDER_SOFT_SCALAR) == 0;
+    for (i = 0; i < r->ctx_count; ++i) {
+        if (!ensure_ctx(r, &r->ctx[i], f.group_depth)) {
+            return ax_set_error(AX_ERR_OUT_OF_MEMORY, "ax_render_soft: out of memory");
+        }
     }
 
     tiles_x = (f.width + SOFT_TILE - 1u) / SOFT_TILE;
     tiles_y = (f.height + SOFT_TILE - 1u) / SOFT_TILE;
-    for (ty = 0; ty < tiles_y; ++ty) {
-        for (tx = 0; tx < tiles_x; ++tx) {
-            ax__soft_draw_tile(&f, &r->ctx, tx, ty);
-        }
+    res = draw_tiles(r, &f, tiles_x, tiles_y);
+    if (res != AX_OK) {
+        return res;
     }
 
     elapsed = ax_time_monotonic_ns() - start;

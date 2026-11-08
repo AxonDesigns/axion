@@ -3434,6 +3434,31 @@ included; the window part comes with decision 83.
     components below 2^-20 are 0, and transforms whose linear part or inverse has an entry beyond
     1e6 make their items invalid, which bounds every gradient. So flush-to-zero and
     denormals-are-zero modes cannot change a result; the default rounding mode is assumed.
+- **Tiles over the job system.** With `ax_render_soft_desc.jobs`, tiles run as frame jobs
+  (decision 80): `4 x (workers + 1)` jobs, each taking every n-th tile so uneven tiles balance, and
+  the caller helps while it waits. Each job claims a tile context (its float planes) from a pool of
+  `workers + 4` through a bitmask; the extra contexts are for frame threads that may run a tile
+  while they wait on their own frame jobs. Tiles are independent and write only their own pixels,
+  so any number of threads gives the same bytes. Without a job system, or in inline mode, the
+  caller draws every tile in order.
+- **SIMD, the same bits as the scalar path.** `raster_simd.c` evaluates an item's coverage and its
+  source-over blend four pixels of a row at a time, on SSE2 (every x86-64), NEON (64-bit ARM; 32-bit
+  NEON has no division or square root) and WebAssembly SIMD128 (`AX_WASM_SIMD`, on by default:
+  `-msimd128` for this library). Each lane performs the scalar path's operations in the same order;
+  branches become selections with the same priority; min, max and abs are written as compare and
+  select, as the scalar path's ternaries are, because the instructions treat signed zeros
+  differently between ISAs. Only IEEE-exact operations are used (add, subtract, multiply, divide,
+  square root, comparisons, truncating conversion). Linear-light blending, groups and the final
+  store stay scalar. **No tolerance is needed: the SIMD path gives the scalar path's bits**, so
+  goldens are exact. `AX_RENDER_SOFT_SCALAR` forces the scalar path.
+  - `render_soft.simd` compares both paths through the internals, before any rounding to 8 bits:
+    coverage at 3.65 million points of 40 random scenes (items and clips), and every tile's float
+    planes. Comparing 8-bit output alone is too weak: a deliberate one-ulp change in the SIMD path
+    changed no byte of 120 random scenes, while these two checks reported 5297 points and 205 tiles.
+    Locally: SSE2 (x86-64) and SIMD128 (Node 24), 0 differences.
+  - `render_soft.determinism` draws every shared scene and 120 random ones (transforms, nested
+    clips, groups, linear layers, scales 1, 1.325 and 2) with the scalar path, the SIMD path, an
+    inline job system and 1, 2 and 4 workers: identical bytes. Under TSan too (label `render_soft`).
 - **Counts** follow the IR's rules as the GPU renderer's do (`unknown_items`, `skipped_items`,
   `skipped_layers`, `neutralized`, `invalid_items`, `instances`).
 - **Tests** (`tests/unit/render_soft/`, label `render_soft`, also in the Emscripten job): the

@@ -4,7 +4,7 @@
  *
  * ax_render_soft's tiles: coverage, blending, groups and the final store, the scalar path. This
  * is the reference the SIMD path (raster_simd.c) must match bit for bit: each lane there performs
- * these operations, in this order.
+ * these operations, in this order. A frame uses one path or the other for every item.
  *
  * A tile keeps four planes of floats (r, g, b, a), premultiplied and sRGB-encoded, for its base
  * and for each open group. Items blend in sRGB space, or decode, blend and encode again in linear
@@ -133,7 +133,7 @@ static float flush(float v)
 }
 
 /* Source-over of color * cov onto the pixel at index i of the planes. */
-static void blend(float *planes, size_t i, const float color[4], float cov, bool linear)
+void ax__soft_blend_pixel(float *planes, size_t i, const float color[4], float cov, bool linear)
 {
     const float t = 1.0f - color[3] * cov;
     int k;
@@ -178,7 +178,8 @@ static void draw_item(const soft_frame *f, const soft_cmd *cmd, float *planes, i
             if (cov < SOFT_MIN_COVERAGE) {
                 continue; /* blending 0 leaves the pixel as it is */
             }
-            blend(planes, (size_t)y * SOFT_TILE + (size_t)x, cmd->color, cov, cmd->linear != 0);
+            ax__soft_blend_pixel(planes, (size_t)y * SOFT_TILE + (size_t)x, cmd->color, cov,
+                                 cmd->linear != 0);
         }
     }
 }
@@ -278,7 +279,12 @@ void ax__soft_draw_tile(const soft_frame *f, soft_tile_ctx *ctx, uint32_t tx, ui
         r.y1 = cmd->box.y1 - oy < h ? cmd->box.y1 - oy : h;
         if (cmd->kind == SOFT_CMD_ITEM) {
             if (r.x0 < r.x1 && r.y0 < r.y1) {
-                draw_item(f, cmd, ctx->planes + depth * group_stride, ox, oy, r);
+                if (f->simd) {
+                    ax__soft_draw_item_simd(f, cmd, ctx->planes + depth * group_stride, ox, oy,
+                                            r.x0, r.y0, r.x1, r.y1);
+                } else {
+                    draw_item(f, cmd, ctx->planes + depth * group_stride, ox, oy, r);
+                }
             }
         } else if (cmd->kind == SOFT_CMD_PUSH) {
             if (!(r.x0 < r.x1 && r.y0 < r.y1)) {

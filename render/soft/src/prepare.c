@@ -473,6 +473,7 @@ ax_result ax__soft_prepare(const ax_render_ir *ir, uint32_t width, uint32_t heig
     out->cmds = b.cmds;
     out->cmd_count = b.count;
     out->clips = clips;
+    out->clip_count = clip_count;
     out->group_depth = b.max_depth;
     return AX_OK;
 }

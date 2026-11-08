@@ -13,6 +13,7 @@
 #define AX_RENDER_SOFT_INTERNAL_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include <axion/base/ax_arena.h>
@@ -99,6 +100,7 @@ typedef struct soft_frame {
     const soft_cmd *cmds;
     uint32_t cmd_count;
     const soft_clip *clips;
+    uint32_t clip_count;
     uint32_t group_depth; /* deepest nesting of groups */
     uint32_t width, height;
     float background[4]; /* sRGB-encoded, premultiplied */
@@ -126,5 +128,21 @@ void ax__soft_draw_tile(const soft_frame *f, soft_tile_ctx *ctx, uint32_t tx, ui
 
 /* Coverage of a shape at device point (x, y): the scalar reference (raster.c). */
 float ax__soft_shape_coverage(const soft_shape *s, float x, float y);
+
+/* Source-over of color * cov onto pixel i of a tile's planes, in sRGB space or linear light. */
+void ax__soft_blend_pixel(float *planes, size_t i, const float color[4], float cov, bool linear);
+
+/* ---- the SIMD path (raster_simd.c) ----------------------------------------------------------- */
+
+/* True when this build has one (SSE2, NEON on 64-bit ARM, WebAssembly SIMD128), and its name. */
+bool ax__soft_simd_available(void);
+const char *ax__soft_simd_name(void);
+
+/* draw_item for the tile-relative pixels [x0, x1) x [y0, y1), four at a time. */
+void ax__soft_draw_item_simd(const soft_frame *f, const soft_cmd *cmd, float *planes, int32_t ox,
+                             int32_t oy, int32_t x0, int32_t y0, int32_t x1, int32_t y1);
+
+/* Coverage at four points of one row (scalar when the build has no SIMD), for the tests. */
+void ax__soft_shape_coverage4(const soft_shape *s, const float x[4], float y, float out[4]);
 
 #endif

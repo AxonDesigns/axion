@@ -5,7 +5,9 @@
 # opacity, blending spaces and determinism. No GPU and no window, so they run everywhere.
 
 set(_ax_render_soft_tests
+    test_determinism.c
     test_reference.c
+    test_simd.c
     test_soft.c)
 
 foreach(_t IN LISTS _ax_render_soft_tests)
@@ -15,3 +17,5 @@ foreach(_t IN LISTS _ax_render_soft_tests)
     target_link_libraries(test_render_soft_${_n} PRIVATE ax_render_soft ax_test_scenes)
 endforeach()
 target_sources(test_render_soft_reference PRIVATE coverage_reference.c)
+# test_simd compares the two paths through the renderer's internals.
+target_include_directories(test_render_soft_simd PRIVATE "${PROJECT_SOURCE_DIR}/render/soft/src")

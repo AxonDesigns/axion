@@ -83,6 +83,10 @@ int main(int argc, char **argv)
     add_executable(${_exe} "${_src}" "${_main}")
     target_link_libraries(${_exe} PRIVATE ax_test_harness ax_base)
     ax_target_defaults(${_exe})
+    if(EMSCRIPTEN)
+        # Tests in Node: a heap that grows past Emscripten's default 16 MB.
+        target_link_options(${_exe} PRIVATE "-sALLOW_MEMORY_GROWTH=1")
+    endif()
 
     foreach(_case IN LISTS _cases)
         if(_case IN_LIST _death_cases)

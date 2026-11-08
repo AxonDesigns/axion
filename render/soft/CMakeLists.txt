@@ -8,10 +8,20 @@
 # Determinism: the same snapshot must give the same bytes on every platform. ax_target_defaults
 # builds every AXION target without floating-point contraction (cmake/AxionCompilerOptions.cmake).
 
-add_library(ax_render_soft STATIC src/soft.c src/prepare.c src/raster.c src/soft_math.c)
+add_library(ax_render_soft STATIC
+    src/soft.c src/prepare.c src/raster.c src/raster_simd.c src/soft_math.c)
 add_library(axion::render_soft ALIAS ax_render_soft)
 target_include_directories(ax_render_soft
     PUBLIC  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
     PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(ax_render_soft PUBLIC ax_render_ir ax_base)
 ax_target_defaults(ax_render_soft)
+
+# The web build's SIMD path needs WebAssembly SIMD128 (every current browser and Node). Without
+# it the renderer uses its scalar path, which gives the same bytes.
+if(EMSCRIPTEN)
+    option(AX_WASM_SIMD "Emscripten: build ax_render_soft's SIMD path with -msimd128" ON)
+    if(AX_WASM_SIMD)
+        target_compile_options(ax_render_soft PRIVATE "$<$<COMPILE_LANGUAGE:C>:-msimd128>")
+    endif()
+endif()
