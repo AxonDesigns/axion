@@ -2,23 +2,23 @@
  * Copyright 2026 Axon Works
  * SPDX-License-Identifier: Apache-2.0
  *
- * m1_nodes: m0_window's picture, built as a node tree by the app thread and drawn through the M1
- * pipeline (decisions 76 to 78).
+ * m1_nodes: a list of cards in flex (decision 90) that reorder, grow and change color through
+ * transactions, every change animated implicitly by the scene (decision 94), drawn through the M1
+ * pipeline.
  *
  *   main thread    runs the platform event pump (ax_app_run) and nothing else
- *   app thread     creates the world and the runtime, builds the tree with transactions, reads
+ *   app thread     creates the world and the runtime, builds the cards with a transaction, reads
  *                  window events from the world (ax_world_wait_event), publishes the hit regions,
- *                  changes a color every second, and with --block-ms blocks itself on purpose
- *   scene thread   the runtime's: applies transactions at each vsync, positions, records the
- *                  Render IR from the tree, publishes the mirror
+ *                  commits one change every 1.2 s (m1_cards_step), and with --block-ms blocks
+ *                  itself on purpose
+ *   scene thread   the runtime's: applies transactions at each vsync, lays out, animates, records
+ *                  the Render IR, publishes the mirror
  *   render thread  the runtime's: presents with ax_render_wgpu, or with ax_render_soft into
- *                  shared-memory buffers (--renderer=soft, or when no GPU is usable)
+ *                  shared-memory buffers (--renderer=soft, or when no GPU is usable); at rest, when
+ *                  nothing animates, it presents nothing (decision 95)
  *
- * Motion. Implicit animations do not exist yet, so a scene driver that exists only in this
- * example (m1_scene_slide() in m1_scene.c, ax_rt_scene_driver) turns and moves nodes at every tick
- * from the frame's predicted present time, and places what depends on the window's size (the bottom
- * bar, the right and bottom edges) until flex can. It goes away with the fourth prompt of M1.
- * Because it runs on the scene thread, blocking the app thread must not show in the motion.
+ * Motion is the scene's: a transaction only sets targets. Blocking the app thread therefore must
+ * not show in a running animation: run with --block-ms=500 and watch the cards keep moving.
  *
  * Usage: m1_nodes [--decorations=native|none] [--stats] [--duration=SECONDS] [--width=W]
  *                 [--height=H] [--block-ms=MS] [--block-every=SECONDS]
@@ -27,8 +27,8 @@
  *                 [--present-mode=default|fifo|fifo-relaxed|mailbox|immediate]
  *
  * --block-ms blocks the app thread that long every --block-every seconds (default 2).
- * --stats prints, once a second, what the window presented and how long the last color change
- * took from commit to screen (ax_txn_on_presented).
+ * --stats prints, once a second, what the window presented and how long the last change took from
+ * commit to screen (ax_txn_on_presented).
  */
 #include <math.h>
 #include <stdio.h>
@@ -47,7 +47,7 @@
 #include "axion/render/ax_render_soft_surface.h"
 #include "axion/render/ax_render_wgpu.h"
 #include "axion/runtime/ax_runtime_platform.h"
-#include "m1_scene.h"
+#include "m1_cards.h"
 
 #define PI_F 3.14159265358979f
 #define MS   1000000ull
@@ -70,7 +70,7 @@ typedef struct shared {
     ax_atomic_u32 stop;
     ax_atomic_u32 failed;
     uint64_t start_ns;
-    m1_moving m;
+    bool csd;
 } shared;
 
 static const char usage[] =
@@ -154,19 +154,20 @@ static void publish_regions(shared *s, float w, float h)
 {
     ax_hit_region r[9];
     uint32_t n = 0;
-    if (!s->m.csd) {
+    if (!s->csd) {
         ax_window_set_hit_regions(s->window, NULL, 0); /* the compositor's frame does it */
         return;
     }
-    r[n++] = (ax_hit_region){0, 0, w, CAPTION_HEIGHT, AX_REGION_CAPTION};
-    r[n++] = (ax_hit_region){0, 0, w, BORDER, AX_REGION_RESIZE_TOP};
-    r[n++] = (ax_hit_region){0, h - BORDER, w, BORDER, AX_REGION_RESIZE_BOTTOM};
-    r[n++] = (ax_hit_region){0, 0, BORDER, h, AX_REGION_RESIZE_LEFT};
-    r[n++] = (ax_hit_region){w - BORDER, 0, BORDER, h, AX_REGION_RESIZE_RIGHT};
-    r[n++] = (ax_hit_region){0, 0, CORNER, CORNER, AX_REGION_RESIZE_TOP_LEFT};
-    r[n++] = (ax_hit_region){w - CORNER, 0, CORNER, CORNER, AX_REGION_RESIZE_TOP_RIGHT};
-    r[n++] = (ax_hit_region){0, h - CORNER, CORNER, CORNER, AX_REGION_RESIZE_BOTTOM_LEFT};
-    r[n++] = (ax_hit_region){w - CORNER, h - CORNER, CORNER, CORNER, AX_REGION_RESIZE_BOTTOM_RIGHT};
+    r[n++] = (ax_hit_region){0, 0, w, M1_CAPTION_HEIGHT, AX_REGION_CAPTION};
+    r[n++] = (ax_hit_region){0, 0, w, M1_BORDER, AX_REGION_RESIZE_TOP};
+    r[n++] = (ax_hit_region){0, h - M1_BORDER, w, M1_BORDER, AX_REGION_RESIZE_BOTTOM};
+    r[n++] = (ax_hit_region){0, 0, M1_BORDER, h, AX_REGION_RESIZE_LEFT};
+    r[n++] = (ax_hit_region){w - M1_BORDER, 0, M1_BORDER, h, AX_REGION_RESIZE_RIGHT};
+    r[n++] = (ax_hit_region){0, 0, M1_CORNER, M1_CORNER, AX_REGION_RESIZE_TOP_LEFT};
+    r[n++] = (ax_hit_region){w - M1_CORNER, 0, M1_CORNER, M1_CORNER, AX_REGION_RESIZE_TOP_RIGHT};
+    r[n++] = (ax_hit_region){0, h - M1_CORNER, M1_CORNER, M1_CORNER, AX_REGION_RESIZE_BOTTOM_LEFT};
+    r[n++] = (ax_hit_region){w - M1_CORNER, h - M1_CORNER, M1_CORNER, M1_CORNER,
+                             AX_REGION_RESIZE_BOTTOM_RIGHT};
     ax_window_set_hit_regions(s->window, r, n);
 }
 
@@ -201,7 +202,7 @@ static void print_stats(shared *s, ax_runtime rt, ax_rt_window_counters *prev, l
     }
     printf(
         "stats: %s | presented %llu | missed %llu | frames %llu | snapshots shown %llu | refresh "
-        "%.3f ms | scene late %llu | forced %llu | color change -> screen %.2f ms (max %.2f) "
+        "%.3f ms | scene late %llu | forced %llu | change -> screen %.2f ms (max %.2f) "
         "| app blocked %.0f ms\n",
         ax_rt_renderer_vtbl(rt) == ax_render_soft_vtbl() ? "soft" : "gpu",
         (unsigned long long)(c.presented - prev->presented),
@@ -225,14 +226,14 @@ static int app_thread(void *arg)
     ax_rt_platform_desc pd;
     ax_render_wgpu_desc wd;
     ax_renderer_desc rd;
-    ax_node root, swatch = AX_HANDLE_NULL_INIT;
+    ax_node root;
+    static m1_cards cards;
     ax_rt_window_counters prev;
     latency lat;
     float w = s->opt.width, h = s->opt.height;
-    uint64_t next_color, next_stats, next_block, seq = 0;
+    uint64_t next_change, next_stats, next_block, seq = 0;
     double blocked_ms = 0.0;
-    uint32_t color_index = 0;
-    static const uint32_t colors[4] = {COLOR_FG, 0xFFFF7A59u, 0xFF5BD18Bu, 0xFFF7C948u};
+    uint32_t step = 0;
 
     memset(&lat, 0, sizeof lat);
     memset(&prev, 0, sizeof prev);
@@ -249,7 +250,7 @@ static int app_thread(void *arg)
     memset(&rd, 0, sizeof rd);
     rd.struct_size = sizeof rd;
     rd.next = &wd.chain;
-    rd.initial_background = ax_color_from_srgb8(COLOR_BG);
+    rd.initial_background = ax_color_from_srgb8(0xFF1E2129u);
     memset(&d, 0, sizeof d);
     d.struct_size = sizeof d;
     d.world = world;
@@ -260,8 +261,6 @@ static int app_thread(void *arg)
         pd.renderer = ax_render_soft_vtbl(); /* pinned; wd is ignored */
     }
     pd.max_wait_ns = s->opt.max_wait_ns;
-    pd.driver = m1_scene_slide;
-    pd.driver_user = &s->m;
     if (ax_rt_create_for_app(&d, &pd, &rt) != AX_OK ||
         ax_runtime_add_window(rt, s->window, &root) != AX_OK) {
         fprintf(stderr, "m1_nodes: runtime: %s: %.*s\n", ax_result_name(ax_last_error()->code),
@@ -288,15 +287,15 @@ static int app_thread(void *arg)
             }
         }
         info.struct_size = sizeof info;
-        s->m.csd = ax_window_get_info(s->window, &info) == AX_OK && !info.server_decorated;
+        s->csd = ax_window_get_info(s->window, &info) == AX_OK && !info.server_decorated;
         publish_regions(s, w, h);
     }
-    swatch = m1_scene_build(world, root, &s->m, w, h, &seq);
-    printf("m1_nodes: tree committed (transaction %llu)%s\n", (unsigned long long)seq,
-           s->m.csd ? ", client-side decorations" : "");
+    (void)m1_cards_build(world, root, &cards, s->csd, &seq);
+    printf("m1_nodes: %u cards committed (transaction %llu)%s\n", (unsigned)M1_CARDS,
+           (unsigned long long)seq, s->csd ? ", client-side decorations" : "");
     fflush(stdout);
 
-    next_color = ax_time_monotonic_ns() + 1000 * MS;
+    next_change = ax_time_monotonic_ns() + 1200 * MS;
     next_stats = ax_time_monotonic_ns() + 1000 * MS;
     next_block = ax_time_monotonic_ns() + (uint64_t)(s->opt.block_every * 1e9);
     while (!stopping(s)) {
@@ -323,19 +322,17 @@ static int app_thread(void *arg)
             break;
         }
         now = ax_time_monotonic_ns();
-        if (now >= next_color && !AX_HANDLE_IS_NULL(swatch)) {
-            /* A change that goes through a transaction, timed to the screen. */
-            ax_txn *t = ax_txn_begin(world);
-            color_index = (color_index + 1u) % 4u;
-            ax_txn_set_color(t, swatch, AX_PROP_BACKGROUND_COLOR, m1_c8(colors[color_index]));
-            if (ax_txn_commit(t, &seq) == AX_OK) {
+        if (now >= next_change) {
+            /* A reorder, a card growing or a new color: a transaction, timed to the screen; the
+             * scene animates it. */
+            if (m1_cards_step(world, &cards, step++, &seq) == AX_OK) {
                 lat.committed_ns = ax_world_now(world);
                 (void)ax_txn_on_presented(world, seq, on_presented, &lat);
             }
-            next_color = now + 1000 * MS;
+            next_change = now + 1200 * MS;
         }
         if (s->opt.block_ms > 0.0 && now >= next_block) {
-            /* Block the app thread on purpose: motion must not notice. */
+            /* Block the app thread on purpose: running animations must not notice. */
             uint64_t until = now + (uint64_t)(s->opt.block_ms * 1e6);
             while (ax_time_monotonic_ns() < until) {
                 ax_thread_yield();
@@ -376,7 +373,6 @@ int main(int argc, char **argv)
     }
     ax_atomic_init_u32(&s.stop, 0);
     ax_atomic_init_u32(&s.failed, 0);
-    ax_atomic_init_u32(&s.m.ready, 0);
 
     memset(&app_desc, 0, sizeof app_desc);
     app_desc.struct_size = sizeof app_desc;

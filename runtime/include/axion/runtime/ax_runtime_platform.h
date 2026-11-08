@@ -24,8 +24,6 @@ typedef struct ax_rt_platform_desc {
     const ax_renderer_vtbl *renderer;
     const ax_renderer_desc *renderer_desc; /* NULL: defaults; copied, chain included */
     uint64_t max_wait_ns;                  /* the size handshake's bound; 0: decision 57's */
-    ax_rt_scene_driver driver;             /* examples only (ax_runtime_sdk.h) */
-    void *driver_user;
 } ax_rt_platform_desc;
 
 /* As ax_runtime_create_for_app, with the options. The renderer desc's chain must stay valid

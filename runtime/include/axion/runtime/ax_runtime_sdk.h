@@ -23,8 +23,8 @@
  *      latch point wait for the next frame. The queue is the world's: a tick of one surface
  *      applies transactions that the other surfaces see at their next tick;
  *   3. the root's viewport (the surface's logical size);
- *   4. the scene driver, if any (examples only, until animations), which may read that size;
- *   5. ax_world_position, ax_world_record_collect, and if the root's content changed,
+ *   4. ax_world_position (layout), ax_world_animate (implicit animations at T; the surface's
+ *      animating flag), ax_world_record_collect, and if the root's content changed,
  *      ax_world_record_root into the surface's mailbox, published;
  *   6. ax_world_publish_mirror (after layout, decision 69);
  *   7. ax_scene_clear_dirty.
@@ -80,19 +80,11 @@ typedef struct ax_rt_presenter_vtbl {
     void (*wake)(void *self, uint32_t surface, uint64_t native_surface);
 } ax_rt_presenter_vtbl;
 
-/* Called by the scene before positioning at each tick of a surface, with the frame's time (world
- * clock) and the root's viewport (examples only: it moves nodes until implicit animations exist,
- * and goes away with them). Scene side. */
-typedef void (*ax_rt_scene_driver)(void *user, ax_world world, ax_node root, uint64_t frame_time_ns,
-                                   float width, float height);
-
 typedef struct ax_rt_desc {
     ax_world world;
     ax_runtime_mode mode;
     const ax_rt_presenter_vtbl *presenter; /* NULL: snapshots are recorded, nothing presents */
     void *presenter_self;
-    ax_rt_scene_driver driver; /* NULL: none */
-    void *driver_user;
     /* Threaded mode, platform integration: called on the scene thread at each pass to forward
      * the windowing system's events (ax_world_push_event). NULL: none. */
     void (*pump_events)(void *user, ax_runtime rt);

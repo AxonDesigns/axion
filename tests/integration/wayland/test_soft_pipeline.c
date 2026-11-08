@@ -51,18 +51,20 @@ static ax_dimension pt(float v)
     return d;
 }
 
-static void slide(void *user, ax_world world, ax_node root, uint64_t t, float w, float h)
+/* A motion that lasts: the bar slides 280 points over 30 s, linearly (an implicit animation the
+ * scene runs every frame without the app thread), so every frame has new content. */
+static void start_sliding(ax_world world, ax_node bar)
 {
-    ax_scene *scene = ax_world_scene(world);
-    ax_node bar = ax_node_store_last_child(&scene->store, root);
-    ax_value v;
-    (void)user;
-    (void)w;
-    (void)h;
-    if (!AX_HANDLE_IS_NULL(bar)) {
-        v.dimension = pt((float)((t / MS) * 400u / 1000u % 300u));
-        (void)ax_scene_set(scene, bar, AX_PROP_LEFT, AX_VALUE_DIMENSION, &v);
-    }
+    ax_txn *t = ax_txn_begin(world);
+    ax_transition tr;
+    ax_transform2d m = {1, 0, 0, 1, 280, 0};
+    memset(&tr, 0, sizeof tr);
+    tr.struct_size = sizeof tr;
+    tr.kind = AX_TRANSITION_TIMING;
+    tr.duration = 30.0f; /* linear: an all-zero curve */
+    ax_txn_set_transition(t, bar, AX_PROP_TRANSFORM, &tr);
+    ax_txn_set_transform(t, bar, AX_PROP_TRANSFORM, m);
+    (void)ax_txn_commit(t, NULL);
 }
 
 static void on_presented(void *user, uint64_t seq, ax_presented_status status, uint64_t t)
@@ -116,7 +118,6 @@ static int app_main(void *arg)
     pd.app = c->app;
     pd.renderer = c->pin_soft ? ax_render_soft_vtbl() : NULL;
     pd.renderer_desc = &rd;
-    pd.driver = slide;
     pd.max_wait_ns = c->task == TASK_RESIZE ? 50 * MS : 0;
     if (ax_rt_create_for_app(&d, &pd, &rt) != AX_OK ||
         ax_runtime_add_window(rt, c->window, &root) != AX_OK) {
@@ -155,6 +156,7 @@ static int app_main(void *arg)
             (void)ax_world_wait_event(world, &e, 20 * MS);
         }
     }
+    start_sliding(world, bar);
     c->used_soft = ax_rt_renderer_vtbl(rt) == ax_render_soft_vtbl();
     ax_atomic_store_u32(&c->phase, 1, AX_MO_RELEASE);
     if (c->task == TASK_RESIZE) {

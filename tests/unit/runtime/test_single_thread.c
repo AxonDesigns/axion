@@ -117,24 +117,20 @@ typedef struct pipeline {
     fake_presenter presenter;
     ax_node root, card;
     uint32_t surface;
-    uint32_t driver_calls;
-    uint64_t driver_time;
-    bool measure_in_driver;
-    ax_result driver_measure;
+    uint32_t steps; /* scene steps that forwarded events (pump_events) */
+    bool measure_in_step;
+    ax_result step_measure;
 } pipeline;
 
-static void driver(void *user, ax_world world, ax_node root, uint64_t t, float w, float h)
+/* Runs inside each scene step (the runtime's event pump hook). */
+static void in_step(void *user, ax_runtime rt)
 {
-    (void)w;
-    (void)h;
     pipeline *p = (pipeline *)user;
-    (void)world;
-    (void)root;
-    p->driver_calls++;
-    p->driver_time = t;
-    if (p->measure_in_driver) {
+    (void)rt;
+    p->steps++;
+    if (p->measure_in_step) {
         ax_rectf f;
-        p->driver_measure = ax_measure_sync(p->rt, p->card, &f); /* inside a scene step */
+        p->step_measure = ax_measure_sync(p->rt, p->card, &f); /* inside a scene step */
     }
 }
 
@@ -179,8 +175,8 @@ static bool pipeline_start(pipeline *p)
     rd.mode = AX_RUNTIME_SINGLE_THREADED;
     rd.presenter = &k_fake;
     rd.presenter_self = &p->presenter;
-    rd.driver = driver;
-    rd.driver_user = p;
+    rd.pump_events = in_step;
+    rd.pump_user = p;
     if (ax_rt_create(&rd, &p->rt) != AX_OK) {
         return false;
     }
@@ -282,8 +278,7 @@ AX_TEST(transactions_apply_at_the_frame_their_deadline_allows)
     /* Frame at T = 100 ms: its deadline is T - refresh = 84 ms; the tree committed at 50 ms. */
     AX_REQUIRE(frame_at(&p, 100 * MS));
     AX_CHECK(dump_is(&p.presenter, k_first));
-    AX_CHECK_EQ_U(p.driver_calls, 1);
-    AX_CHECK_EQ_U(p.driver_time, 100 * MS);
+    AX_CHECK(p.steps >= 1);
 
     /* Committed at 110 ms: after the next frame's deadline (116 - 16 = 100), so it waits. */
     p.clock.now = 110 * MS;
@@ -533,10 +528,10 @@ AX_TEST(measure_sync_lays_out_what_was_committed_without_a_frame)
     AX_CHECK(strstr(p.presenter.dump, "(10 20 140 50)") == NULL);
     AX_REQUIRE(frame_at(&p, 116 * MS));
     AX_CHECK(strstr(p.presenter.dump, "rect (10 20 140 50)") != NULL);
-    /* From inside the scene's step (here, the examples' driver): it would wait for itself. */
-    p.measure_in_driver = true;
+    /* From inside the scene's step (here, its event pump): it would wait for itself. */
+    p.measure_in_step = true;
     AX_REQUIRE(frame_at(&p, 132 * MS));
-    AX_CHECK_RESULT(p.driver_measure, AX_ERR_WRONG_THREAD);
+    AX_CHECK_RESULT(p.step_measure, AX_ERR_WRONG_THREAD);
     AX_CHECK_RESULT(ax_measure_sync(p.rt, p.card, NULL), AX_ERR_INVALID_ARGUMENT);
     pipeline_stop(&p);
 }

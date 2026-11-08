@@ -2,7 +2,7 @@
  * Copyright 2026 Axon Works
  * SPDX-License-Identifier: Apache-2.0
  */
-#include "m1_scene.h"
+#include "bench_soft_scene.h"
 
 #include <math.h>
 
@@ -148,65 +148,46 @@ ax_node m1_scene_build(ax_world world, ax_node root, m1_moving *m, float w, floa
     return first;
 }
 
-/* ---- the scene driver (scene thread; example only, until animations) ------------------------- */
+/* ---- the motion (app thread; one transaction per frame, not animated) ---------------------- */
 
-static void set_dim(ax_scene *scene, ax_node n, ax_prop p, float v)
+static void set_dim(ax_txn *t, ax_node n, ax_prop p, float v)
 {
-    ax_value value;
-    value.dimension = pt(v);
-    (void)ax_scene_set(scene, n, p, AX_VALUE_DIMENSION, &value);
+    ax_txn_set_dimension(t, n, p, pt(v));
 }
 
-static void set_box(ax_scene *scene, ax_node n, float x, float y, float w, float h)
+static void set_rotation(ax_txn *t, ax_node n, float radians)
 {
-    set_dim(scene, n, AX_PROP_LEFT, x);
-    set_dim(scene, n, AX_PROP_TOP, y);
-    set_dim(scene, n, AX_PROP_WIDTH, w);
-    set_dim(scene, n, AX_PROP_HEIGHT, h);
+    const ax_affine2 m = ax_affine2_rotate(radians);
+    ax_transform2d tr;
+    tr.a = m.a;
+    tr.b = m.b;
+    tr.c = m.c;
+    tr.d = m.d;
+    tr.tx = m.tx;
+    tr.ty = m.ty;
+    ax_txn_set_transform(t, n, AX_PROP_TRANSFORM, tr);
 }
 
-static void set_rotation(ax_scene *scene, ax_node n, float radians)
+void m1_scene_move(ax_world world, m1_moving *m, uint64_t time_ns, float w, float h)
 {
-    ax_value value;
-    value.transform2d = ax_affine2_rotate(radians);
-    (void)ax_scene_set(scene, n, AX_PROP_TRANSFORM, AX_VALUE_TRANSFORM2D, &value);
-}
-
-void m1_scene_slide(void *user, ax_world world, ax_node root, uint64_t time_ns, float w, float h)
-{
-    m1_moving *m = (m1_moving *)user;
-    ax_scene *scene = ax_world_scene(world);
-    const double t = (double)time_ns / 1e9; /* the predicted present time, as in m0_window */
-    (void)root;
-    if (ax_atomic_load_u32(&m->ready, AX_MO_ACQUIRE) == 0) {
-        return;
-    }
-    set_rotation(scene, m->turning, (float)fmod(t * PI_F / 4.0, 2.0 * PI_F));
-    set_rotation(scene, m->fan, (float)fmod(t * PI_F / 18.0, 2.0 * PI_F));
+    const double t = (double)time_ns / 1e9; /* the frame's time, as m0_window's driver had it */
+    ax_txn *txn = ax_txn_begin(world);
+    (void)w;
+    set_rotation(txn, m->turning, (float)fmod(t * PI_F / 4.0, 2.0 * PI_F));
+    set_rotation(txn, m->fan, (float)fmod(t * PI_F / 18.0, 2.0 * PI_F));
     {
         /* 7.3 units a second over 100 units and back. */
         const double period = 2.0 * 100.0 / 7.3;
         const double phase = fmod(t, period) / period;
         const float x = (float)(phase < 0.5 ? phase * 200.0 : (1.0 - phase) * 200.0);
-        set_dim(scene, m->knob, AX_PROP_LEFT, m->left + 260.0f + x * 0.5f + 2.0f);
-        set_dim(scene, m->tick, AX_PROP_LEFT, m->left + 260.0f + x * 0.5f + 13.5f);
+        set_dim(txn, m->knob, AX_PROP_LEFT, m->left + 260.0f + x * 0.5f + 2.0f);
+        set_dim(txn, m->tick, AX_PROP_LEFT, m->left + 260.0f + x * 0.5f + 13.5f);
     }
     {
         const float bottom = h - (m->csd ? BORDER : 0.0f);
-        set_dim(scene, m->bar, AX_PROP_LEFT, (float)(fmod(t * BAR_SPEED, BAR_TRACK) - 24.0));
-        set_dim(scene, m->bar, AX_PROP_TOP, bottom - 40.0f);
+        set_dim(txn, m->bar, AX_PROP_LEFT, (float)(fmod(t * BAR_SPEED, BAR_TRACK) - 24.0));
+        set_dim(txn, m->bar, AX_PROP_TOP, bottom - 40.0f);
     }
-    if (m->csd) { /* setting what did not change marks nothing */
-        set_box(scene, m->band_left, 0, 0, BORDER, h);
-        set_box(scene, m->band_right, w - BORDER, 0, BORDER, h);
-        set_box(scene, m->band_bottom, 0, h - BORDER, w, BORDER);
-        set_box(scene, m->caption, 0, 0, w, CAPTION_HEIGHT);
-        set_box(scene, m->corner_tr, w - CORNER, 0, CORNER, CORNER);
-        set_box(scene, m->corner_bl, 0, h - CORNER, CORNER, CORNER);
-        set_box(scene, m->corner_br, w - CORNER, h - CORNER, CORNER, CORNER);
-        set_box(scene, m->edge_top, 0, 0, w, 1);
-        set_box(scene, m->edge_bottom, 0, h - 1, w, 1);
-        set_box(scene, m->edge_left, 0, 0, 1, h);
-        set_box(scene, m->edge_right, w - 1, 0, 1, h);
-    }
+    ax_txn_set_animated(txn, false); /* the motion is the benchmark's own, frame by frame */
+    (void)ax_txn_commit(txn, NULL);
 }

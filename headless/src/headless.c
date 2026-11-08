@@ -403,8 +403,6 @@ ax_result ax_headless_create(const ax_headless_desc *desc, ax_headless **out)
     rd.mode = h->threaded ? AX_RUNTIME_THREADED : AX_RUNTIME_SINGLE_THREADED;
     rd.presenter = &k_presenter;
     rd.presenter_self = h;
-    rd.driver = d.driver;
-    rd.driver_user = d.driver_user;
     r = ax_rt_create(&rd, &h->rt);
     if (r != AX_OK) {
         (void)ax_world_destroy(h->world);
@@ -695,8 +693,9 @@ static bool settled(ax_headless *h)
             ax_mutex_lock(&h->lock);
             shown = h->s[idx].shown_seq;
             ax_mutex_unlock(&h->lock);
-            if (shown < ax_ir_mailbox_published(ax_rt_surface_mailbox(h->rt, idx))) {
-                return false;
+            if (shown < ax_ir_mailbox_published(ax_rt_surface_mailbox(h->rt, idx)) ||
+                ax_rt_surface_animating(h->rt, idx)) {
+                return false; /* not drawn yet, or still animating (decision 94) */
             }
         }
     }

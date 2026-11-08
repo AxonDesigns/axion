@@ -16,7 +16,7 @@
 #include "axion/base/ax_thread.h"
 #include "axion/headless/ax_headless.h"
 #include "axion/render/ax_render_soft.h"
-#include "m1_scene.h"
+#include "bench_soft_scene.h"
 
 enum { FRAMES = 60, REPS = 5 };
 
@@ -96,8 +96,6 @@ int main(int argc, char **argv)
     float scale;
 
     /* Record: the scene and 60 frames of its animation. */
-    hd.driver = m1_scene_slide;
-    hd.driver_user = &m;
     sd.width = 800.0f;
     sd.height = 500.0f;
     sd.scale = 1.0f;
@@ -109,6 +107,7 @@ int main(int argc, char **argv)
     (void)m1_scene_build(ax_headless_world(h), root, &m, 800.0f, 500.0f, NULL);
     (void)ax_headless_settle(h, 10, NULL);
     for (i = 0; i < FRAMES; ++i) {
+        m1_scene_move(ax_headless_world(h), &m, ax_headless_now(h) + hd.refresh_ns, 800.0f, 500.0f);
         if (ax_headless_step(h, 1) != AX_OK ||
             ax_headless_save_ir(h, root, &snaps[i].data, &snaps[i].size) != AX_OK) {
             fprintf(stderr, "bench_soft: recording failed\n");

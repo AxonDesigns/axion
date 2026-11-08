@@ -499,8 +499,6 @@ ax_result ax_rt_create_for_app(const ax_runtime_desc *desc, const ax_rt_platform
     d.mode = AX_RUNTIME_THREADED;
     d.presenter = &k_platform;
     d.presenter_self = p;
-    d.driver = pd->driver;
-    d.driver_user = pd->driver_user;
     d.pump_events = pump_events;
     d.pump_user = p;
     d.cleanup = cleanup;

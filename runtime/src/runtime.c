@@ -587,15 +587,12 @@ static void tick(rt_impl *r, uint32_t index, const ax_rt_request *q)
     if (!ax_node_store_is_live(&scene->store, s->root)) {
         return; /* the root's transaction has not applied yet */
     }
-    /* 3. The root's viewport. 4. The examples' driver, which may read it. */
+    /* 3. The root's viewport. */
     if (ax_world_set_root_viewport(world, s->root, q->logical_width, q->logical_height,
                                    q->scale > 0.0f ? q->scale : 1.0f) != AX_OK) {
         return; /* out of memory, or the root has gained a parent: nothing to record */
     }
-    if (r->desc.driver != NULL) {
-        r->desc.driver(r->desc.driver_user, world, s->root, t, q->logical_width, q->logical_height);
-    }
-    /* 5. Layout and implicit animations (sampled at the frame's time), then recording when this
+    /* 4. Layout and implicit animations (sampled at the frame's time), then recording when this
      * surface's content changed. */
     (void)ax_world_position(world);
     (void)ax_world_animate(world, t);
