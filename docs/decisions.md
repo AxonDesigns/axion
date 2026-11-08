@@ -87,12 +87,12 @@ new entry that points back to the old one.
 | 71  | The IDL: `.axidl`, and the line between ABI and SDK      | Approved       |
 | 72  | Wayland layer-shell surfaces                             | Approved       |
 | 73  | Extension chains: the `next` header                      | Approved       |
-| 74  | Platform pieces for one render thread and the scene      | Implementation |
-| 75  | Events to the app thread, `on_presented`, the clock      | Implementation |
-| 76  | Positioning, the layer rule and incremental recording    | Implementation |
-| 77  | The runtime, the frame's order and the single thread     | Implementation |
+| 74  | Platform pieces for one render thread and the scene      | Approved       |
+| 75  | Events to the app thread, `on_presented`, the clock      | Approved       |
+| 76  | Positioning, the layer rule and incremental recording    | Approved       |
+| 77  | The runtime, the frame's order and the single thread     | Approved       |
 | 78  | The scene and render threads; vsync on the render thread | Deviation      |
-| 79  | The cooperative mode's tests in Node                     | Implementation |
+| 79  | The cooperative mode's tests in Node                     | Approved       |
 
 ---
 
