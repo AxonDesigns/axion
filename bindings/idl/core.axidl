@@ -119,6 +119,7 @@ module core {
     //                value, with ax_last_error()'s message.
     // `?`            may be null / optional.
 
+    const u32 max_worlds = 256;  // at least this many worlds at once (a guaranteed minimum)
     [thread(any)]  fn world_create(world_desc? desc, out world world) -> result;
     [thread(app)]  fn world_destroy(world world) -> result;
     [thread(any)]  fn world_now(world world) -> u64;
@@ -145,6 +146,7 @@ module core {
 
     [thread(app)]  fn world_poll_txn_error(world world, out txn_error error, out u32? dropped) -> bool;
     [thread(app)]  fn world_last_applied_seq(world world) -> u64;
+    [thread(app)]  fn world_last_committed_seq(world world) -> u64;
     const u32 txn_error_queue = 64;
 
     [thread(app)]  fn world_poll_event(world world, out world_event event) -> result;

@@ -48,6 +48,10 @@ typedef struct ax_world_desc {
     void *clock_user;
 } ax_world_desc;
 
+/* Worlds that can exist at once in a process: at least this many (a guaranteed minimum, not a
+ * fixed value; the headless host runs one world per instance, so test suites can run many). */
+#define AX_MAX_WORLDS 256u
+
 /* desc may be NULL for the defaults. Errors: AX_ERR_ABI_MISMATCH (struct_size too small),
  * AX_ERR_OUT_OF_MEMORY (also when too many worlds exist). thread: any (the caller becomes the
  * world's app and scene thread) */

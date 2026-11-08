@@ -21,21 +21,21 @@
 #include <axion/base/ax_error_set.h>
 #include <axion/base/ax_memory.h>
 
-/* Many, because the headless host runs one world per instance and tests run in parallel. */
-#define AX_MAX_WORLDS 256u
+/* AX_MAX_WORLDS (ax_world.h) is the guaranteed minimum; the table holds exactly that many. */
+#define WORLD_SLOTS AX_MAX_WORLDS
 
 #define RECYCLED_CAPACITY 4096u
 #define RETURNED_CAPACITY 256u
 
 /* Live worlds by slot, claimed with compare-and-swap like ax_app's table (platform/common). */
-static ax_atomic_ptr g_worlds[AX_MAX_WORLDS];
+static ax_atomic_ptr g_worlds[WORLD_SLOTS];
 static ax_atomic_u32 g_world_generation = AX_ATOMIC_INIT(1);
 
 world_impl *ax__world_from_handle(ax_world world)
 {
     uint32_t slot = ax_handle_slot(world.h);
     world_impl *w;
-    if (world.h == 0 || slot >= AX_MAX_WORLDS) {
+    if (world.h == 0 || slot >= WORLD_SLOTS) {
         return NULL;
     }
     w = (world_impl *)ax_atomic_load_ptr(&g_worlds[slot], AX_MO_ACQUIRE);
@@ -142,14 +142,14 @@ ax_result ax_world_create(const ax_world_desc *desc, ax_world *out_world)
     if (w->generation == 0) {
         w->generation = ax_atomic_fetch_add_u32(&g_world_generation, 1, AX_MO_RELAXED);
     }
-    for (slot = 0; slot < AX_MAX_WORLDS; ++slot) {
+    for (slot = 0; slot < WORLD_SLOTS; ++slot) {
         void *expected = NULL;
         if (ax_atomic_compare_exchange_ptr(&g_worlds[slot], &expected, w, AX_MO_ACQ_REL,
                                            AX_MO_RELAXED)) {
             break;
         }
     }
-    if (slot == AX_MAX_WORLDS) {
+    if (slot == WORLD_SLOTS) {
         free_world(w);
         return ax_set_error(AX_ERR_OUT_OF_MEMORY, "ax_world_create: at most %u worlds may exist",
                             AX_MAX_WORLDS);
@@ -482,6 +482,16 @@ bool ax_world_poll_txn_error(ax_world world, ax_txn_error *out, uint32_t *droppe
     out->message.ptr = w->last_failure.message;
     out->message.len = strlen(w->last_failure.message);
     return true;
+}
+
+uint64_t ax_world_last_committed_seq(ax_world world)
+{
+    world_impl *w = ax__world_from_handle(world);
+    if (w == NULL) {
+        return 0;
+    }
+    AX_ASSERT_MSG(ax__world_on_app_thread(w), "ax_world_last_committed_seq: not the app thread");
+    return w->next_seq;
 }
 
 uint64_t ax_world_last_applied_seq(ax_world world)

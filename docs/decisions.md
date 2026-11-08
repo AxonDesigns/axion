@@ -3620,3 +3620,79 @@ then software, unless the app pins one.
 
 **Status.** Implementation, pending the owner's approval.
 
+## 85. The headless host and its C testing API
+
+**Context.** "Headless host, automation and MCP": a host that runs any app without a window or a
+GPU, with virtual surfaces of any size, scale, theme and reduce-motion, deterministic by default
+(a manual clock, the cooperative single-thread scheduler, a bundled font set), real threads
+opt-in, many instances in one process, the software renderer by default or WebGPU offscreen. The
+owner asked to build it on the runtime's single-thread mode (decision 77, `ax_host_frame`) behind
+`ax_rt_presenter_vtbl`, starting from the runtime tests' fakes, without depending on platform; a C
+testing API (frames, time, `Settle()` until no transaction is pending, PNG snapshots, the IR dump,
+mirror reads); `ax_world_last_committed_seq` on the app thread; and `AX_MAX_WORLDS` public as a
+guaranteed minimum. The testing API for other languages (M2), queries by role and name (prompt 6)
+and automation and MCP (M2, M3) are out of scope.
+
+**Decision.** `headless/` (library `ax_headless`, internal SDK
+`axion/headless/ax_headless.h` for now; the bindings' testing APIs build on it in M2).
+- **An instance** owns a world, a runtime and a presenter. `ax_headless_create`:
+  - **default, deterministic:** the world's clock is a manual one (decision 67's injectable clock),
+    the runtime is single-threaded (its job system inline), and the software renderer draws
+    (`AX_HEADLESS_RENDER_SOFT`);
+  - `AX_HEADLESS_THREADS`: the runtime's scene and render threads, the real clock and a threaded
+    job system (the software renderer's tiles run on it);
+  - `AX_HEADLESS_RENDER_WGPU`: ax_render_wgpu offscreen, read back into memory; `AX_ERR_UNSUPPORTED`
+    in a build without the gpu module or on a machine without an adapter;
+  - **the font hook:** `ax_headless_desc.fonts` (NULL: the bundled set) and the reserved flag
+    `AX_HEADLESS_SYSTEM_FONTS`; nothing reads them until text arrives.
+  - The code uses no platform module and builds everywhere, the web included (tests in Node).
+- **Virtual surfaces:** `ax_headless_add_surface` creates a root node in a transaction of its own and
+  attaches it (at most `AX_RUNTIME_MAX_SURFACES`) with a logical size, a scale (fractional allowed),
+  a theme and reduce-motion. Theme and reduce-motion are kept and read back
+  (`ax_headless_get_surface_info`); styles and animations consume them when they exist.
+  `ax_headless_resize` is a window resize.
+- **The presenter** (`ax_rt_presenter_vtbl`, after the runtime tests' fakes): at each frame it
+  draws the newest snapshot, when new, into the surface's pixels at its pixel size, never stretched;
+  swaps them under a lock with the pixels the app thread reads; keeps the snapshot serialized
+  (`ax_ir_serialize`) for dumps; and reports it shown (`ax_rt_snapshot_presented`, so
+  `ax_txn_on_presented` works). Surface settings reach it through the surface's "native" handle,
+  which crosses the runtime's command ring, so the render thread never races the app thread for
+  them. With threads it paces each surface like a display (the threaded runtime tests' fake),
+  requesting each next frame.
+- **Time** (manual clock): the virtual display presents at fixed vsyncs, `refresh_ns` apart (default
+  1/60 s) from `start_time_ns` (default 1 s). `ax_headless_step(n)` runs n frames on every surface
+  (`ax_host_frame` at the next vsync, the clock moving to it); a frame applies what was committed up
+  to one refresh before it (decision 77's latch point). `ax_headless_advance_time(ns)` runs a frame
+  at each vsync the interval reaches and keeps the phase. With threads, step waits for frames and
+  advance sleeps.
+- **`ax_headless_settle(max_frames)`** runs frames until `ax_world_last_applied_seq` reaches
+  `ax_world_last_committed_seq` (new in `ax_txn.h`, stable, thread: app, and in the IDL) and every
+  surface drew the newest snapshot recorded for it; 0 frames when nothing is pending;
+  `AX_ERR_UNSUPPORTED` when it does not settle within max_frames. Animations join the condition
+  when they exist.
+- **Snapshots:** `ax_headless_capture` (a copy, premultiplied RGBA8), `ax_headless_write_png`
+  (decision 82's codec), `ax_headless_dump_ir` (the text dump) and `ax_headless_save_ir` (the
+  binary form). Mirror reads are the world's own (`ax_world_mirror_sync`, `ax_mirror_*`) on
+  `ax_headless_world`.
+- **Many instances:** `AX_MAX_WORLDS` is now public in `ax_world.h` (and `max_worlds` in the IDL)
+  as a guaranteed minimum, "at least 256", not a fixed value. The runtime's handle table, which held
+  64, now holds as many as worlds (one runtime per world).
+- **Tests** (`tests/unit/headless/test_headless.c`, label `headless`, also in Node):
+  - a card UI (rounded rect, header, a turned badge, a translucent layer, a hairline) drawn after
+    settle (one or two frames) matches its golden exactly (`tests/goldens/headless/cards.png`);
+  - the manual clock: a commit shows at the next frame; the mirror shows the frame's layout and
+    values; advancing time runs a frame per vsync reached and keeps the phase;
+  - settle reports when it cannot (max 0 frames with the root's transaction pending);
+  - resizing redraws at the new size, and the IR dump and binary form follow;
+  - surface settings and argument errors;
+  - `AX_MAX_WORLDS` instances at once;
+  - eight instances on eight threads draw byte-identical pixels, equal to the golden;
+  - the threaded mode draws the same pixels as the deterministic mode;
+  - the GPU renderer offscreen, where there is one: locally (Dawn, NVIDIA) the worst channel
+    difference from the software renderer is 1/255. Its leaks are the GPU drivers' (decision 44):
+    the test keeps them loaded and uses the gpu tests' LeakSanitizer suppressions.
+  - Under ASan, TSan (3 runs) and in Node: clean. `core.txn` gains the committed sequence (aborted and
+    failed transactions take none) and `AX_MAX_WORLDS` worlds at once.
+
+**Status.** Implementation, pending the owner's approval.
+

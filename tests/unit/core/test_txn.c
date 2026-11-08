@@ -209,6 +209,7 @@ AX_TEST(sequences_follow_commit_order)
     ax_world w = make_world(NULL, NULL);
     uint64_t i;
     AX_REQUIRE(!AX_HANDLE_IS_NULL(w));
+    AX_CHECK_EQ_U(ax_world_last_committed_seq(w), 0);
     for (i = 1; i <= 6; ++i) {
         ax_txn *t = ax_txn_begin(w);
         uint64_t seq = 0;
@@ -218,7 +219,18 @@ AX_TEST(sequences_follow_commit_order)
         }
         AX_CHECK_RESULT(ax_txn_commit(t, &seq), AX_OK); /* empty ones too */
         AX_CHECK_EQ_U(seq, i);
+        AX_CHECK_EQ_U(ax_world_last_committed_seq(w), i);
     }
+    /* An aborted transaction and one that fails to record take no sequence. */
+    ax_txn_abort(ax_txn_begin(w));
+    {
+        ax_txn *t = ax_txn_begin(w);
+        const ax_node none = AX_HANDLE_NULL_INIT;
+        ax_txn_remove(t, none);
+        AX_CHECK(ax_txn_commit(t, NULL) != AX_OK);
+    }
+    AX_CHECK_EQ_U(ax_world_last_committed_seq(w), 6);
+    AX_CHECK_EQ_U(ax_world_last_applied_seq(w), 0);
     for (i = 1; i <= 6; ++i) {
         ax_txn *t = take_ok(w);
         ax_txn_info info;
@@ -611,4 +623,22 @@ AX_TEST(the_queue_carries_transactions_between_two_threads)
     AX_CHECK_EQ_U(errors, STRESS_TXNS / 10u);
     ax_world_bind_scene_thread(ctx.world);
     AX_CHECK_RESULT(ax_world_destroy(ctx.world), AX_OK);
+}
+
+/* AX_MAX_WORLDS is a guaranteed minimum: that many worlds can exist at once (the headless host
+ * runs one per instance). */
+AX_TEST(at_least_ax_max_worlds_worlds_can_exist_at_once)
+{
+    static ax_world worlds[AX_MAX_WORLDS];
+    uint32_t i, made = 0;
+    for (i = 0; i < AX_MAX_WORLDS; ++i) {
+        if (ax_world_create(NULL, &worlds[i]) != AX_OK) {
+            break;
+        }
+        made++;
+    }
+    AX_CHECK_EQ_U(made, AX_MAX_WORLDS);
+    for (i = 0; i < made; ++i) {
+        AX_CHECK_RESULT(ax_world_destroy(worlds[i]), AX_OK);
+    }
 }

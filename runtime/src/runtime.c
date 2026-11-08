@@ -17,7 +17,9 @@
 #include <axion/core/ax_frame.h>
 #include <axion/core/ax_world_sdk.h>
 
-#define AX_MAX_RUNTIMES 64u
+/* One runtime per world: as many as worlds can exist (AX_MAX_WORLDS, the headless host's
+ * instances). */
+#define AX_MAX_RUNTIMES AX_MAX_WORLDS
 #define CMD_CAPACITY    128u
 
 static ax_atomic_ptr g_runtimes[AX_MAX_RUNTIMES];
