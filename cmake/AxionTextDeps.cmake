@@ -38,7 +38,8 @@ function(_ax_third_party_defaults target)
         VISIBILITY_INLINES_HIDDEN ON
         POSITION_INDEPENDENT_CODE ON)
     if(MSVC)
-        target_compile_options(${target} PRIVATE /fp:precise /utf-8 /W0
+        # /bigobj: the amalgamated harfbuzz.cc has more sections than the default COFF limit.
+        target_compile_options(${target} PRIVATE /fp:precise /utf-8 /W0 /bigobj
             "$<$<COMPILE_LANGUAGE:CXX>:/EHs-c->" "$<$<COMPILE_LANGUAGE:CXX>:/GR->")
         target_compile_definitions(${target} PRIVATE _CRT_SECURE_NO_WARNINGS _HAS_EXCEPTIONS=0)
     else()
