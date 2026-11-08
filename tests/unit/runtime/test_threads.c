@@ -37,8 +37,10 @@ typedef struct fake_display {
     uint64_t refresh[MAX_S];
     /* render thread only */
     bool live[MAX_S];
-    uint64_t next_due[MAX_S];
+    uint64_t next_due[MAX_S]; /* UINT64_MAX: resting, no frame callback pending */
     uint64_t last_seq[MAX_S];
+    ax_atomic_u32 woken[MAX_S];   /* a commit asked for a frame (decision 95) */
+    bool commit_requested[MAX_S]; /* render thread: the next frame must present */
     /* read by the test */
     ax_atomic_u64 frames[MAX_S];
     ax_atomic_u64 shown[MAX_S]; /* new snapshots shown */
@@ -100,12 +102,27 @@ static ax_result fd_wait(void *self, const uint32_t *surfaces, uint32_t count, u
         }
     }
     /* The vsync. Yielding until it is due, not a timed wait: timed waits wake up to 10 ms late
-     * on macOS runners, which would make the display itself miss refreshes. */
+     * on macOS runners, which would make the display itself miss refreshes. A commit's wake ends
+     * the wait too, as a compositor's commit request does. */
     while (ax_time_monotonic_ns() < until) {
+        bool woken = false;
+        for (i = 0; i < count; ++i) {
+            woken = woken || ax_atomic_load_u32(&d->woken[surfaces[i]], AX_MO_ACQUIRE) != 0;
+        }
+        if (woken) {
+            break;
+        }
         ax_thread_yield();
     }
     now = ax_time_monotonic_ns();
     for (i = 0; i < count; ++i) {
+        uint32_t one = 1;
+        if (ax_atomic_compare_exchange_u32(&d->woken[surfaces[i]], &one, 0, AX_MO_ACQ_REL,
+                                           AX_MO_RELAXED) &&
+            d->next_due[surfaces[i]] == UINT64_MAX) {
+            d->next_due[surfaces[i]] = now; /* resting: draw now, then follow the refresh */
+            d->commit_requested[surfaces[i]] = true;
+        }
         due[i] = now >= d->next_due[surfaces[i]];
         any = any || due[i];
     }
@@ -118,6 +135,13 @@ static ax_result fd_frame(void *self, uint32_t i)
     fake_display *d = (fake_display *)self;
     const ax_render_ir *ir = ax_ir_mailbox_acquire(ax_rt_surface_mailbox(d->rt, i));
     uint64_t now = ax_time_monotonic_ns();
+    if (!d->commit_requested[i] && !ax_rt_surface_animating(d->rt, i) &&
+        (ir == NULL || ir->sequence <= d->last_seq[i]) && d->last_seq[i] != 0) {
+        /* Nothing new and nothing moving: no commit, so no callback; rest (decision 95). */
+        d->next_due[i] = UINT64_MAX;
+        return AX_OK;
+    }
+    d->commit_requested[i] = false; /* a commit request presents, as a compositor's does */
     ax_atomic_fetch_add_u64(&d->frames[i], 1, AX_MO_RELAXED);
     if (ir != NULL && ir->sequence > d->last_seq[i]) {
         d->last_seq[i] = ir->sequence;
@@ -135,8 +159,15 @@ static ax_result fd_frame(void *self, uint32_t i)
     return AX_OK;
 }
 
+static void fd_wake(void *self, uint32_t i, uint64_t native)
+{
+    fake_display *d = (fake_display *)self;
+    (void)native;
+    ax_atomic_store_u32(&d->woken[i], 1, AX_MO_RELEASE);
+}
+
 static const ax_rt_presenter_vtbl k_display = {
-    sizeof(ax_rt_presenter_vtbl), fd_attach, fd_detach, fd_wait, fd_frame, NULL};
+    sizeof(ax_rt_presenter_vtbl), fd_attach, fd_detach, fd_wait, fd_frame, NULL, fd_wake};
 
 static void display_init(fake_display *d, uint64_t refresh0, uint64_t refresh1)
 {
@@ -150,6 +181,7 @@ static void display_init(fake_display *d, uint64_t refresh0, uint64_t refresh1)
         ax_atomic_init_u64(&d->frames[i], 0);
         ax_atomic_init_u64(&d->shown[i], 0);
         ax_atomic_init_u64(&d->late[i], 0);
+        ax_atomic_init_u32(&d->woken[i], 0);
     }
     ax_atomic_init_u32(&d->detached, 0);
     ax_atomic_init_u64(&d->detach_stall_ns, 0);
@@ -573,4 +605,62 @@ AX_TEST(measure_sync_waits_for_the_scene_thread_and_refuses_it)
     AX_CHECK(c.measure_ticks >= 5);
     AX_CHECK_RESULT(ax_runtime_destroy(rt), AX_OK);
     AX_CHECK_RESULT(ax_world_destroy(w), AX_OK);
+}
+
+/* Zero frames at rest (decision 95): a window with nothing new and nothing moving presents no
+ * frame; a commit wakes it, its implicit animation runs every frame, and it rests again. */
+AX_TEST(a_resting_surface_presents_nothing_until_a_commit_animates_it)
+{
+    static fake_display d;
+    static order_log log;
+    ax_world w;
+    ax_runtime rt;
+    ax_rt_desc rd;
+    ax_rt_surface_desc sd;
+    ax_node root, child;
+    uint32_t s;
+    ax_txn *t;
+    uint64_t seq = 0, f0, f1, f2, f3;
+    REQUIRE_THREADS();
+    display_init(&d, 16666667u, 16666667u);
+    memset(&log, 0, sizeof log);
+    AX_REQUIRE(ax_world_create(NULL, &w) == AX_OK);
+    memset(&rd, 0, sizeof rd);
+    rd.world = w;
+    rd.mode = AX_RUNTIME_THREADED;
+    rd.presenter = &k_display;
+    rd.presenter_self = &d;
+    AX_REQUIRE(ax_rt_create(&rd, &rt) == AX_OK);
+    child = make_root(w, &root);
+    AX_REQUIRE(!AX_HANDLE_IS_NULL(child));
+    memset(&sd, 0, sizeof sd);
+    AX_REQUIRE(ax_rt_add_surface(rt, root, &sd, &s) == AX_OK);
+    idle_for(w, 300 * MS); /* the first content is presented, then nothing moves */
+    f0 = ax_atomic_load_u64(&d.frames[s], AX_MO_RELAXED);
+    idle_for(w, 300 * MS);
+    f1 = ax_atomic_load_u64(&d.frames[s], AX_MO_RELAXED);
+    printf("at rest: %u frames in 300 ms\n", (unsigned)(f1 - f0));
+    AX_CHECK_EQ_U(f1 - f0, 0);
+    AX_CHECK(f0 >= 1);
+
+    /* A commit: the default spring on opacity (0.4 s) runs every refresh, then rests. */
+    t = ax_txn_begin(w);
+    ax_txn_set_f32(t, child, AX_PROP_OPACITY, 0.3f);
+    AX_REQUIRE(ax_txn_commit(t, &seq) == AX_OK);
+    AX_REQUIRE(ax_txn_on_presented(w, seq, on_presented, &log) == AX_OK);
+    idle_for(w, 300 * MS);
+    f2 = ax_atomic_load_u64(&d.frames[s], AX_MO_RELAXED);
+    printf("animating: %u frames in 300 ms\n", (unsigned)(f2 - f1));
+    AX_CHECK(f2 - f1 >= 10); /* about 18 at 60 Hz */
+    AX_CHECK_EQ_U(log.count, 1);
+    AX_CHECK_EQ_U(log.not_presented, 0);
+    idle_for(w, 1000 * MS); /* the spring settles */
+    f2 = ax_atomic_load_u64(&d.frames[s], AX_MO_RELAXED);
+    idle_for(w, 300 * MS);
+    f3 = ax_atomic_load_u64(&d.frames[s], AX_MO_RELAXED);
+    printf("at rest again: %u frames in 300 ms\n", (unsigned)(f3 - f2));
+    AX_CHECK_EQ_U(f3 - f2, 0);
+    AX_CHECK_RESULT(ax_runtime_destroy(rt), AX_OK);
+    AX_CHECK_RESULT(ax_world_destroy(w), AX_OK);
+    display_deinit(&d);
 }

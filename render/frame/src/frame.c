@@ -93,7 +93,14 @@ ax_result ax_render_frame_present(ax_render_frame *rf, ax_wake_reason reason, bo
         memset(&info, 0, sizeof info);
         info.struct_size = sizeof info;
         info.flags = accept_any ? AX_FRAME_ACCEPT_ANY_SIZE : 0u;
-        info.flags |= (!animating && reason == AX_WAKE_TIMEOUT) ? AX_FRAME_ONLY_IF_REQUIRED : 0u;
+        /* At rest (decision 95): a timeout, or a frame callback with nothing new to show, draws
+         * only to answer a configure or a commit request, so no commit asks for another
+         * callback and frames stop. */
+        info.flags |=
+            (!animating && (reason == AX_WAKE_TIMEOUT || (reason == AX_WAKE_FRAME && ir != NULL &&
+                                                          ir->sequence == rf->last_sequence)))
+                ? AX_FRAME_ONLY_IF_REQUIRED
+                : 0u;
         info.result = &res;
         if (waited) {
             wait_end = ax_time_monotonic_ns(); /* the wait ends where this attempt starts */

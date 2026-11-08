@@ -234,6 +234,16 @@ void ax_world_bind_scene_thread(ax_world world)
     }
 }
 
+void ax_world_set_commit_hook(ax_world world, void (*hook)(void *user), void *user)
+{
+    world_impl *w = ax__world_from_handle(world);
+    AX_ASSERT(w != NULL);
+    if (w != NULL) {
+        w->commit_hook = hook;
+        w->commit_hook_user = user;
+    }
+}
+
 void ax_world_set_reduce_motion(ax_world world, bool reduce)
 {
     world_impl *w = ax__world_from_handle(world);

@@ -229,7 +229,13 @@ static ax_result pl_wait(void *self, const uint32_t *surfaces, uint32_t count, u
     if (n == 0 || p->vt->struct_size < sizeof(ax_renderer_vtbl) || p->vt->wait_frames == NULL) {
         return ax_set_error(AX_ERR_UNSUPPORTED, "ax_runtime: the renderer cannot wait on surfaces");
     }
-    r = p->vt->wait_frames(p->renderer, handles, n, true, timeout, reasons);
+    {
+        bool animating = false;
+        for (i = 0; i < count; ++i) {
+            animating = animating || ax_rt_surface_animating(rt_of(p), surfaces[i]);
+        }
+        r = p->vt->wait_frames(p->renderer, handles, n, animating, timeout, reasons);
+    }
     n = 0;
     for (i = 0; i < count; ++i) {
         plat_surface *ps = &p->s[surfaces[i]];
@@ -257,7 +263,9 @@ static ax_result pl_frame(void *self, uint32_t i)
     }
     memset(&res, 0, sizeof res);
     res.struct_size = sizeof res;
-    r = ax_render_frame_present(&ps->rf, ps->reason, true, &res);
+    /* Every frame while something animates; otherwise only frames with new content (decision
+     * 95): the surface rests without frames until a commit wakes it (pl_wake). */
+    r = ax_render_frame_present(&ps->rf, ps->reason, ax_rt_surface_animating(rt_of(p), i), &res);
     if (r == AX_ERR_DEVICE_LOST) {
         return AX_OK; /* recovered by a later frame */
     }
@@ -286,6 +294,15 @@ static ax_result pl_frame(void *self, uint32_t i)
     return AX_OK;
 }
 
+static void pl_wake(void *self, uint32_t i, uint64_t native)
+{
+    ax_surface s;
+    (void)self;
+    (void)i;
+    s.h = native;
+    ax_surface_request_commit(s); /* its waits return AX_WAKE_COMMIT_REQUESTED */
+}
+
 static void pl_destroy(void *self)
 {
     plat *p = (plat *)self;
@@ -296,7 +313,7 @@ static void pl_destroy(void *self)
 }
 
 static const ax_rt_presenter_vtbl k_platform = {
-    sizeof(ax_rt_presenter_vtbl), pl_attach, pl_detach, pl_wait, pl_frame, pl_destroy};
+    sizeof(ax_rt_presenter_vtbl), pl_attach, pl_detach, pl_wait, pl_frame, pl_destroy, pl_wake};
 
 /* ---- Scene thread: the app's events ---------------------------------------------------------- */
 

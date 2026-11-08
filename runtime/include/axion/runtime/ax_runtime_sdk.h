@@ -74,6 +74,10 @@ typedef struct ax_rt_presenter_vtbl {
     ax_result (*frame)(void *self, uint32_t surface);
     /* The render side stops (after detaching every surface): free what it made. May be NULL. */
     void (*destroy)(void *self);
+    /* Threaded mode, any thread (decision 95): a transaction was committed; a surface resting
+     * without frames should ask the scene for one (ax_surface_request_commit for a window).
+     * Appended: struct_size tells whether it is there. May be NULL. */
+    void (*wake)(void *self, uint32_t surface, uint64_t native_surface);
 } ax_rt_presenter_vtbl;
 
 /* Called by the scene before positioning at each tick of a surface, with the frame's time (world
@@ -180,6 +184,11 @@ typedef struct ax_rt_counters {
 
 /* Scene side, or any thread once the scene thread stopped. */
 AX_API void ax_rt_get_counters(ax_runtime rt, ax_rt_counters *out);
+
+/* Whether something under the surface's root animated at the scene's last tick (decision 95):
+ * while it does, the surface needs every frame; otherwise only frames with new content, and it
+ * rests without frames. Any thread. */
+AX_API bool ax_rt_surface_animating(ax_runtime rt, uint32_t surface);
 
 AX_EXTERN_C_END
 

@@ -304,7 +304,13 @@ static void hl_destroy_render(void *self)
 }
 
 static const ax_rt_presenter_vtbl k_presenter = {
-    sizeof(ax_rt_presenter_vtbl), hl_attach, hl_detach, hl_wait, hl_frame, hl_destroy_render};
+    sizeof(ax_rt_presenter_vtbl),
+    hl_attach,
+    hl_detach,
+    hl_wait,
+    hl_frame,
+    hl_destroy_render,
+    NULL /* a virtual display: it presents every refresh (decision 95) */};
 
 /* ---- creation -------------------------------------------------------------------------------- */
 

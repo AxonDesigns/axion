@@ -18,6 +18,14 @@ static ax_window_impl *presenter_window(ax_surface surface, const char *fn)
     return w;
 }
 
+void ax_surface_request_commit(ax_surface surface)
+{
+    ax_window_impl *w = ax__window_from_handle(surface.h);
+    if (w != NULL) {
+        ax__window_request_commit(w);
+    }
+}
+
 ax_result ax_surface_begin_frame(ax_surface surface, ax_frame_target *frame)
 {
     ax_window_impl *w;
@@ -116,6 +124,14 @@ ax_result ax_surface_prepare_commit(ax_surface surface, const ax_frame_target *f
     }
     ax_atomic_store_u32(&w->presenting, 0, AX_MO_RELEASE);
     return r;
+}
+
+void ax_surface_end_frame(ax_surface surface)
+{
+    ax_window_impl *w = ax__window_from_handle(surface.h);
+    if (w != NULL) {
+        ax_atomic_store_u32(&w->presenting, 0, AX_MO_RELEASE);
+    }
 }
 
 ax_result ax_surface_commit_failed(ax_surface surface)
