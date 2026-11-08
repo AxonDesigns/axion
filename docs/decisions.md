@@ -93,15 +93,15 @@ new entry that points back to the old one.
 | 77  | The runtime, the frame's order and the single thread     | Approved       |
 | 78  | The scene and render threads; vsync on the render thread | Deviation      |
 | 79  | The cooperative mode's tests in Node                     | Approved       |
-| 80  | Job priorities: frame and background                     | Implementation |
-| 81  | `ax_render_soft`: the software renderer and determinism  | Implementation |
-| 82  | Golden images: PNG in the repository, updated on purpose | Implementation |
-| 83  | GPU renderers against the software reference             | Implementation |
-| 84  | CPU presentation; ax_render_soft in windows; fallback    | Implementation |
-| 85  | The headless host and its C testing API                  | Implementation |
-| 86  | Images byte-identical on every platform: the CI job      | Implementation |
-| 87  | Reference measurements: ax_render_soft on m1_nodes       | Implementation |
-| 88  | `AX_ERR_TIMEOUT` and `AX_ERR_IO`                         | Implementation |
+| 80  | Job priorities: frame and background                     | Approved       |
+| 81  | `ax_render_soft`: the software renderer and determinism  | Approved       |
+| 82  | Golden images: PNG in the repository, updated on purpose | Approved       |
+| 83  | GPU renderers against the software reference             | Approved       |
+| 84  | CPU presentation; ax_render_soft in windows; fallback    | Approved       |
+| 85  | The headless host and its C testing API                  | Approved       |
+| 86  | Images byte-identical on every platform: the CI job      | Approved       |
+| 87  | Reference measurements: ax_render_soft on m1_nodes       | Approved       |
+| 88  | `AX_ERR_TIMEOUT` and `AX_ERR_IO`                         | Approved       |
 
 ---
 
