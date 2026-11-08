@@ -47,7 +47,7 @@ The layers stack strictly downward: each module calls only the layers beneath it
 
 - Base depends only on the C standard library and the OS threading primitives it wraps (pthreads, Win32); Platform depends only on Base; GPU depends on Base and on Platform's internal surface handles.
 - Text depends only on Base plus the OS font APIs it calls directly (DirectWrite, Core Text, fontconfig, Canvas 2D on the web), never on Platform, so Core can use it for measurement and renderers for glyph rasterization.
-- Core produces Render IR snapshots and renderers consume them. Neither includes the other's headers, which is what makes renderers interchangeable.
+- Core produces Render IR snapshots and renderers consume them. Neither includes the other's headers, which is what makes renderers interchangeable. Runtime wires them together: it depends on Core and the Render IR and reaches surfaces and renderers only through a presenter interface, so its single-threaded mode builds without Platform (the web, tests), while the platform presenter builds with it (decision 77).
 - Kit is built only on Core's public C API, the same API the bindings use, so anything a built-in component does, an app can do too.
 - Bindings and apps touch only the stable C ABI, never internal headers.
 - Every module has two header levels: the stable ABI in `<module>/include/axion/`, with opaque types, and an internal SDK in `<module>/include/axion/<module>/` that only other runtime modules use, where types such as arenas, pools and mutexes are embeddable structs.
@@ -58,16 +58,16 @@ Each thread owns its data outright, and only queues and immutable snapshots cros
 
 &#91;embedded content: Threads and what crosses between them in one frame\]
 
-The vsync from the main thread starts each scene frame; the scene thread never waits on the app thread, and the render thread always draws the newest snapshot.
+The vsync starts each scene frame. It reaches whichever thread the platform delivers it to: on Wayland the render thread, which asks the scene for frame N+1 with its predicted present time as soon as it presents frame N (decision 78); the scene thread never waits on the app thread, and the render thread always draws the newest snapshot.
 
 **Thread roles**
 
 | Thread | Owns | Does each frame | Never |
 | --- | --- | --- | --- |
-| Main | OS windows and the event pump | Forwards input and vsync; creates windows (required on macOS, iOS and Android) | Runs app code or layout |
+| Main | OS windows and the event pump | Forwards input, and the vsync where the platform delivers it to this thread (CADisplayLink, Choreographer); creates windows (required on macOS, iOS and Android) | Runs app code or layout |
 | App | The language VM and app state | Runs callbacks, builds and commits transactions | Touches scene or GPU state |
 | Scene | Retained tree, styles, layout, animations, gesture state | Applies transactions, handles input, lays out, animates, records the Render IR | Waits on the app thread |
-| Render | GPU device, pipelines, atlases, swap chains | Encodes the render graph, submits, presents | Mutates the scene |
+| Render | GPU device, pipelines, atlases, swap chains | Waits on every surface's vsync at once (on Wayland), encodes the render graph, submits, presents, and asks the scene for the next frame | Mutates the scene |
 | Workers | Nothing persistent | Shaping, glyph rasterization, image decode, tessellation | Blocks on another thread |
 
 **One frame, step by step**
@@ -165,7 +165,7 @@ The platform layer separates three ideas the rest of the system never confuses: 
 | Hosted texture | Host | Host's `WGPUDevice` + `WGPUTexture` | Host injects events in surface coordinates | Game engines, 3D tools, in-world UI |
 | Offscreen | Caller | AXION-created texture or CPU image | Synthetic events | Tests, thumbnails, server-side rendering |
 
-In every hosted mode the host implements a small `ax_host` vtable: a clock, a "request frame" callback, and event injection. The host may drive frames itself with `ax_host_frame(surface, target_time)` instead of letting AXION run its threads.
+In every hosted mode the host implements a small `ax_host` vtable: a clock, a "request frame" callback, and event injection. The host may drive frames itself with `ax_host_frame(runtime, root, target_time)`, naming the surface by its root until hosted backends exist (decision 77), instead of letting AXION run its threads.
 
 **Backends**: Win32; AppKit; Wayland (primary) and X11 on Linux; Android (GameActivity or a plain `SurfaceView`); UIKit with `CAMetalLayer`; the web (a `<canvas>` plus DOM events through Emscripten).
 
@@ -1360,6 +1360,7 @@ axion/
   text/          itemize, shape cache, line layout, atlases, fallback, emoji
   vector/        ThorVG integration, SVG and Lottie nodes, icon atlas
   core/          node store, transactions, style, layout, animation, gestures, scrolling, virtual layouts, AXGL physics runtime, hit test, a11y tree
+  runtime/       scene and render threads, cooperative scheduler, ax_host_frame, presenters (wires core, renderers and platform)
   kit/           headless components, navigator and router, heroes, view transitions
   plugin/        plugin ABI, registry, extension points, platform-view host
   plugins/       first-party plugins: platform_services/ scene3d/ render_gl/ video/
@@ -1374,7 +1375,7 @@ axion/
 **Milestones**
 
 1. **M0, skeleton**: base, one desktop platform backend, `ax_gpu` clearing a window, the Render IR, and rounded rects. Exit: a window resizes smoothly at the display's refresh rate. Done on Nov 7, 2026, with the Wayland backend, measured on KWin 6.8 with an NVIDIA GPU: at the refresh rate when still on 72 Hz and 260 Hz monitors; when resizing, 0–0.3 missed vblanks a second at 72 Hz and a mean of 4.8 at 260 Hz (issue #2).
-2. **M1, the thread split**: node store, transactions, the app/scene/render pipeline, flex layout, implicit animations, Latin text (shaping plus atlas), the software renderer for golden tests, the headless host, and the accessibility tree, with AccessKit's iOS and web coverage confirmed. Exit: an app thread blocked for 500 ms does not drop animation frames. Carried over from M0: the job system; resizing at 260 Hz within 1 missed vblank a second (issue #2); the blend-space decision, taken with text (issue #4); and re-measuring the resize handshake's bound with real layout and text.
+2. **M1, the thread split**: node store, transactions, the app/scene/render pipeline, flex layout, implicit animations, Latin text (shaping plus atlas), the software renderer for golden tests, the headless host, and the accessibility tree, with AccessKit's iOS and web coverage confirmed. Exit: an app thread blocked for 500 ms does not drop animation frames. Carried over from M0: the job system; resizing at 260 Hz within 1 missed vblank a second (issue #2); the blend-space decision, taken with text (issue #4); and re-measuring the resize handshake's bound with real layout and text. Progress: the node store and transactions (PR #6, decisions 60–71) and the thread split (PR #8, decisions 74–79) are done. Pending before M2: zero frames at rest, so a window presents only while the scene has new content or something animates (decision 78).
 3. **M2, interaction**: pointer and keyboard input, gesture arena, the scroll engine (wheel smoothing, physics presets, overscroll) and virtualized lists, the first headless components, the C# binding, HMR for C# and stylesheets, the automation protocol with the C# testing API, and the accessibility bridge on the first platform. Exit: a styled settings screen built entirely in C# and edited live without restarting, and fully usable with a screen reader and keyboard.
 4. **M3, depth**: full text (bidi, fallback, emoji, IME, TextField), AXGL with fill and backdrop shaders, AXGL scroll physics, SVG, the full windowing API (custom chrome, hit-test regions, system backdrops, multi-window, and layer surfaces with the Wayland pieces they depend on: `wl_output` tracking to choose an output, and `xdg_popup` for menus from a layer surface through `zwlr_layer_surface_v1.get_popup`), accessibility bridges on all desktop platforms, the plugin system with the first-party platform-services plugin, native drag and drop within and between windows and apps (this milestone builds the transient overlay window that M4's cross-window heroes reuse), and the MCP server. Exit: a chat app with mixed-script text and frosted panels.
 5. **M4, motion and reach**: layout animations, navigator with deep links and URL schemes, heroes, view transitions, Lottie playback; Android and iOS ports, each shipping with its accessibility bridge. Exit: the gallery-to-detail hero demo running on phones with an interactive back gesture.

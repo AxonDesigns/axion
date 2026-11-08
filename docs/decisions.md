@@ -2928,8 +2928,7 @@ through a per-role function.
   frame rate; argument errors), `wayland.window.event_notify_is_called_when_events_are_queued`
   (called for RESIZED and CLOSE_REQUESTED, not after clearing).
 
-**Status.** Implementation, pending the owner's approval (part of the approved plan for the
-thread split).
+**Status.** Approved by the owner.
 
 ## 75. Events to the app thread, `on_presented`, the clock
 
@@ -2995,8 +2994,7 @@ thread split).
 The rules on which windows hold a transaction back (hidden, closed, visible again) belong to the
 pipeline and are tested with it.
 
-**Status.** Implementation, pending the owner's approval (part of the approved plan; the statuses,
-the window rules and keeping rejections in their own ring were the owner's adjustments).
+**Status.** Approved by the owner.
 
 ## 76. Positioning, the layer rule and incremental recording
 
@@ -3076,8 +3074,7 @@ scheduler runs it.
     promotion;
   - argument errors for window roots.
 
-**Status.** Implementation, pending the owner's approval (part of the approved plan; sticky
-promotion, its demotion note and the include test were the owner's adjustments).
+**Status.** Approved by the owner.
 
 ## 77. The runtime, the frame's order and the single thread
 
@@ -3169,8 +3166,7 @@ stage functions run in order on one thread through a cooperative scheduler, for 
     closed window stops holding back;
   - argument errors.
 
-**Status.** Implementation, pending the owner's approval (part of the approved plan; the
-deadline's note on the world-wide queue was the owner's).
+**Status.** Approved by the owner.
 
 ## 78. The scene and render threads; vsync on the render thread
 
@@ -3298,8 +3294,8 @@ surface from one render thread. The owner asked for:
       - The test stays as a guard: a pipeline that added latency of its own would fall behind
         M0's loop on any machine.
 
-**Status.** Deviation (the vsync), recorded as the owner asked; the rest Implementation, pending
-the owner's approval.
+**Status.** Deviation (the vsync reaches the render thread), approved by the owner; the rest
+approved.
 
 ## 79. The cooperative mode's tests in Node
 
@@ -3325,4 +3321,4 @@ cooperative mode that runs there in CI, for example core's tests in Node.
 - base's tests stay out for now: many of them create threads without the guard. They join when
   someone needs them on the web.
 
-**Status.** Implementation, pending the owner's approval (part of the approved plan).
+**Status.** Approved by the owner.
