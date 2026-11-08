@@ -90,6 +90,10 @@ ax_result ax_text_system_create(const ax_text_system_desc *desc, ax_text_system 
     ts->glyph_budget = desc != NULL && desc->glyph_cache_bytes > 0 ? desc->glyph_cache_bytes
                                                                    : (size_t)16u << 20;
     tx_glyphs_init(ts);
+    {
+        ax_job_counter zero = AX_JOB_COUNTER_INIT;
+        ts->bg_counter = zero;
+    }
     *out = ts;
     return AX_OK;
 }
@@ -345,7 +349,8 @@ ax_result ax_text_match_font(ax_text_system *ts, const ax_font_query *query, ax_
     ax_mutex_lock(&ts->fonts_mutex);
     for (i = 0; i < ts->match_count; ++i) {
         const tx_match *m = &ts->matches[i];
-        if (m->family_len == q.family.len && memcmp(m->family, q.family.ptr, q.family.len) == 0 &&
+        if (m->family_len == q.family.len &&
+            (q.family.len == 0 || memcmp(m->family, q.family.ptr, q.family.len) == 0) &&
             m->weight == q.weight && m->width == q.width && m->style == q.style) {
             *out = m->font;
             ax_mutex_unlock(&ts->fonts_mutex);
@@ -386,7 +391,9 @@ ax_result ax_text_match_font(ax_text_system *ts, const ax_font_query *query, ax_
     }
     if (*out != 0 && ts->match_count < TX_MAX_MATCHES) {
         tx_match *m = &ts->matches[ts->match_count++];
-        memcpy(m->family, q.family.ptr, q.family.len);
+        if (q.family.len > 0) {
+            memcpy(m->family, q.family.ptr, q.family.len);
+        }
         m->family[q.family.len] = '\0';
         m->family_len = (uint32_t)q.family.len;
         m->weight = q.weight;

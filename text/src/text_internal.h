@@ -72,6 +72,8 @@ void tx_cache_release(tx_cache *c, tx_entry *e);
 uint32_t tx_cache_evict(tx_cache *c, size_t target, bool (*evictable)(const tx_entry *, void *),
                         void *arg, uint64_t *refused);
 size_t tx_cache_bytes(tx_cache *c);
+/* Charges `bytes` more to an entry the cache holds (a glyph's pixels, known once rasterized). */
+void tx_cache_add_bytes(tx_cache *c, tx_entry *e, size_t bytes);
 
 uint64_t tx_hash_bytes(uint64_t h, const void *data, size_t size);
 #define TX_HASH_SEED 0xcbf29ce484222325ull
@@ -151,6 +153,7 @@ struct ax_text_system {
     struct tx_rasterizer *raster_free;
     struct tx_rasterizer *raster_all;
     ax_atomic_u32 background_pending;
+    ax_job_counter bg_counter; /* every background batch's: the system outlives its jobs */
     void (*ready_fn)(void *user);
     void *ready_user;
     ax_job_system *last_jobs;

@@ -255,3 +255,14 @@ uint32_t tx_cache_evict(tx_cache *c, size_t target, bool (*evictable)(const tx_e
     }
     return evicted;
 }
+
+void tx_cache_add_bytes(tx_cache *c, tx_entry *e, size_t bytes)
+{
+    tx_shard *s = shard_of(c, e->hash);
+    ax_mutex_lock(&s->mutex);
+    e->bytes += bytes;
+    if (e->in_cache) {
+        s->bytes += bytes;
+    }
+    ax_mutex_unlock(&s->mutex);
+}
