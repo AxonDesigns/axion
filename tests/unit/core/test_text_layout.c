@@ -553,3 +553,113 @@ AX_TEST(text_under_a_changing_scale_rasterizes_again_once_it_settles)
     ax_ir_builder_deinit(&b);
     ax_world_destroy(w);
 }
+
+/* The x of the first rect item whose color has red r (in the root's layer space when no layer is
+ * between), from a snapshot. */
+static bool rect_x(const ax_render_ir *ir, float red, float *out)
+{
+    uint32_t i;
+    for (i = 0; i < ir->layer_count; ++i) {
+        const ax_ir_layer *l = ax_ir_layer_at(ir, i);
+        ax_ir_item_iter it = ax_ir_items(ir, l);
+        const ax_ir_item_header *h;
+        while ((h = ax_ir_item_next(&it)) != NULL) {
+            if (h->type == AX_IR_ITEM_RECT) {
+                ax_ir_rect_item r;
+                memcpy(&r, h, sizeof r);
+                if (r.color.r == red) {
+                    *out = r.rect.x + l->transform.tx; /* the child is in its parent's layer */
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+/* The user's rule: an animation ends where pixel snapping puts the node at rest, so nothing jumps
+ * when it stops. A parent's resize (the resize preset) lays its child out unrounded each frame;
+ * the child carries the target's rounding offset, so the last animated frame and the frame at rest
+ * agree, here at the 1.325 scale where rounding offsets are not zero. */
+AX_TEST(a_resize_ends_on_the_pixel_grid_without_a_jump)
+{
+    static manual_clock clock = {1000 * MS};
+    ax_world w = make_clocked_world(&clock);
+    ax_ir_builder b;
+    ax_txn *t;
+    ax_node root, parent, child;
+    const ax_render_ir *ir;
+    uint64_t now = 1000 * MS;
+    float x = 0.0f, last = 0.0f, rest = 0.0f;
+    uint32_t frames = 0;
+    AX_REQUIRE(!AX_HANDLE_IS_NULL(w));
+    ax_ir_builder_init(&b, ax_default_allocator());
+    t = ax_txn_begin(w);
+    root = ax_txn_create(t, AX_NODE_VIEW);
+    parent = ax_txn_create(t, AX_NODE_VIEW);
+    child = ax_txn_create(t, AX_NODE_VIEW);
+    ax_txn_set_u32(t, root, AX_PROP_ALIGN_ITEMS, AX_ALIGN_FLEX_START);
+    ax_txn_set_dimension(t, parent, AX_PROP_WIDTH, pt(200.0f));
+    ax_txn_set_dimension(t, parent, AX_PROP_HEIGHT, pt(40.0f));
+    ax_txn_set_u32(t, parent, AX_PROP_FLEX_DIRECTION, AX_FLEX_DIRECTION_ROW);
+    ax_txn_set_u32(t, parent, AX_PROP_JUSTIFY_CONTENT, AX_JUSTIFY_CENTER);
+    ax_txn_set_color(t, parent, AX_PROP_BACKGROUND_COLOR, ax_rgba_from_srgb(0.0f, 0.0f, 1.0f, 1.0f));
+    ax_txn_set_dimension(t, child, AX_PROP_WIDTH, pt(50.3f));
+    ax_txn_set_dimension(t, child, AX_PROP_HEIGHT, pt(20.0f));
+    ax_txn_set_color(t, child, AX_PROP_BACKGROUND_COLOR, ax_rgba_from_srgb(1.0f, 0.0f, 0.0f, 1.0f));
+    ax_txn_append_child(t, root, parent);
+    ax_txn_append_child(t, parent, child);
+    AX_REQUIRE(ax_txn_commit(t, NULL) == AX_OK);
+    clock.now = now;
+    (void)ax_world_apply_pending(w, now);
+    (void)ax_world_set_root_viewport(w, root, 400.0f, 300.0f, 1.325f);
+    (void)ax_world_position(w);
+    (void)ax_world_animate(w, now);
+    ax_world_record_collect(w);
+    ax_ir_builder_begin(&b, 400.0f, 300.0f, now, ax_color_make(1, 1, 1, 1));
+    (void)ax_world_record_root(w, root, &b);
+    (void)ax_ir_builder_end(&b, &ir);
+    ax_scene_clear_dirty(ax_world_scene(w));
+
+    t = ax_txn_begin(w);
+    ax_txn_set_dimension(t, parent, AX_PROP_WIDTH, pt(261.0f)); /* the default spring */
+    AX_REQUIRE(ax_txn_commit(t, NULL) == AX_OK);
+    for (;;) {
+        now += 16 * MS;
+        clock.now = now;
+        (void)ax_world_apply_pending(w, now);
+        (void)ax_world_set_root_viewport(w, root, 400.0f, 300.0f, 1.325f);
+        (void)ax_world_position(w);
+        (void)ax_world_animate(w, now);
+        ax_world_record_collect(w);
+        ax_ir_builder_begin(&b, 400.0f, 300.0f, now, ax_color_make(1, 1, 1, 1));
+        (void)ax_world_record_root(w, root, &b);
+        (void)ax_ir_builder_end(&b, &ir);
+        ax_scene_clear_dirty(ax_world_scene(w));
+        AX_REQUIRE(rect_x(ir, 1.0f, &x));
+        if (!ax_world_root_animating(w, root)) {
+            rest = x;
+            break;
+        }
+        last = x;
+        frames++;
+        AX_REQUIRE(frames < 200);
+    }
+    {
+        /* At rest: the child's rounded frame, on the 1.325 grid. */
+        const ax_scene *s = ax_world_scene(w);
+        const ax_rect pf = s->store.layout[ax_node_store_row(&s->store, parent)].frame;
+        const ax_rect cf = s->store.layout[ax_node_store_row(&s->store, child)].frame;
+        const float device = (pf.x + cf.x) * 1.325f;
+        AX_CHECK_NEAR_F(rest, pf.x + cf.x, 0.0001f);
+        AX_CHECK_NEAR_F(device, (float)(int32_t)(device + 0.5f), 0.001f);
+    }
+    /* The last animated frame is where the rest frame is: the spring's last step (under a tenth of
+     * a device pixel), not the rounding offset (up to half a pixel). */
+    AX_CHECK(frames > 5);
+    if (!(fabsf(last - rest) * 1.325f < 0.1f)) {
+        ax_test_fail(__FILE__, __LINE__, "last %.4f rest %.4f frames %u", (double)last, (double)rest, frames);
+    }
+    ax_ir_builder_deinit(&b);
+    ax_world_destroy(w);
+}

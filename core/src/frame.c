@@ -874,9 +874,17 @@ ax_result ax_world_record_root(ax_world world, ax_node root, ax_ir_builder *b)
                 const ax_rect target = s->layout[row].frame;
                 ax_rect base = target;
                 if (top->in_present) {
+                    /* The presentation relayout is not rounded (decision 90), but it carries the
+                     * target's own rounding offset: when the resize ends (presentation size =
+                     * target size) the node is exactly at its rounded target frame, so nothing
+                     * jumps when the animation stops. During it, the offset is constant and the
+                     * motion stays smooth. */
                     const ax_node_layout *pb = &f->pbox[row];
-                    base = ax_rect_make(pb->pos[AX_EDGE_LEFT], pb->pos[AX_EDGE_TOP], pb->measured_w,
-                                        pb->measured_h);
+                    const ax_node_layout *tl = &s->layout[row];
+                    base = ax_rect_make(pb->pos[AX_EDGE_LEFT] + (target.x - tl->pos[AX_EDGE_LEFT]),
+                                        pb->pos[AX_EDGE_TOP] + (target.y - tl->pos[AX_EDGE_TOP]),
+                                        pb->measured_w + (target.w - tl->measured_w),
+                                        pb->measured_h + (target.h - tl->measured_h));
                     pr.frame.x += base.x - target.x;
                     pr.frame.y += base.y - target.y;
                     pr.frame.w = base.w + (pr.frame.w - target.w);
