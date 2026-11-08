@@ -328,6 +328,15 @@ static ax_result set_one(ax_scene *scene, ax_node node, uint32_t row, const ax_p
         dst = column_value(&scene->store, row, d);
     }
     AX_ASSERT(dst != NULL);
+    if (d->stored_u8) {
+        uint8_t byte = (uint8_t)value->u32; /* checked: at most the enumeration's last value */
+        if (*dst == byte) {
+            return AX_OK;
+        }
+        *dst = byte;
+        mark_effect(scene, ax_handle_slot(node.h), d->effect);
+        return AX_OK;
+    }
     if (memcmp(dst, value, size) == 0) {
         return AX_OK; /* unchanged: nothing to mark */
     }
@@ -379,6 +388,10 @@ static void get_one(const ax_scene *scene, ax_node node, uint32_t row, const ax_
         const ax_value *stored =
             (const ax_value *)ax_node_store_get_component(&scene->store, node, d->component);
         *out = stored != NULL ? *stored : d->default_value;
+        return;
+    }
+    if (d->stored_u8) {
+        out->u32 = *column_value(&scene->store, row, d);
         return;
     }
     memcpy(out, column_value(&scene->store, row, d), value_size(d->type));

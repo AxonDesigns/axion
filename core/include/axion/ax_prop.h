@@ -30,11 +30,55 @@ typedef uint32_t ax_prop;
 enum {
     AX_PROP_INVALID = 0,
 
-    /* Layout: size and position (absolute insets). Flex arrives at 0x0110, text at 0x0400. */
-    AX_PROP_WIDTH = 0x0101,  /* dimension */
-    AX_PROP_HEIGHT = 0x0102, /* dimension */
-    AX_PROP_LEFT = 0x0103,   /* dimension */
-    AX_PROP_TOP = 0x0104,    /* dimension */
+    /* Layout: the box model, common to every layout protocol (decision 89). */
+    AX_PROP_WIDTH = 0x0101,        /* dimension */
+    AX_PROP_HEIGHT = 0x0102,       /* dimension */
+    AX_PROP_LEFT = 0x0103,         /* dimension: inset; AUTO = not set */
+    AX_PROP_TOP = 0x0104,          /* dimension: inset */
+    AX_PROP_RIGHT = 0x0105,        /* dimension: inset */
+    AX_PROP_BOTTOM = 0x0106,       /* dimension: inset */
+    AX_PROP_MIN_WIDTH = 0x0107,    /* dimension; AUTO = no minimum */
+    AX_PROP_MIN_HEIGHT = 0x0108,   /* dimension */
+    AX_PROP_MAX_WIDTH = 0x0109,    /* dimension; AUTO = no maximum */
+    AX_PROP_MAX_HEIGHT = 0x010A,   /* dimension */
+    AX_PROP_POSITION = 0x010B,     /* u32, ax_position */
+    AX_PROP_DISPLAY = 0x010C,      /* u32, ax_display: the layout protocol of the children */
+    AX_PROP_OVERFLOW = 0x010D,     /* u32, ax_overflow */
+    AX_PROP_ASPECT_RATIO = 0x010E, /* f32, width / height; 0 = none */
+    AX_PROP_BOX_SIZING = 0x010F,   /* u32, ax_box_sizing */
+
+    /* Layout: flex (the defaults are Yoga's: column, shrink 0, align-content flex-start). */
+    AX_PROP_FLEX_DIRECTION = 0x0110,  /* u32, ax_flex_direction */
+    AX_PROP_FLEX_WRAP = 0x0111,       /* u32, ax_flex_wrap */
+    AX_PROP_FLEX_GROW = 0x0112,       /* f32, >= 0 */
+    AX_PROP_FLEX_SHRINK = 0x0113,     /* f32, >= 0 */
+    AX_PROP_FLEX_BASIS = 0x0114,      /* dimension; AUTO = the item's size */
+    AX_PROP_JUSTIFY_CONTENT = 0x0115, /* u32, ax_justify */
+    AX_PROP_ALIGN_ITEMS = 0x0116,     /* u32, ax_align */
+    AX_PROP_ALIGN_SELF = 0x0117,      /* u32, ax_align (AUTO: the parent's align-items) */
+    AX_PROP_ALIGN_CONTENT = 0x0118,   /* u32, ax_align */
+    AX_PROP_COLUMN_GAP = 0x0119,      /* dimension: between columns (along a row); AUTO = 0 */
+    AX_PROP_ROW_GAP = 0x011A,         /* dimension: between rows */
+    AX_PROP_GAP = 0x011B,             /* shorthand: column and row gap */
+    /* 0x011C-0x011F reserved for grid's box alignment (justify-items, justify-self). */
+
+    /* Layout: margins (AUTO = an auto margin), padding (AUTO = 0) and border widths. */
+    AX_PROP_MARGIN_LEFT = 0x0120,         /* dimension */
+    AX_PROP_MARGIN_TOP = 0x0121,          /* dimension */
+    AX_PROP_MARGIN_RIGHT = 0x0122,        /* dimension */
+    AX_PROP_MARGIN_BOTTOM = 0x0123,       /* dimension */
+    AX_PROP_MARGIN = 0x0124,              /* shorthand: the four margins */
+    AX_PROP_PADDING_LEFT = 0x0128,        /* dimension */
+    AX_PROP_PADDING_TOP = 0x0129,         /* dimension */
+    AX_PROP_PADDING_RIGHT = 0x012A,       /* dimension */
+    AX_PROP_PADDING_BOTTOM = 0x012B,      /* dimension */
+    AX_PROP_PADDING = 0x012C,             /* shorthand: the four paddings */
+    AX_PROP_BORDER_LEFT_WIDTH = 0x0130,   /* f32, points; not drawn yet */
+    AX_PROP_BORDER_TOP_WIDTH = 0x0131,    /* f32 */
+    AX_PROP_BORDER_RIGHT_WIDTH = 0x0132,  /* f32 */
+    AX_PROP_BORDER_BOTTOM_WIDTH = 0x0133, /* f32 */
+    AX_PROP_BORDER_WIDTH = 0x0134,        /* shorthand: the four border widths */
+    /* Grid starts at 0x0140. */
 
     /* Paint. */
     AX_PROP_BACKGROUND_COLOR = 0x0201,           /* color */
@@ -85,7 +129,8 @@ typedef enum ax_effect_class {
 typedef enum ax_unit {
     AX_UNIT_AUTO = 0,
     AX_UNIT_POINTS = 1, /* logical units */
-    AX_UNIT_PERCENT = 2 /* of the parent's matching size (once layout exists) */
+    AX_UNIT_PERCENT = 2 /* of the containing block: its width for widths, insets on the x axis,
+                         * margins and paddings (all four, as in CSS), its height otherwise */
 } ax_unit;
 
 /* A length for layout properties (WIDTH, LEFT...). value is ignored for AX_UNIT_AUTO. */
@@ -93,6 +138,68 @@ typedef struct ax_dimension {
     float value;
     uint32_t unit; /* ax_unit */
 } ax_dimension;
+
+/* ---- Values of the layout enums (AX_VALUE_U32). Fixed forever; new values are appended. ---- */
+
+/* How a node lays out its children. */
+typedef enum ax_display {
+    AX_DISPLAY_FLEX = 0, /* default */
+    AX_DISPLAY_NONE = 1  /* the node and its subtree take no space and are not drawn */
+    /* GRID arrives in M2. */
+} ax_display;
+
+typedef enum ax_position {
+    AX_POSITION_RELATIVE = 0, /* default: in the flow, offset by its insets */
+    AX_POSITION_ABSOLUTE = 1, /* out of the flow, placed by its insets in its containing block */
+    AX_POSITION_STATIC = 2    /* in the flow, insets ignored; not a containing block */
+} ax_position;
+
+typedef enum ax_overflow {
+    AX_OVERFLOW_VISIBLE = 0, /* default */
+    AX_OVERFLOW_HIDDEN = 1   /* children are clipped to the node's frame and corner radii */
+} ax_overflow;
+
+/* What WIDTH, HEIGHT and their minimums and maximums measure. */
+typedef enum ax_box_sizing {
+    AX_BOX_SIZING_BORDER_BOX = 0, /* default: padding and border included */
+    AX_BOX_SIZING_CONTENT_BOX = 1
+} ax_box_sizing;
+
+typedef enum ax_flex_direction {
+    AX_FLEX_DIRECTION_COLUMN = 0, /* default (Yoga's) */
+    AX_FLEX_DIRECTION_COLUMN_REVERSE = 1,
+    AX_FLEX_DIRECTION_ROW = 2,
+    AX_FLEX_DIRECTION_ROW_REVERSE = 3
+} ax_flex_direction;
+
+typedef enum ax_flex_wrap {
+    AX_FLEX_WRAP_NO_WRAP = 0, /* default */
+    AX_FLEX_WRAP_WRAP = 1,
+    AX_FLEX_WRAP_WRAP_REVERSE = 2
+} ax_flex_wrap;
+
+/* JUSTIFY_CONTENT: distribution along the main axis. */
+typedef enum ax_justify {
+    AX_JUSTIFY_FLEX_START = 0, /* default */
+    AX_JUSTIFY_CENTER = 1,
+    AX_JUSTIFY_FLEX_END = 2,
+    AX_JUSTIFY_SPACE_BETWEEN = 3,
+    AX_JUSTIFY_SPACE_AROUND = 4,
+    AX_JUSTIFY_SPACE_EVENLY = 5
+} ax_justify;
+
+/* ALIGN_ITEMS (default STRETCH), ALIGN_SELF (default AUTO), ALIGN_CONTENT (default FLEX_START). */
+typedef enum ax_align {
+    AX_ALIGN_AUTO = 0,
+    AX_ALIGN_FLEX_START = 1,
+    AX_ALIGN_CENTER = 2,
+    AX_ALIGN_FLEX_END = 3,
+    AX_ALIGN_STRETCH = 4,
+    AX_ALIGN_BASELINE = 5, /* laid out as FLEX_START until text gives nodes a baseline */
+    AX_ALIGN_SPACE_BETWEEN = 6,
+    AX_ALIGN_SPACE_AROUND = 7,
+    AX_ALIGN_SPACE_EVENLY = 8
+} ax_align;
 
 typedef struct ax_vec2f {
     float x, y;

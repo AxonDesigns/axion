@@ -123,10 +123,10 @@ AX_TEST(values_parents_and_errors)
     AX_CHECK(AX_HANDLE_IS_NULL(ax_mirror_parent(w, parent)));
     AX_CHECK_RESULT(ax_mirror_get_f32(w, child, AX_PROP_OPACITY, &f), AX_OK);
     AX_CHECK(f == 0.25f);
-    AX_CHECK_RESULT(ax_mirror_get_dimension(w, child, AX_PROP_LEFT, &d), AX_OK);
-    AX_CHECK(d.value == -3.0f && d.unit == AX_UNIT_POINTS);
-    AX_CHECK_RESULT(ax_mirror_get_dimension(w, child, AX_PROP_WIDTH, &d), AX_OK);
-    AX_CHECK_EQ_U(d.unit, AX_UNIT_AUTO);
+    /* Layout's inputs are not mirrored (decision 89): the frame computed from them is. */
+    AX_CHECK_RESULT(ax_mirror_get_dimension(w, child, AX_PROP_LEFT, &d), AX_ERR_UNSUPPORTED);
+    AX_CHECK(strstr(ax_last_error()->message.ptr, "ax_mirror_get_frame") != NULL);
+    AX_CHECK_RESULT(ax_mirror_get_dimension(w, child, AX_PROP_WIDTH, &d), AX_ERR_UNSUPPORTED);
     AX_CHECK_RESULT(ax_mirror_get_color(w, child, AX_PROP_BACKGROUND_COLOR, &c), AX_OK);
     AX_CHECK(c.a == 0.5f && c.r == 0.5f); /* premultiplied */
     AX_CHECK_RESULT(ax_mirror_get_transform(w, child, AX_PROP_TRANSFORM, &m), AX_OK);
@@ -304,8 +304,8 @@ AX_TEST(a_reader_never_sees_part_of_a_transaction)
     AX_REQUIRE(!AX_HANDLE_IS_NULL(ctx.world));
 
     /* Transaction k (commit time k) sets every node's opacity to value_of(k), moves the mover
-     * under group[k % 2], creates marker[k] with width k and removes the previous marker. One in
-     * seven ends with a stale handle and is rejected whole. */
+     * under group[k % 2], creates marker[k] with a top-left radius of k and removes the previous
+     * marker. One in seven ends with a stale handle and is rejected whole. */
     for (k = 1; k <= ATOM_TXNS; ++k) {
         clock.now = k;
         t = ax_txn_begin(ctx.world);
@@ -324,7 +324,7 @@ AX_TEST(a_reader_never_sees_part_of_a_transaction)
         }
         ax_txn_append_child(t, ctx.group[k % 2], ctx.mover);
         ctx.marker[k] = ax_txn_create(t, AX_NODE_VIEW);
-        ax_txn_set_dimension(t, ctx.marker[k], AX_PROP_WIDTH, points((float)k));
+        ax_txn_set_f32(t, ctx.marker[k], AX_PROP_CORNER_RADIUS_TOP_LEFT, (float)k);
         ax_txn_append_child(t, ctx.group[0], ctx.marker[k]);
         if (last_valid != 0) {
             ax_txn_remove(t, ctx.marker[last_valid]);
@@ -344,7 +344,7 @@ AX_TEST(a_reader_never_sees_part_of_a_transaction)
     while (seen < ATOM_TXNS && bad == 0) {
         uint64_t seq = ax_world_mirror_sync(ctx.world);
         uint32_t expect;
-        ax_dimension width;
+        float marker_value;
         ax_atomic_fetch_add_u32(&ctx.reads, 1, AX_MO_RELEASE);
         if (seq == 0) {
             ax_thread_yield();
@@ -365,9 +365,9 @@ AX_TEST(a_reader_never_sees_part_of_a_transaction)
         if (ax_mirror_parent(ctx.world, ctx.mover).h != ctx.group[expect % 2].h) {
             bad++;
         }
-        if (ax_mirror_get_dimension(ctx.world, ctx.marker[expect], AX_PROP_WIDTH, &width) !=
-                AX_OK ||
-            width.value != (float)expect) {
+        if (ax_mirror_get_f32(ctx.world, ctx.marker[expect], AX_PROP_CORNER_RADIUS_TOP_LEFT,
+                              &marker_value) != AX_OK ||
+            marker_value != (float)expect) {
             bad++;
         }
         for (k = 1; k < expect; ++k) {

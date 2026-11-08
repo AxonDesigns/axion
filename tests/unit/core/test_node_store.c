@@ -105,7 +105,9 @@ AX_TEST(create_gives_live_nodes_with_default_values)
     AX_REQUIRE(row == 0);
     AX_CHECK_EQ_U(f.store.kind[row], AX_NODE_VIEW);
     AX_CHECK_EQ_U(f.store.style[row].width.unit, AX_UNIT_AUTO);
-    AX_CHECK_EQ_U(f.store.style[row].left.unit, AX_UNIT_AUTO);
+    AX_CHECK_EQ_U(f.store.style[row].inset[AX_EDGE_LEFT].unit, AX_UNIT_AUTO);
+    AX_CHECK_EQ_U(f.store.style[row].margin[AX_EDGE_TOP].unit, AX_UNIT_POINTS);
+    AX_CHECK_EQ_U(f.store.style[row].flex_direction, AX_FLEX_DIRECTION_COLUMN);
     AX_CHECK(f.store.paint[row].background.a == 0.0f);
     AX_CHECK(f.store.paint[row].corner_radius[2] == 0.0f);
     AX_CHECK(f.store.composite[row].opacity == 1.0f);

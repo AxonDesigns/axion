@@ -52,16 +52,17 @@ struct ax_txn {
     struct ax_txn *next_all;  /* every object of the world, for teardown */
 };
 
-/* One node in a mirror copy (ax_mirror.h). Dead or unknown slots are zero. */
+/* One node in a mirror copy (ax_mirror.h). Dead or unknown slots are zero. Each entry is copied
+ * into three copies, so it holds only what the app reads back (decision 89, amending 69): the
+ * computed frame and the paint and composite values. Layout's inputs are not mirrored. */
 typedef struct mirror_node {
     uint64_t handle; /* the live node's handle; 0 when the slot holds none */
     uint64_t parent;
     uint32_t kind;
     uint32_t reserved;
-    ax_node_style style;
+    ax_rect frame;
     ax_node_paint paint;
     ax_node_composite composite;
-    ax_node_layout layout;
 } mirror_node;
 
 /* A published copy, indexed by slot. */

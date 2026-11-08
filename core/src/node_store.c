@@ -5,6 +5,7 @@
  * The node store: dense hot columns indexed by row, a slot table for stable handles, hierarchy
  * links by slot, and side components.
  */
+#include <math.h>
 #include <string.h>
 
 #include <axion/base/ax_assert.h>
@@ -228,8 +229,15 @@ static void init_row(ax_node_store *s, uint32_t slot, ax_node_kind kind)
     s->dirty[row] = 0;
     s->component_mask[row] = 0;
     l->parent = l->first_child = l->last_child = l->prev_sibling = l->next_sibling = AX_NODE_NONE;
-    memset(st, 0, sizeof *st); /* every dimension AX_UNIT_AUTO */
+    memset(st, 0, sizeof *st); /* every dimension AX_UNIT_AUTO, every enum its first value */
+    for (int e = 0; e < 4; ++e) {
+        st->margin[e].unit = AX_UNIT_POINTS; /* 0 points: AUTO is an auto margin */
+    }
+    st->flex_direction = AX_FLEX_DIRECTION_COLUMN; /* Yoga's defaults (decision 89) */
+    st->align_items = AX_ALIGN_STRETCH;
+    st->align_content = AX_ALIGN_FLEX_START;
     memset(&s->layout[row], 0, sizeof s->layout[row]);
+    s->layout[row].flex_basis = NAN;
     memset(p, 0, sizeof *p); /* transparent, square corners */
     c->transform = ax_affine2_identity();
     c->opacity = 1.0f;

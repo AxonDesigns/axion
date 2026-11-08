@@ -284,8 +284,8 @@ AX_TEST(recording_errors_are_sticky_and_nothing_is_queued)
         cases[1].expected = AX_ERR_INVALID_ARGUMENT;
         cases[2].what = "unknown core property";
         cases[2].expected = AX_ERR_INVALID_ARGUMENT;
-        cases[3].what = "percentage";
-        cases[3].expected = AX_ERR_UNSUPPORTED;
+        cases[3].what = "unknown enumeration value";
+        cases[3].expected = AX_ERR_INVALID_ARGUMENT;
         cases[4].what = "insert into itself";
         cases[4].expected = AX_ERR_INVALID_ARGUMENT;
         cases[5].what = "small transition";
@@ -308,13 +308,9 @@ AX_TEST(recording_errors_are_sticky_and_nothing_is_queued)
             case 2:
                 ax_txn_set_f32(t, n, 0x0777, 1.0f);
                 break;
-            case 3: {
-                ax_dimension d;
-                d.value = 50.0f;
-                d.unit = AX_UNIT_PERCENT;
-                ax_txn_set_dimension(t, n, AX_PROP_HEIGHT, d);
+            case 3:
+                ax_txn_set_u32(t, n, AX_PROP_ALIGN_ITEMS, 99u);
                 break;
-            }
             case 4:
                 ax_txn_append_child(t, n, n);
                 break;

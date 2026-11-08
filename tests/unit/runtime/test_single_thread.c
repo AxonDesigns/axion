@@ -305,19 +305,20 @@ AX_TEST(the_mirror_is_published_after_layout)
     static pipeline p;
     ax_txn *t;
     uint64_t seq = 0;
-    ax_dimension left;
+    float opacity = 0.0f;
     ax_rectf f;
     AX_REQUIRE(pipeline_start(&p));
     AX_REQUIRE(frame_at(&p, 100 * MS));
     t = ax_txn_begin(p.world);
     ax_txn_set_dimension(t, p.card, AX_PROP_LEFT, pt(60));
+    ax_txn_set_f32(t, p.card, AX_PROP_OPACITY, 0.5f);
     AX_REQUIRE(ax_txn_commit(t, &seq) == AX_OK);
     AX_REQUIRE(frame_at(&p, 132 * MS));
-    /* One sync shows the new value and the frame layout computed from it, together. */
+    /* One sync shows the transaction's values and the frame layout computed from it, together. */
     AX_CHECK_EQ_U(ax_world_mirror_sync(p.world), seq);
-    AX_REQUIRE(ax_mirror_get_dimension(p.world, p.card, AX_PROP_LEFT, &left) == AX_OK);
+    AX_REQUIRE(ax_mirror_get_f32(p.world, p.card, AX_PROP_OPACITY, &opacity) == AX_OK);
     AX_REQUIRE(ax_mirror_get_frame(p.world, p.card, &f) == AX_OK);
-    AX_CHECK(left.value == 60.0f);
+    AX_CHECK(opacity == 0.5f);
     AX_CHECK(f.x == 60.0f && f.y == 20.0f && f.w == 100.0f && f.h == 50.0f);
     AX_REQUIRE(ax_mirror_get_frame(p.world, p.root, &f) == AX_OK);
     AX_CHECK(f.w == 200.0f && f.h == 100.0f);

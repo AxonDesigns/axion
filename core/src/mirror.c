@@ -94,10 +94,9 @@ static void write_node(const ax_node_store *s, uint32_t slot, mirror_node *out)
     out->handle = ax_handle_make(slot, s->slots[slot].generation);
     out->parent = ax_node_store_handle(s, s->links[row].parent).h;
     out->kind = s->kind[row];
-    out->style = s->style[row];
+    out->frame = s->layout[row].frame;
     out->paint = s->paint[row];
     out->composite = s->composite[row];
-    out->layout = s->layout[row];
 }
 
 bool ax_world_publish_mirror(ax_world world)
@@ -209,9 +208,6 @@ static void read_builtin(const mirror_node *n, const ax_prop_desc *d, ax_value *
     size_t size = 0;
     memset(out, 0, sizeof *out);
     switch (d->storage) {
-    case AX_PROP_IN_STYLE:
-        base = (const unsigned char *)&n->style;
-        break;
     case AX_PROP_IN_PAINT:
         base = (const unsigned char *)&n->paint;
         break;
@@ -263,6 +259,12 @@ static ax_result get_value(ax_world world, ax_node node, ax_prop prop, ax_value_
         return ax_set_error(AX_ERR_INVALID_ARGUMENT,
                             "ax_mirror: property 0x%x is unknown or of another type",
                             (unsigned)prop);
+    }
+    if (d->effect == AX_EFFECT_LAYOUT) {
+        return ax_set_error(AX_ERR_UNSUPPORTED,
+                            "ax_mirror: %s is a layout input, which the mirror does not reflect; "
+                            "read the computed frame with ax_mirror_get_frame",
+                            d->name);
     }
     n = find(c, node);
     if (n == NULL) {
@@ -336,9 +338,9 @@ ax_result ax_mirror_get_frame(ax_world world, ax_node node, ax_rectf *out)
         return ax_set_error(AX_ERR_INVALID_HANDLE,
                             "ax_mirror: the node is not live in the latched publication");
     }
-    out->x = n->layout.frame.x;
-    out->y = n->layout.frame.y;
-    out->w = n->layout.frame.w;
-    out->h = n->layout.frame.h;
+    out->x = n->frame.x;
+    out->y = n->frame.y;
+    out->w = n->frame.w;
+    out->h = n->frame.h;
     return AX_OK;
 }

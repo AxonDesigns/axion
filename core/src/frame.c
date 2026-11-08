@@ -219,8 +219,9 @@ static void place(world_impl *w, uint32_t row)
         frame = ax_rect_make(0.0f, 0.0f, vr->width, vr->height);
     } else {
         const ax_node_style *st = &s->style[row];
-        frame = ax_rect_make(points_or_zero(st->left), points_or_zero(st->top),
-                             points_or_zero(st->width), points_or_zero(st->height));
+        frame = ax_rect_make(points_or_zero(st->inset[AX_EDGE_LEFT]),
+                             points_or_zero(st->inset[AX_EDGE_TOP]), points_or_zero(st->width),
+                             points_or_zero(st->height));
     }
     if (memcmp(&s->layout[row].frame, &frame, sizeof frame) != 0) {
         s->layout[row].frame = frame;
