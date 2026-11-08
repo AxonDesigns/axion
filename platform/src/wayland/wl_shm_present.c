@@ -127,7 +127,7 @@ ax_result ax_wl_cpu_acquire(ax_window_impl *w, uint32_t width, uint32_t height, 
         }
     }
     if (pick == NULL) {
-        return ax_set_error(AX_ERR_OUT_OF_MEMORY,
+        return ax_set_error(AX_ERR_TIMEOUT,
                             "ax_surface_cpu_acquire: every buffer is still held by the compositor");
     }
     if (pick->buffer == NULL) {

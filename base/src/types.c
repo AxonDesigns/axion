@@ -19,6 +19,8 @@ AX_STATIC_ASSERT(AX_ERR_DEVICE_LOST == 4, "ax_result values are ABI");
 AX_STATIC_ASSERT(AX_ERR_UNSUPPORTED == 5, "ax_result values are ABI");
 AX_STATIC_ASSERT(AX_ERR_ABI_MISMATCH == 6, "ax_result values are ABI");
 AX_STATIC_ASSERT(AX_ERR_INVALID_ARGUMENT == 7, "ax_result values are ABI");
+AX_STATIC_ASSERT(AX_ERR_TIMEOUT == 8, "ax_result values are ABI");
+AX_STATIC_ASSERT(AX_ERR_IO == 9, "ax_result values are ABI");
 AX_STATIC_ASSERT(sizeof(ax_result) == 4, "ax_result must be 32 bits");
 
 const char *ax_result_name(ax_result result)
@@ -40,6 +42,10 @@ const char *ax_result_name(ax_result result)
         return "AX_ERR_ABI_MISMATCH";
     case AX_ERR_INVALID_ARGUMENT:
         return "AX_ERR_INVALID_ARGUMENT";
+    case AX_ERR_TIMEOUT:
+        return "AX_ERR_TIMEOUT";
+    case AX_ERR_IO:
+        return "AX_ERR_IO";
     }
     return "AX_ERR_<unknown>";
 }

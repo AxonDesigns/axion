@@ -19,6 +19,7 @@
 
 #include "axion/headless/ax_png.h"
 
+#include <errno.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
@@ -936,13 +937,16 @@ ax_result ax_png_write_file(const char *path, const uint8_t *rgba, uint32_t widt
     f = fopen(path, "wb");
     if (f == NULL) {
         ax_png_free(NULL, data, size);
-        return ax_set_error(AX_ERR_INVALID_ARGUMENT, "ax_png_write_file: cannot create %s", path);
+        return ax_set_error(AX_ERR_IO, "ax_png_write_file: cannot create %s: %s", path,
+                            strerror(errno));
     }
     if (fwrite(data, 1, size, f) != size) {
-        r = ax_set_error(AX_ERR_INVALID_ARGUMENT, "ax_png_write_file: cannot write %s", path);
+        r = ax_set_error(AX_ERR_IO, "ax_png_write_file: cannot write %s: %s", path,
+                         strerror(errno));
     }
     if (fclose(f) != 0 && r == AX_OK) {
-        r = ax_set_error(AX_ERR_INVALID_ARGUMENT, "ax_png_write_file: cannot write %s", path);
+        r = ax_set_error(AX_ERR_IO, "ax_png_write_file: cannot write %s: %s", path,
+                         strerror(errno));
     }
     ax_png_free(NULL, data, size);
     return r;
@@ -957,11 +961,13 @@ ax_result ax_png_read_file(const ax_allocator *allocator, const char *path, ax_i
     ax_result r;
     memset(out, 0, sizeof *out);
     if (f == NULL) {
-        return ax_set_error(AX_ERR_INVALID_ARGUMENT, "ax_png_read_file: cannot open %s", path);
+        return ax_set_error(AX_ERR_IO, "ax_png_read_file: cannot open %s: %s", path,
+                            strerror(errno));
     }
     if (fseek(f, 0, SEEK_END) != 0 || (len = ftell(f)) < 0 || fseek(f, 0, SEEK_SET) != 0) {
         fclose(f);
-        return ax_set_error(AX_ERR_INVALID_ARGUMENT, "ax_png_read_file: cannot read %s", path);
+        return ax_set_error(AX_ERR_IO, "ax_png_read_file: cannot read %s: %s", path,
+                            strerror(errno));
     }
     data = (uint8_t *)ax_mem_alloc(a, (size_t)len + 1u, 1);
     if (data == NULL) {
@@ -971,7 +977,8 @@ ax_result ax_png_read_file(const ax_allocator *allocator, const char *path, ax_i
     if (fread(data, 1, (size_t)len, f) != (size_t)len) {
         fclose(f);
         ax_mem_free(a, data, (size_t)len + 1u);
-        return ax_set_error(AX_ERR_INVALID_ARGUMENT, "ax_png_read_file: cannot read %s", path);
+        return ax_set_error(AX_ERR_IO, "ax_png_read_file: cannot read %s: %s", path,
+                            strerror(errno));
     }
     fclose(f);
     r = ax_png_decode(a, data, (size_t)len, out);

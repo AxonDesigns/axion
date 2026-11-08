@@ -101,6 +101,7 @@ new entry that points back to the old one.
 | 85  | The headless host and its C testing API                  | Implementation |
 | 86  | Images byte-identical on every platform: the CI job      | Implementation |
 | 87  | Reference measurements: ax_render_soft on m1_nodes       | Implementation |
+| 88  | `AX_ERR_TIMEOUT` and `AX_ERR_IO`                         | Implementation |
 
 ---
 
@@ -3179,6 +3180,8 @@ stage functions run in order on one thread through a cooperative scheduler, for 
 
 ## 78. The scene and render threads; vsync on the render thread
 
+> Amended by decision 88: a removal the threads do not confirm in time returns `AX_ERR_TIMEOUT`.
+
 **Context.** The threaded mode runs decision 77's stages on a scene thread and presents every
 surface from one render thread. The owner asked for:
 - M0's render loop (wait_frame, acquire and render) moved from the example into the library,
@@ -3211,7 +3214,8 @@ surface from one render thread. The owner asked for:
   - Removing a surface waits, bounded by 1 s, for both threads to acknowledge it, so the
     window can then be destroyed. **If they do not confirm within 1 s** (a render thread stuck
     in the driver), `ax_rt_remove_surface` and `ax_runtime_remove_window` return
-    `AX_ERR_UNSUPPORTED`. The surface is then still in use, the render thread may still present
+    `AX_ERR_TIMEOUT` (`AX_ERR_UNSUPPORTED` until decision 88 added the code). The surface is then
+    still in use, the render thread may still present
     it, and its window must not be destroyed; the caller calls again until `AX_OK`. A retry
     queues nothing new and only waits again. Both headers say so (the owner's review). Test:
     `runtime.threads.a_removal_that_times_out_can_be_retried`, with a detach that stalls 1.5 s:
@@ -3483,6 +3487,8 @@ included; the window part comes with decision 83.
 
 ## 82. Golden images: PNG in the repository, updated only on purpose
 
+> Amended by decision 88: file errors are `AX_ERR_IO`.
+
 **Context.** The owner asked for golden PNGs in the repository, updated only with an explicit
 command and never in CI, with a failure uploading the difference image as an artifact; and for
 AXION's own PNG codec, whose deflate really compresses and whose inflate is tested against
@@ -3501,8 +3507,8 @@ corrupt input under ASan.
     (stored, fixed and dynamic Huffman blocks; inflate after zlib's reference decoder, puff), and
     checks every chunk CRC, the zlib header and Adler-32 and the exact length of the image data.
     Palette, 16-bit and interlaced images are `AX_ERR_UNSUPPORTED`; corrupt files
-    `AX_ERR_INVALID_ARGUMENT` (also for files that cannot be opened: the stable ABI has no I/O
-    error code, and this does not justify one);
+    `AX_ERR_INVALID_ARGUMENT`; a file that cannot be opened, read or written `AX_ERR_IO`, with the
+    path and the system's reason (decision 88; the first version used `AX_ERR_INVALID_ARGUMENT`);
   - PNG stores straight alpha. Renderers' premultiplied pixels are divided by alpha with integer
     rounding (`AX_PNG_PREMULTIPLIED`, `ax_rgba_unpremultiply`), lossless for opaque pixels.
   - Tests (`tests/unit/headless/test_png.c`, label `headless`): round trips; files written by
@@ -3560,7 +3566,7 @@ ax_render_wgpu into an RGBA8 texture and with ax_render_soft, and compares the t
   derivative path's scene, and the linear-blend diagnostic against the software renderer's
   (`AX_RENDER_SOFT_DIAG_LINEAR_BLEND`). Not compared, because ax_render_wgpu does not draw them
   yet: the zone plate behind nested rounded clips (it skips clipped layers), group opacity (it
-  approximates) and linear layers. Each joins when the GPU renderer draws it; the software
+  approximates) and linear layers. Each joins when the GPU renderer draws it (below); the software
   renderer's goldens cover them meanwhile. The fallback scene checks its counts only.
 - **Measured** (Debug builds; dE at the 99.9th percentile, mean dE, worst channel difference):
 
@@ -3579,9 +3585,20 @@ ax_render_wgpu into an RGBA8 texture and with ax_render_soft, and compares the t
   tests, and `compare-coverage` still compares their images with each other within 3/255.
 - decision 56's supersampled reference stays as a test of the software renderer itself.
 
+- **Who closes ax_render_wgpu's gaps against the reference** (proposed by the owner, to be
+  confirmed in the prompts document):
+  - **rect and rounded-rect clips:** M1's fourth prompt (flex), whose demos need them. Then the
+    clipped zone plate joins this comparison;
+  - **exact group opacity** (offscreen layers, with the render graph) and **linear layers** (the
+    sRGB view or an FP16 target per layer): M2 items. Until then the GPU renderer counts them
+    (`approximated`, and linear layers blend in sRGB space), and the comparison skips the scenes
+    that use them.
+
 **Status.** Implementation, pending the owner's approval.
 
 ## 84. CPU presentation in platform; ax_render_soft in windows; the fallback
+
+> Amended by decision 88: every buffer busy is `AX_ERR_TIMEOUT`.
 
 **Context.** The owner asked that in a window, as the last resort, the software renderer present
 through a CPU presentation interface in platform (wl_shm on Wayland) that the renderer uses
@@ -3595,8 +3612,10 @@ then software, unless the app pins one.
   the configure's acknowledgement, scale, frame callback, feedback) and commits the buffer, wholly
   damaged; `ax_surface_cpu_release` frees the surface's buffers. Three optional operations of the
   backend table; a backend without them reports `AX_ERR_UNSUPPORTED`.
-  - When every buffer is still held by the compositor, acquire returns `AX_ERR_OUT_OF_MEMORY`: the
-    frame is skipped and retried at the next one.
+  - When every buffer is still held by the compositor, acquire returns `AX_ERR_TIMEOUT` (decision
+    88): it does not wait, so none was free in the zero time allowed. The frame is skipped and
+    retried at the next one; nothing is lost. `AX_ERR_OUT_OF_MEMORY` stays for memory, and the
+    first version's use of it for busy buffers read as a real failure.
 - **Wayland** (`platform/src/wayland/wl_shm_present.c`): up to four buffers per window, each a
   memfd mapped once, its own `wl_shm_pool` and an ARGB8888 `wl_buffer` (B, G, R, A in memory on
   little-endian hosts, premultiplied as Wayland requires). They are created through a `wl_shm`
@@ -3631,6 +3650,8 @@ then software, unless the app pins one.
 **Status.** Implementation, pending the owner's approval.
 
 ## 85. The headless host and its C testing API
+
+> Amended by decision 88: not settling (and the other timeouts) is `AX_ERR_TIMEOUT`.
 
 **Context.** "Headless host, automation and MCP": a host that runs any app without a window or a
 GPU, with virtual surfaces of any size, scale, theme and reduce-motion, deterministic by default
@@ -3678,7 +3699,9 @@ and automation and MCP (M2, M3) are out of scope.
 - **`ax_headless_settle(max_frames)`** runs frames until `ax_world_last_applied_seq` reaches
   `ax_world_last_committed_seq` (new in `ax_txn.h`, stable, thread: app, and in the IDL) and every
   surface drew the newest snapshot recorded for it; 0 frames when nothing is pending;
-  `AX_ERR_UNSUPPORTED` when it does not settle within max_frames. Animations join the condition
+  `AX_ERR_TIMEOUT` when it does not settle within max_frames (decision 88). With threads,
+  `ax_headless_step` also returns `AX_ERR_TIMEOUT` when the frames do not come, and the GPU
+  renderer when its pipeline or a read-back does not complete in 30 s. Animations join the condition
   when they exist.
 - **Snapshots:** `ax_headless_capture` (a copy, premultiplied RGBA8), `ax_headless_write_png`
   (decision 82's codec), `ax_headless_dump_ir` (the text dump) and `ax_headless_save_ir` (the
@@ -3737,6 +3760,9 @@ Emscripten build.
   copies `process.env` into the program's environment before `main` (only in programs that read
   it). The web tests also link `-sNODERAWFS=1` (the host's files: goldens, artifacts) and
   `-sALLOW_MEMORY_GROWTH=1`.
+- **One Emscripten version.** CI's is pinned in `tools/ci/emsdk-version` (4.0.10), which the
+  workflow reads and the README's web section names, so local builds can match it (the owner's
+  review: a machine with 5.0.2 hid the difference above).
 - **Measured:** CI's Linux, macOS and Windows images were identical byte for byte (16 of 16), and
   equal to a local x86-64 build's and to the Emscripten build's in Node with both 4.0.10 and 5.0.2.
 - **TSan** now also runs the `render_soft` and `headless` labels (tiles on the job system, eight
@@ -3783,4 +3809,45 @@ frame. `bench_soft [workers]`.
   is always full), and each item is tested against every tile (no binning).
 
 **Status.** Implementation, pending the owner's approval.
+
+## 88. `AX_ERR_TIMEOUT` and `AX_ERR_IO`
+
+> Amends decisions 78, 82, 84 and 85.
+
+**Context.** Reviewing PR #9, the owner asked for two codes in the stable ABI, as decision 61 added
+`AX_ERR_INVALID_ARGUMENT`, and for their use where M1's code reported a timeout or a file error
+with another code: `AX_ERR_UNSUPPORTED` reads as "this build cannot do it",
+`AX_ERR_INVALID_ARGUMENT` as "this input is wrong", and `AX_ERR_OUT_OF_MEMORY` as a real failure.
+
+**Decision.**
+- **Appended to `ax_result`** (values are fixed forever, so they take the next numbers), with their
+  names in `ax_result_name`:
+  - `AX_ERR_TIMEOUT = 8`: what was waited for did not happen in time, or a resource is not free
+    now; trying again may succeed;
+  - `AX_ERR_IO = 9`: a file or stream could not be opened, read or written; `ax_last_error()` names
+    it and gives the system's reason.
+- **The IDL:** `bindings/idl/base.axidl` (new) describes base's `result` enum, which `core.axidl`
+  already imports; the rest of base's stable ABI (str, allocator, handle, the version) joins it
+  when the generator needs it.
+- **Where they are used now:**
+  - `ax_rt_remove_surface` and `ax_runtime_remove_window`: the threads did not confirm within 1 s
+    (`AX_ERR_TIMEOUT`, was `AX_ERR_UNSUPPORTED`; decision 78);
+  - `ax_headless_settle`: not settled within max_frames; with threads, `ax_headless_step` when the
+    frames do not come; the headless GPU renderer when its pipeline or a read-back does not
+    complete in 30 s (`AX_ERR_TIMEOUT`; decision 85);
+  - `ax_png_read_file` and `ax_png_write_file`: the file cannot be opened, read or written
+    (`AX_ERR_IO`, was `AX_ERR_INVALID_ARGUMENT`; decision 82);
+  - `ax_surface_cpu_acquire` with every buffer still held by the compositor (`AX_ERR_TIMEOUT`, was
+    `AX_ERR_OUT_OF_MEMORY`; decision 84). The owner offered a dedicated "skip this frame" status
+    instead; a code that says "not free now, try again" says exactly that without a second
+    channel, and the call simply does not wait (a zero timeout), so the renderer skips the frame.
+- **Unchanged:** `ax_world_wait_event` still returns `AX_OK` with no event when its timeout passes
+  (waiting without an event is its normal outcome, not a failure); `AX_ERR_UNSUPPORTED` stays where
+  a build or machine cannot do something (no threads, no GPU, no CPU presentation in a backend).
+- **Tests:** `base.types` pins both values and names; the removal that times out, settle with no
+  frames allowed, and reading or writing a PNG in a directory that does not exist expect the new
+  codes.
+
+**Status.** Implementation, pending the owner's approval (the owner asked for the codes and their
+uses).
 

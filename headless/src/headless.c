@@ -642,7 +642,7 @@ ax_result ax_headless_step(ax_headless *h, uint32_t count)
         }
         while (min_frames(h) < start + count) {
             if (ax_time_monotonic_ns() > limit) {
-                return ax_set_error(AX_ERR_UNSUPPORTED, "ax_headless_step: frames did not come");
+                return ax_set_error(AX_ERR_TIMEOUT, "ax_headless_step: frames did not come");
             }
             sleep_ns(h->desc.refresh_ns / 4u + 1u);
         }
@@ -709,7 +709,7 @@ ax_result ax_headless_settle(ax_headless *h, uint32_t max_frames, uint32_t *out_
                 break;
             }
             if (ax_time_monotonic_ns() > until) {
-                return ax_set_error(AX_ERR_UNSUPPORTED,
+                return ax_set_error(AX_ERR_TIMEOUT,
                                     "ax_headless_settle: not settled in %u "
                                     "frames' time",
                                     max_frames);
@@ -728,7 +728,7 @@ ax_result ax_headless_settle(ax_headless *h, uint32_t max_frames, uint32_t *out_
             if (out_frames != NULL) {
                 *out_frames = frames;
             }
-            return ax_set_error(AX_ERR_UNSUPPORTED, "ax_headless_settle: not settled in %u frames",
+            return ax_set_error(AX_ERR_TIMEOUT, "ax_headless_settle: not settled in %u frames",
                                 max_frames);
         }
         r = frame_all(h);

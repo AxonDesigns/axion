@@ -80,7 +80,7 @@ ax_result ax__hl_gpu_create(const ax_allocator *allocator, hl_gpu **out)
     }
     if (!ax_render_wgpu_ready(g->r, FORMAT)) {
         ax__hl_gpu_destroy(g);
-        return ax_set_error(AX_ERR_UNSUPPORTED, "ax_headless: the GPU pipeline is not ready");
+        return ax_set_error(AX_ERR_TIMEOUT, "ax_headless: the GPU pipeline was not ready in 30 s");
     }
     *out = g;
     return AX_OK;
@@ -171,8 +171,9 @@ ax_result ax__hl_gpu_draw(hl_gpu *g, const ax_render_ir *ir, uint32_t w, uint32_
         cb.callback = on_mapped;
         cb.userdata1 = &mapped;
         if (!ax_gpu_wait(g->gpu, wgpuBufferMapAsync(buf, WGPUMapMode_Read, 0, (size_t)bd.size, cb),
-                         &mapped.done, 30000000000ull) ||
-            mapped.status != WGPUMapAsyncStatus_Success) {
+                         &mapped.done, 30000000000ull)) {
+            r = ax_set_error(AX_ERR_TIMEOUT, "ax_headless: the frame was not read back in 30 s");
+        } else if (mapped.status != WGPUMapAsyncStatus_Success) {
             r = ax_set_error(AX_ERR_DEVICE_LOST, "ax_headless: reading the frame back failed");
         } else {
             const uint8_t *p = (const uint8_t *)wgpuBufferGetConstMappedRange(buf, 0, bd.size);

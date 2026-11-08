@@ -50,9 +50,11 @@ typedef struct ax_cpu_buffer {
 
 /*
  * A free buffer of the frame's pixel size (frame from ax_surface_begin_frame, ready).
- * Errors: AX_ERR_UNSUPPORTED (the backend cannot present CPU buffers, or the frame is not ready),
- * AX_ERR_OUT_OF_MEMORY (no memory, or every buffer is still held by the windowing system: skip
- * this frame and try again at the next one).
+ * It does not wait: AX_ERR_TIMEOUT means every buffer is still held by the windowing system right
+ * now (none was free in the zero time allowed); skip this frame, nothing is lost, and try again at
+ * the next one.
+ * Errors: AX_ERR_TIMEOUT (above), AX_ERR_UNSUPPORTED (the backend cannot present CPU buffers, or
+ * the frame is not ready), AX_ERR_OUT_OF_MEMORY (no memory or no shared memory for a buffer).
  */
 AX_API ax_result ax_surface_cpu_acquire(ax_surface surface, const ax_frame_target *frame,
                                         ax_cpu_buffer *out);

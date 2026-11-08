@@ -366,7 +366,7 @@ ax_result ax_rt_remove_surface(ax_runtime rt, uint32_t surface)
         ax_mutex_unlock(&r->ack_lock);
         if (!both_done(s)) {
             /* Still attached: the render thread may be presenting it. The caller retries. */
-            return ax_set_error(AX_ERR_UNSUPPORTED,
+            return ax_set_error(AX_ERR_TIMEOUT,
                                 "ax_rt_remove_surface: the runtime's threads did not let the "
                                 "surface go within 1 s; it is still in use, call again");
         }

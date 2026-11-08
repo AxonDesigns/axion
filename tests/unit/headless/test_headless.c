@@ -219,7 +219,7 @@ AX_TEST(settle_reports_when_it_cannot)
     uint32_t frames = 7;
     AX_REQUIRE(h != NULL);
     AX_REQUIRE(ax_headless_add_surface(h, &s, &root) == AX_OK);
-    AX_CHECK_RESULT(ax_headless_settle(h, 0, &frames), AX_ERR_UNSUPPORTED); /* the root's txn */
+    AX_CHECK_RESULT(ax_headless_settle(h, 0, &frames), AX_ERR_TIMEOUT); /* the root's txn */
     AX_CHECK_EQ_U(frames, 0);
     AX_CHECK_RESULT(ax_headless_settle(h, 5, &frames), AX_OK);
     AX_CHECK_EQ_U(frames, 1);

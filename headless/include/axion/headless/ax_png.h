@@ -61,8 +61,8 @@ AX_API void ax_image_free(const ax_allocator *allocator, ax_image *image);
  * alpha 0 becomes 0, 0, 0, 0. The conversion AX_PNG_PREMULTIPLIED applies. */
 AX_API void ax_rgba_unpremultiply(uint8_t *rgba, uint32_t width, uint32_t height, size_t stride);
 
-/* Files. Errors: those above; a file that cannot be opened, read or written is
- * AX_ERR_INVALID_ARGUMENT, with the path in ax_last_error. */
+/* Files. Errors: those above; AX_ERR_IO for a file that cannot be opened, read or written, with
+ * the path and the reason in ax_last_error. */
 AX_API ax_result ax_png_write_file(const char *path, const uint8_t *rgba, uint32_t width,
                                    uint32_t height, size_t stride, uint32_t flags);
 AX_API ax_result ax_png_read_file(const ax_allocator *allocator, const char *path, ax_image *out);

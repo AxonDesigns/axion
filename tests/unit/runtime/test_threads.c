@@ -488,7 +488,7 @@ AX_TEST(a_removal_that_times_out_can_be_retried)
 
     ax_atomic_store_u64(&d.detach_stall_ns, 1500 * MS, AX_MO_RELEASE);
     first = ax_rt_remove_surface(rt, s);
-    AX_CHECK_RESULT(first, AX_ERR_UNSUPPORTED);
+    AX_CHECK_RESULT(first, AX_ERR_TIMEOUT);
     AX_CHECK_EQ_U(ax_rt_surface_of_root(rt, root), s); /* still attached */
     AX_CHECK_RESULT(ax_rt_remove_surface(rt, s), AX_OK);
     AX_CHECK_EQ_U(ax_rt_surface_of_root(rt, root), UINT32_MAX);

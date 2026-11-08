@@ -276,7 +276,8 @@ AX_TEST(files_and_argument_errors)
     AX_CHECK(memcmp(img.rgba, px, 8) == 0);
     ax_image_free(NULL, &img);
     remove(path);
-    AX_CHECK_RESULT(ax_png_read_file(NULL, "no/such/dir/x.png", &img), AX_ERR_INVALID_ARGUMENT);
+    AX_CHECK_RESULT(ax_png_read_file(NULL, "no/such/dir/x.png", &img), AX_ERR_IO);
+    AX_CHECK_RESULT(ax_png_write_file("no/such/dir/x.png", px, 2, 1, 8, 0), AX_ERR_IO);
     AX_CHECK_RESULT(ax_png_encode(NULL, px, 0, 1, 8, 0, &data, &size), AX_ERR_INVALID_ARGUMENT);
     AX_CHECK_RESULT(ax_png_encode(NULL, px, 2, 1, 4, 0, &data, &size), AX_ERR_INVALID_ARGUMENT);
 }

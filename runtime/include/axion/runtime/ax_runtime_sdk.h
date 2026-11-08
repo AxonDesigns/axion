@@ -125,7 +125,7 @@ AX_API ax_result ax_rt_add_surface(ax_runtime rt, ax_node root, const ax_rt_surf
  * render threads have let the surface go, at most 1 s.
  * Errors:
  *   - AX_ERR_INVALID_ARGUMENT: no such surface;
- *   - AX_ERR_UNSUPPORTED: the threads did not confirm within 1 s (a render thread stuck in the
+ *   - AX_ERR_TIMEOUT: the threads did not confirm within 1 s (a render thread stuck in the
  *     driver, for example). The surface is then still in use: the render thread may still present
  *     it, so its window must not be destroyed. Call again until AX_OK; a retry queues nothing new,
  *     it only waits again.

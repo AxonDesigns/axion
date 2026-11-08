@@ -160,7 +160,7 @@ static ax_result vt_render(void *self, ax_surface surface, const ax_render_ir *i
     memset(&buf, 0, sizeof buf);
     buf.struct_size = sizeof buf;
     res = ax_surface_cpu_acquire(surface, &t, &buf);
-    if (res == AX_ERR_OUT_OF_MEMORY) {
+    if (res == AX_ERR_TIMEOUT) {
         s->stats.buffers_busy++; /* the compositor still holds every buffer: next frame */
         return AX_OK;
     }

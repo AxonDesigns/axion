@@ -1,0 +1,26 @@
+// Copyright 2026 Axon Works
+// SPDX-License-Identifier: Apache-2.0
+//
+// AXION interface description: the base module's stable ABI (draft, M1), as far as other modules'
+// descriptions need it so far: the result codes. str, allocator, handle and the version join when
+// the generator needs them (M2). Decision 71 describes the format; C: base/include/axion/.
+
+axidl 0.1;
+
+module base {
+    // Every fallible call returns one (C: ax_result). Values are fixed forever; new codes are only
+    // appended. Bindings turn a code other than ok into their error or exception, with
+    // ax_last_error()'s message.
+    enum result : u32 {
+        ok = 0;
+        invalid_handle = 1;
+        wrong_thread = 2;
+        out_of_memory = 3;
+        device_lost = 4;
+        unsupported = 5;
+        abi_mismatch = 6;
+        invalid_argument = 7;  // decision 61
+        timeout = 8;           // decision 88: not in time, or not free now; trying again may work
+        io = 9;                // decision 88: a file or stream could not be opened, read or written
+    }
+}

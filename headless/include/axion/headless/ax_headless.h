@@ -139,7 +139,8 @@ AX_API uint64_t ax_headless_now(ax_headless *h);
  * vsyncs, refresh_ns apart from start_time_ns; each frame moves the clock to its vsync and applies
  * the transactions committed up to one refresh before it (decision 77's latch point), so a commit
  * made right after a frame shows at the next one. With threads: waits until every surface
- * presented `count` more frames. Errors: those of the presenter. */
+ * presented `count` more frames. Errors: those of the presenter; AX_ERR_TIMEOUT (threads) when
+ * the frames did not come within 10 s plus four refreshes per frame. */
 AX_API ax_result ax_headless_step(ax_headless *h, uint32_t count);
 
 /* Advances the clock by ns, running a frame at every vsync the interval reaches (with threads:
@@ -149,7 +150,7 @@ AX_API ax_result ax_headless_advance_time(ax_headless *h, uint64_t ns);
 /* Runs frames until every committed transaction is applied (ax_world_last_applied_seq reaches
  * ax_world_last_committed_seq) and drawn, at most max_frames (with threads: for at most
  * max_frames refreshes of time). *out_frames (may be NULL) gets how many ran. Animations will
- * join the condition when they exist. Errors: AX_ERR_UNSUPPORTED when it did not settle. */
+ * join the condition when they exist. Errors: AX_ERR_TIMEOUT when it did not settle. */
 AX_API ax_result ax_headless_settle(ax_headless *h, uint32_t max_frames, uint32_t *out_frames);
 
 /* ---- snapshots ------------------------------------------------------------------------------- */
