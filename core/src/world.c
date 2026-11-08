@@ -188,6 +188,11 @@ uint64_t ax_world_now(ax_world world)
     return w != NULL ? ax__world_now(w) : 0;
 }
 
+bool ax_world_is_valid(ax_world world)
+{
+    return ax__world_from_handle(world) != NULL;
+}
+
 bool ax_world_clock_is_monotonic(ax_world world)
 {
     world_impl *w = ax__world_from_handle(world);

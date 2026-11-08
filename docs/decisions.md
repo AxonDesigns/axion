@@ -90,6 +90,7 @@ new entry that points back to the old one.
 | 74  | Platform pieces for one render thread and the scene      | Implementation |
 | 75  | Events to the app thread, `on_presented`, the clock      | Implementation |
 | 76  | Positioning, the layer rule and incremental recording    | Implementation |
+| 77  | The runtime, the frame's order and the single thread     | Implementation |
 
 ---
 
@@ -3073,3 +3074,93 @@ scheduler runs it.
 
 **Status.** Implementation, pending the owner's approval (part of the approved plan; sticky
 promotion, its demotion note and the include test were the owner's adjustments).
+
+## 77. The runtime, the frame's order and the single thread
+
+**Context.** The architecture's frame pipeline runs on the scene and render threads. The same
+stage functions run in order on one thread through a cooperative scheduler, for hosts that call
+`ax_host_frame`, deterministic tests and the web without threads. The owner asked for:
+- one scene thread for every surface, ticking each root on its own surface's vsync;
+- the frame in a fixed order: vsync with T; `apply_pending` up to the frame's deadline;
+  positioning; recording; the mirror; clearing the flags;
+- stage functions that do not know which mode runs them;
+- deterministic tests with a manual clock.
+
+**Decision.**
+- **A new module, `runtime/`** (library `ax_runtime`, approved by the owner). It depends on core
+  and the Render IR only, so it builds everywhere, the web included. Surfaces and renderers are
+  reached through a **presenter** interface (`ax_rt_presenter_vtbl`, internal SDK
+  `ax_runtime_sdk.h`) with four entries:
+  - `attach` and `detach`;
+  - `wait`, for frames on several surfaces;
+  - `frame`, which presents the newest snapshot, runs the size handshake and asks for the next
+    frame.
+
+  The platform presenter (next step) wraps the renderer and decision 57's frame step; tests use
+  fakes.
+  - Stable ABI (`ax_runtime.h`): the `ax_runtime` handle, `ax_runtime_create` with the world and
+    a mode (`AX_RUNTIME_THREADED` by default, or `AX_RUNTIME_SINGLE_THREADED`),
+    `ax_runtime_destroy`, and `ax_host_frame(runtime, root, target_time)`.
+  - The document's `ax_host_frame(surface, target_time)` names the surface by its root: a hosted
+    surface is not an `ax_surface` until hosted backends exist.
+- **Surfaces.** `ax_rt_add_surface(root, desc)` (app thread) attaches a root the app created and
+  committed. Up to 32 surfaces; a slot is reused once the scene and render sides acknowledge its
+  removal. Each surface has:
+  - a Render IR mailbox (decision 52), written by the scene and read by the render side;
+  - a newest-wins frame request (triple buffer) from the render side to the scene;
+  - the newest snapshot shown, from the render side to the scene (an atomic sequence).
+
+  Adding and removing go through fixed SPSC command rings, one from the app thread to the scene
+  and one to the render side.
+- **The tick** (`ax_rt_scene_step`, scene side). It runs once for each surface with a new
+  request, in surface order:
+  1. **T on the world's clock** (decision 75's translation), clamped so that a surface's T never
+     goes backwards;
+  2. **`ax_world_apply_pending(world, T − refresh)`.** The deadline is the frame's latch point: a
+     commit that arrives after it waits for the next frame, even if the scene starts late, so the
+     result does not depend on when the scene thread wakes. The cost is at most one frame of
+     latency for a commit that lands just before the tick. **The queue is the world's**, so with
+     roots at different rates (60 and 120 Hz) a tick of one root applies transactions that the
+     other root sees at its own next tick (the owner's note);
+  3. the scene driver, examples only (`ax_rt_scene_driver`; it goes away with animations);
+  4. the root's viewport (the surface's logical size) and `ax_world_position`;
+  5. `ax_world_record_collect`; if the root's content changed, `ax_world_record_root` into the
+     surface's mailbox, published, remembering the newest applied transaction the snapshot
+     includes;
+  6. `ax_world_publish_mirror`, after layout (decision 69);
+  7. `ax_scene_clear_dirty`.
+
+  Until the root's own transaction applies, a tick records nothing.
+- **The presentation watermark** (decision 75's rules), computed after the ticks:
+  - a surface holds transactions back while it is visible and its newest content change is
+    newer than the newest transaction included in a snapshot it has shown;
+  - the watermark is the oldest of those, or the last applied transaction when no surface holds
+    anything back;
+  - a removed surface (a closed window) holds nothing; a hidden one
+    (`ax_rt_set_surface_visible`) holds nothing; visible again, it holds what it has not shown;
+  - the time reported is the newest present time among the surfaces.
+
+  A transaction that changes no visible surface is therefore presented at the tick that applies
+  it, unless an earlier one is still waiting: callbacks keep sequence order.
+- **Single-threaded mode.** The world's app and scene roles stay with the caller, and the job
+  system is created inline (decision 60). `ax_host_frame(root, T)`, with T on the world's clock:
+  1. queues a request for the surface's host size and refresh;
+  2. runs the scene step and the presenter's `frame`;
+  3. if the presenter asked for another size (a configure: decision 54's handshake), runs the
+     scene again and presents again, at most three times within the call;
+  4. runs a last step for what was shown.
+
+  In this mode the render side's requests are kept only for resizes: host frames set the time.
+  The threaded mode (next step) calls the same functions from its threads.
+- **Tests** (`tests/unit/runtime/test_single_thread.c`, manual clock, fake presenter):
+  - transactions committed after a frame's deadline wait for the next one;
+  - snapshots against golden text dumps;
+  - one mirror sync shows a new LEFT together with the frame layout computed from it;
+  - a configure of another size is recorded and presented within the same host frame;
+  - `on_presented`: in order with `REJECTED` between two presented ones; a change no window
+    shows comes when applied; hidden windows do not hold back, and visible again they do; a
+    closed window stops holding back;
+  - argument errors.
+
+**Status.** Implementation, pending the owner's approval (part of the approved plan; the
+deadline's note on the world-wide queue was the owner's).

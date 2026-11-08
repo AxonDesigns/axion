@@ -39,6 +39,9 @@ AX_API void ax_world_bind_scene_thread(ax_world world);
 /* The calling thread becomes the world's app thread. The previous one must not be using it. */
 AX_API void ax_world_bind_app_thread(ax_world world);
 
+/* True for a live world. thread: any */
+AX_API bool ax_world_is_valid(ax_world world);
+
 /* The scene, for the scene thread (NULL for a stale handle). */
 AX_API ax_scene *ax_world_scene(ax_world world);
 
