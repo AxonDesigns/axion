@@ -3562,9 +3562,11 @@ ax_render_wgpu into an RGBA8 texture and with ax_render_soft, and compares the t
   | Dawn, lavapipe (Mesa, LLVM 23) | 0.0051 (zone plate) | 0.00094 (zone plate) | 2/255 |
   | wgpu-native, NVIDIA | 0.0062 | 0.00076 | 2/255 |
   | wgpu-native, lavapipe | 0.0051 | 0.00094 | 2/255 |
+  | Dawn, Metal (GitHub's macOS runner, CI artifact) | 0.0044 (thin) | 0.00041 (zone plate) | 1/255 |
 
   Each implementation matches the other on the same adapter, scene by scene. The limits leave a
-  factor of three on the percentile and two on the mean.
+  factor of three on the percentile and two on the mean. CI writes every coverage job's measures to
+  `measures.txt` beside its images (the `coverage-*` artifacts), so a drift shows before it fails.
 - **CI:** the coverage jobs (Dawn on lavapipe, wgpu-native on lavapipe, Dawn on Metal) run these
   tests, and `compare-coverage` still compares their images with each other within 3/255.
 - decision 56's supersampled reference stays as a test of the software renderer itself.
