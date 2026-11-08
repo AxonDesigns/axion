@@ -12,7 +12,10 @@
  *      again (0 expected) and fragments shaped at unsafe breaks.
  *   3. The frame's stages while a column of 40 paragraphs (11 to 48 px) animates its width with the
  *      default spring through the resize preset: per frame, layout + animation + recording
- *      (median and worst), against a 16.7 ms frame and the 3.8 ms of a 260 Hz refresh.
+ *      (median, and each of five runs' worst), against the 3.8 ms of a 260 Hz refresh, on one
+ *      thread and with a job system. The column is not a relayout boundary and the resize preset
+ *      lays it out serially, so the job system has nothing to do here (the boundaries counter
+ *      shows it): the two modes differ only by noise.
  */
 #include <math.h>
 #include <stdio.h>
@@ -22,6 +25,8 @@
 #include "axion/ax_txn.h"
 #include "axion/base/ax_thread.h"
 #include "axion/core/ax_frame.h"
+#include "axion/core/ax_layout.h"
+#include "axion/core/ax_scene.h"
 #include "axion/core/ax_world_sdk.h"
 #include "axion/text/ax_text.h"
 
@@ -123,7 +128,8 @@ static uint64_t read_clock(void *u)
     return ((clock_state *)u)->now;
 }
 
-static void width_animation_case(bool parallel)
+static void width_animation_case(bool parallel, double *out_median, double *out_worst,
+                                 uint64_t *out_parallel)
 {
     static clock_state clock = {1000 * MS};
     ax_world w = AX_HANDLE_NULL_INIT;
@@ -194,10 +200,13 @@ static void width_animation_case(bool parallel)
         }
     }
     qsort(frame_ms, n, sizeof(double), cmp_double);
-    printf("40 paragraphs, width animated 900 -> 400 -> 900 (%s): %u frames, median %.3f ms, "
-           "worst %.3f ms per frame (layout + animation + recording)\n",
-           parallel ? "jobs" : "one thread", n, n > 0 ? frame_ms[n / 2] : 0.0,
-           n > 0 ? frame_ms[n - 1u] : 0.0);
+    *out_median = n > 0 ? frame_ms[n / 2] : 0.0;
+    *out_worst = n > 0 ? frame_ms[n - 1u] : 0.0;
+    {
+        ax_layout_counters lc;
+        ax_layout_get_counters(ax_world_scene(w), &lc, false);
+        *out_parallel = lc.parallel_roots;
+    }
     ax_ir_builder_deinit(&b);
     ax_world_set_jobs(w, NULL);
     ax_world_destroy(w);
@@ -206,10 +215,28 @@ static void width_animation_case(bool parallel)
     }
 }
 
+/* Five runs of each mode: the median of the medians, and every run's worst frame (the slowest
+ * frames are the first of each animation, whose widths have no cached layout yet). */
+static void width_animation(bool parallel)
+{
+    double med[5], worst[5];
+    uint64_t par = 0;
+    int r;
+    for (r = 0; r < 5; ++r) {
+        width_animation_case(parallel, &med[r], &worst[r], &par);
+    }
+    qsort(med, 5, sizeof(double), cmp_double);
+    printf("40 paragraphs, width animated 900 -> 400 -> 900 (%s): median %.3f ms per frame "
+           "(layout + animation + recording); worst frame per run %.2f %.2f %.2f %.2f %.2f ms; "
+           "boundaries laid out in parallel %llu\n",
+           parallel ? "jobs" : "one thread", med[2], worst[0], worst[1], worst[2], worst[3],
+           worst[4], (unsigned long long)par);
+}
+
 int main(void)
 {
     paragraph_cases();
-    width_animation_case(false);
-    width_animation_case(true);
+    width_animation(false);
+    width_animation(true);
     return 0;
 }
