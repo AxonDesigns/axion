@@ -139,12 +139,15 @@ typedef enum ax_result {
     AX_ERR_DEVICE_LOST,
     AX_ERR_UNSUPPORTED,
     AX_ERR_ABI_MISMATCH,
+    AX_ERR_INVALID_ARGUMENT,
+    AX_ERR_TIMEOUT,
+    AX_ERR_IO,
 } ax_result;
 ```
 
 **Memory.** Three tiers: the allocator the host supplies; per-thread frame arenas reset at each frame boundary; fixed-size pools for node component storage. No module calls `malloc` directly, so a host (a game engine, a test harness) can account for every byte.
 
-**Errors.** Functions return `ax_result`, with detail from a thread-local `ax_last_error()`. No `setjmp`/`longjmp`. Debug builds assert on misuse (wrong thread, stale handle); release builds return the error. Bindings turn results into exceptions or error values.
+**Errors.** Functions return `ax_result`, with detail from a thread-local `ax_last_error()`. No `setjmp`/`longjmp`. Debug builds assert on misuse (wrong thread, stale handle); release builds return the error. Bindings turn results into exceptions or error values. New codes are only appended, never renumbered (decisions 61 and 88).
 
 **ABI.** Opaque types only. Descriptor structs carry `struct_size` plus a `next` extension chain. Every chained struct starts with an `ax_chain` header (`next`, a type tag and its own `struct_size`); a consumer walks the whole chain first, rejects an unknown required type with `AX_ERR_UNSUPPORTED` and skips only types marked optional (decision 73). Minor versions only append functions and fields; `ax_version()` reports the runtime version so bindings can check compatibility at load.
 
@@ -152,7 +155,7 @@ typedef enum ax_result {
 
 **One interface description.** A single IDL (a small `.axidl` file or annotated JSON) generates the C headers, API docs and all four bindings, so the languages never drift apart.
 
-**Job system.** A fixed worker pool (core count minus the dedicated threads, minimum one) with work-stealing deques and counter-based waits. No fibers, so it ports to WASM unchanged.
+**Job system.** A fixed worker pool (core count minus the dedicated threads, minimum one) with work-stealing deques and counter-based waits. No fibers, so it ports to WASM unchanged. Jobs have two priorities, frame and background: a frame thread that waits runs only frame jobs, so it never picks up a long decode, and frame work never waits on background work (decision 80).
 
 ## Platform layer: surfaces, windows, input and hosting
 
@@ -361,7 +364,7 @@ typedef struct ax_renderer_vtbl {
 | `ax_render_soft` | CPU rasterizer, tiled, SIMD and multi-threaded | Last-resort fallback, golden-image tests, no-GPU CI and servers |
 | `ax_render_compute` (later) | Fully compute-based 2D in the style of Vello | Heavy vector content, large path counts |
 
-**Fallback chain.** Each surface picks its renderer at creation, WebGPU first, then GL (when the render\_gl plugin is linked), then software, unless the app pins one. The chosen renderer reports its capabilities (compute, HDR, MSAA, backdrop support, max texture size), and the core exposes them to style rules and app code, so a glass panel can declare a plain translucent fill for renderers without backdrops. Renderers can also be swapped at runtime, for example after a device loss, because they only ever see the IR.
+**Fallback chain.** Each surface picks its renderer at creation, WebGPU first, then GL (when the render\_gl plugin is linked), then software, unless the app pins one. The chosen renderer reports its capabilities (compute, HDR, MSAA, backdrop support, max texture size), and the core exposes them to style rules and app code, so a glass panel can declare a plain translucent fill for renderers without backdrops. Renderers can also be swapped at runtime, for example after a device loss, because they only ever see the IR. Since M1 the runtime implements the WebGPU-then-software part: it uses `ax_render_wgpu`, and `ax_render_soft` when the GPU module is absent or no adapter is usable; the software renderer presents through a CPU presentation interface in Platform (`wl_shm` on Wayland) (decision 84).
 
 The GL renderer talks to WebGL2 or GLES directly rather than through `ax_gpu`; it shares CPU-side glyph rasterization, image decoding and the Render IR with the other renderers. On native Android devices without usable Vulkan, AXION uses both paths: Dawn's compatibility mode on GLES 3.1+, which keeps the WebGPU renderer and its compute support, and the GL renderer on GLES 3.0-only devices.
 
@@ -644,9 +647,9 @@ Everything AXION draws (shapes, paths, SVG, Lottie, text, images, clips, user sh
 
 **Blending and color.** Premultiplied alpha everywhere. UI blends in sRGB space by default to match browsers and design tools; blur, 3D and HDR content work in linear light; text coverage gets its own gamma correction. Layers can opt into linear blending. The sRGB default is built by drawing into a unorm view of the swapchain; linear layers use its sRGB view or an FP16 offscreen. Known limitation: sRGB-space blending makes thin rotated lines bead (roping), as in browsers. Whether the default changes is decided together with Latin text in M1 (issue #4).
 
-**Coverage under affine transforms.** For 2D affine layers, the CPU inverts each instance's transform and passes the pixel's footprint in local space, so coverage is exact and identical across WebGPU implementations. Screen-space derivatives are used only once perspective transforms arrive. Until `ax_render_soft` exists (M1), coverage tests compare against a supersampled CPU reference.
+**Coverage under affine transforms.** For 2D affine layers, the CPU inverts each instance's transform and passes the pixel's footprint in local space, so coverage is exact and identical across WebGPU implementations. Screen-space derivatives are used only once perspective transforms arrive. Until `ax_render_soft` existed (M1), coverage tests compared against a supersampled CPU reference. Now they compare each GPU renderer against the software renderer within a perceptual tolerance (decision 83), and the supersampled reference tests the software renderer itself.
 
-**Verification.** Golden-image tests compare each GPU renderer to the software reference within a perceptual tolerance on antialiasing torture scenes: rotating hairlines, zone plates, thin text in motion, touching Lottie shapes and nested rounded clips. A renderer that drifts fails CI.
+**Verification.** Golden-image tests compare each GPU renderer to the software reference within a perceptual tolerance on antialiasing torture scenes: rotating hairlines, zone plates, thin text in motion, touching Lottie shapes and nested rounded clips. A renderer that drifts fails CI. The software renderer is deterministic: the same IR gives byte-identical images on every platform, instruction set and thread count, which a CI job checks across Linux, macOS, Windows and the web (decisions 81 and 86).
 
 ## Retained node tree, properties and layout
 
@@ -1397,7 +1400,7 @@ axion/
 **Milestones**
 
 1. **M0, skeleton**: base, one desktop platform backend, `ax_gpu` clearing a window, the Render IR, and rounded rects. Exit: a window resizes smoothly at the display's refresh rate. Done on Nov 7, 2026, with the Wayland backend, measured on KWin 6.8 with an NVIDIA GPU: at the refresh rate when still on 72 Hz and 260 Hz monitors; when resizing, 0–0.3 missed vblanks a second at 72 Hz and a mean of 4.8 at 260 Hz (issue #2).
-2. **M1, the thread split**: node store, transactions, the app/scene/render pipeline, flex layout, implicit animations, Latin text (shaping plus atlas), the software renderer for golden tests, the headless host, and the accessibility tree, with AccessKit's iOS and web coverage confirmed. Exit: an app thread blocked for 500 ms does not drop animation frames. Carried over from M0: the job system; resizing at 260 Hz within 1 missed vblank a second (issue #2); the blend-space decision, taken with text (issue #4); and re-measuring the resize handshake's bound with real layout and text. Progress: the node store and transactions (PR #6, decisions 60–71) and the thread split (PR #8, decisions 74–79) are done. Pending before M2: zero frames at rest, so a window presents only while the scene has new content or something animates (decision 78).
+2. **M1, the thread split**: node store, transactions, the app/scene/render pipeline, flex layout, implicit animations, Latin text (shaping plus atlas), the software renderer for golden tests, the headless host, and the accessibility tree, with AccessKit's iOS and web coverage confirmed. Exit: an app thread blocked for 500 ms does not drop animation frames. Carried over from M0: the job system; resizing at 260 Hz within 1 missed vblank a second (issue #2); the blend-space decision, taken with text (issue #4); and re-measuring the resize handshake's bound with real layout and text. Progress: the node store and transactions (PR #6, decisions 60–71), the thread split (PR #8, decisions 74–79), and the software renderer with the headless host (PR #9, decisions 80–88) are done. Pending before M2: zero frames at rest, so a window presents only while the scene has new content or something animates (decision 78).
 3. **M2, interaction**: pointer and keyboard input, gesture arena, the scroll engine (wheel smoothing, physics presets, overscroll) and virtualized lists, grid layout (the CSS Grid subset of the layout engine, as a second protocol beside M1's flex), the first headless components, the C# binding, HMR for C# and stylesheets, the automation protocol with the C# testing API, and the accessibility bridge on the first platform. Exit: a styled settings screen built entirely in C# and edited live without restarting, and fully usable with a screen reader and keyboard.
 4. **M3, depth**: full text (bidi, fallback, emoji, IME, TextField), AXGL with fill and backdrop shaders, AXGL scroll physics, SVG, the full windowing API (custom chrome, hit-test regions, system backdrops, multi-window, and layer surfaces with the Wayland pieces they depend on: `wl_output` tracking to choose an output, and `xdg_popup` for menus from a layer surface through `zwlr_layer_surface_v1.get_popup`), accessibility bridges on all desktop platforms, the plugin system with the first-party platform-services plugin, native drag and drop within and between windows and apps (this milestone builds the transient overlay window that M4's cross-window heroes reuse), and the MCP server. Exit: a chat app with mixed-script text and frosted panels.
 5. **M4, motion and reach**: layout animations, navigator with deep links and URL schemes, heroes, view transitions, Lottie playback; Android and iOS ports, each shipping with its accessibility bridge. Exit: the gallery-to-detail hero demo running on phones with an interactive back gesture, and the C# settings screen from M2 edited live on an Android and an iOS device over USB, keeping its screen and state, including across a backgrounding and a forced restart.
