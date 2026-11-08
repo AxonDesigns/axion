@@ -21,6 +21,16 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Repository checks that need no build: every tracked text file ends in a newline
+  # (.editorconfig).
+  repo-checks:
+    name: Repository checks (final newlines)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Final newlines
+        run: sh tools/ci/check_final_newline.sh
+
   build-test:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
