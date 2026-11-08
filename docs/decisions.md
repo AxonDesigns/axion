@@ -107,6 +107,9 @@ new entry that points back to the old one.
 | 91  | Flex conformance against Yoga                            | Approved       |
 | 92  | Parallel boundaries, `ax_measure_sync`, benchmark        | Approved       |
 | 93  | Clips: overflow hidden, and in `ax_render_wgpu`          | Approved       |
+| 94  | Implicit animations, layout animations and layers        | Implementation |
+| 95  | Zero frames at rest                                      | Implementation |
+| 96  | m1_nodes animated, the driver gone, animation goldens    | Implementation |
 
 ---
 
@@ -2379,6 +2382,8 @@ returns slots**.
 
 ## 67. The world, the transaction API and its encoding
 
+> Amended by decision 94: `ax_transition` is final; transitions take effect.
+
 **Context.** "Transactions" gives the API (`ax_txn_begin`, `create`, `set_*`, `append_child`,
 `commit`). The owner asked for:
 - `remove`;
@@ -3021,7 +3026,8 @@ pipeline and are tested with it.
 
 ## 76. Positioning, the layer rule and incremental recording
 
-> Amended by decisions 90 (the layout engine replaces the positioning) and 93 (clip layers).
+> Amended by decisions 90 (the layout engine replaces the positioning), 93 (clip layers) and 94
+> (layers are demoted after a neutral second; recording draws presentation values).
 
 **Context.** The scene thread records the Render IR from the node store. Flex arrives in the
 fourth prompt of M1, so this step needs a stand-in positioning. The owner asked for:
@@ -3102,6 +3108,8 @@ scheduler runs it.
 **Status.** Approved by the owner.
 
 ## 77. The runtime, the frame's order and the single thread
+
+> Amended by decisions 94 (the tick animates after layout) and 96 (the scene driver is removed).
 
 **Context.** The architecture's frame pipeline runs on the scene and render threads. The same
 stage functions run in order on one thread through a cooperative scheduler, for hosts that call
@@ -3196,6 +3204,7 @@ stage functions run in order on one thread through a cooperative scheduler, for 
 ## 78. The scene and render threads; vsync on the render thread
 
 > Amended by decision 88: a removal the threads do not confirm in time returns `AX_ERR_TIMEOUT`.
+> Decision 95 resolves its pending item: zero frames at rest.
 
 **Context.** The threaded mode runs decision 77's stages on a scene thread and presents every
 surface from one render thread. The owner asked for:
@@ -3667,6 +3676,8 @@ then software, unless the app pins one.
 **Status.** Approved by the owner.
 
 ## 85. The headless host and its C testing API
+
+> Amended by decision 96: `ax_headless_settle` waits until nothing animates; the driver option is gone.
 
 > Amended by decision 88: not settling (and the other timeouts) is `AX_ERR_TIMEOUT`.
 
@@ -4167,3 +4178,207 @@ approximated.
 - **Still in M2** (decision 83): exact group opacity and linear layers.
 
 **Status.** Approved by the owner.
+
+## 94. Implicit animations: curves, transitions, retargeting, layout animations and layers
+
+> Amends decisions 67 (`ax_transition` is final), 76 (promotion is no longer sticky; frames and
+> clips draw presentation values) and 77 (the tick animates after layout).
+
+**Context.** "Animation system": every animatable property animates by default, on the scene thread,
+against the frame's predicted present time; transitions come from style (per property, per class,
+global); springs keep their velocity when retargeted and timing curves blend; layout animations
+with the `resize` preset; `set_animated(false)` and reduce motion; determinism with an injectable
+clock. The owner asked to close `ax_transition`, to document what the app sees while an animation
+runs, to demote layers with hysteresis (decision 76's note), to verify the fast path with
+counters, to clamp animated values to their valid range (the owner's adjustment), and to record the
+defaults and the hooks for complete layout animations. Out of scope: keyframes, sequences, staggers,
+the `scale` and `crossfade` layout presets, gestures and the driver graph.
+
+**Decision.**
+- **Curves** (`core/include/axion/core/ax_anim.h`, `core/src/anim/curves.c`), pure functions of their
+  parameters and the time:
+  - timing: a duration with CSS `cubic-bezier()` (Newton, then bisection: a fixed sequence of
+    operations), `steps()` with the four jump positions, or `linear()` with explicit stops;
+  - springs in closed form (under-, critically and over-damped), physical (stiffness, damping,
+    mass) or perceptual (SwiftUI's model: mass 1, stiffness (2 pi / duration)^2, damping ratio
+    1 - bounce, or 1 / (1 + bounce) for a negative bounce);
+  - decay: the remaining distance shrinks as e^(-rate t); a fling with friction for scrolling (M2).
+  - **Deterministic:** base gains `ax_sin_cos`, `ax_exp2f`, `ax_expf`, `ax_log2f` and `ax_atan2f`
+    without libm (decision 81's rule), checked against libm and pinned by hashes CI verifies on
+    every platform; the curves' bits are pinned the same way.
+- **`ax_transition` is final** (no longer `[provisional]` in the IDL): kinds NONE, TIMING, SPRING,
+  DECAY and DEFAULT (removes an override); the easing and its parameters; `linear()` stops (at most
+  16, copied when recorded); perceptual or physical springs; the decay rate. A zero-initialized
+  struct with a kind is valid (an all-zero Bezier is linear). Transactions carry the validated
+  curve.
+- **The lookup** (approved without the class level): the node's own transition
+  (`ax_txn_set_transition`, kept until set again), then the world's for that property
+  (`ax_txn_set_default_transition`), then the built-in default of the property's effect.
+  - **The class level is a hook:** it joins between the node and the world when strings and the
+    styling layer arrive (`AX_PROP_CLASS`); the lookup is one function (`animator.c`, `lookup`).
+  - **Layout properties animate through the frame:** a transition set on any of them, or on the new
+    `AX_PROP_LAYOUT` (`0x01FF`, not a value), is the node's layout transition.
+  - Transitions are stored when their transaction succeeds, before its changes, so they apply to
+    the same transaction's changes.
+- **Defaults** (approved): a perceptual spring of **0.4 s without bounce** (critically damped) for
+  the frame, transform and opacity; a **0.2 s ease, cubic-bezier(0.25, 0.1, 0.25, 1)**, for the
+  background color and the corner radii. Under **reduce motion** (`ax_world_set_reduce_motion`,
+  stable, any thread) frames and transforms change at once and other channels take a 0.15 s linear
+  fade; running animations finish their course.
+- **Implicit animation.** When a transaction changes an animatable property, or a layout pass
+  changes a frame, the channel animates from its presentation value to the new target. Channels:
+  the frame (x, y, w, h), the background (premultiplied linear light), each corner radius, the
+  opacity, and the transform in CSS's 2D decomposition (translation, angle, scale, skew; the angle
+  the shortest way round), so a turning layer stays a rotation mid-way.
+  - **Every presentation value is its target plus an offset that goes to zero:** a spring's
+    displacement, a decay's distance, or the sum of up to three timing curves' remaining deltas.
+    A new target, or a target that moves every frame, never makes it jump.
+  - **Interruption:** a spring is retargeted from its current offset **keeping its velocity**; a
+    timing curve **blends**: the running curves keep their deltas and the new one adds this
+    change's, so the value is continuous (a fourth curve folds the oldest into the next).
+  - Changes start at the frame's latch point (`T − refresh`, decision 77), so the first frame that
+    shows a change already shows one frame of motion; `ax_world_animate(world, T)` samples at the
+    frame's predicted present time after layout.
+  - Frame changes animate when an animated transaction caused them, **not a viewport's resize**,
+    and not for new or reparented nodes. The animator starts at the first `ax_world_animate`, so a
+    window's first content never animates.
+  - **`set_animated(false)`** changes at once and stops the running animation of what it changes;
+    frames that change in a cycle without an animated transaction snap.
+  - **Clamping** (the owner's adjustment): opacity stays in 0..1, radii and sizes at least 0,
+    alpha in 0..1, whatever the spring's bounce.
+- **What the app sees while an animation runs** (approved): the mirror reflects **targets**, as
+  set by transactions and computed by layout: `ax_mirror_get_f32(OPACITY)` returns the new value
+  and `ax_mirror_get_frame` the final frame from the next publication on, while the screen still
+  moves. The presentation values are the scene's (`ax_world_presentation`,
+  `ax_world_presentation_frame`, internal SDK), for hit testing and devtools.
+- **The fast path:** recording draws presentation values; a node whose frame animates, or whose
+  presentation transform or opacity is not neutral, is a layer, so moving, turning and fading
+  change only its layer record and **record no item**. Checked with counters: 0 items recorded
+  over the 48 to 62 frames of an opacity spring, a rotation and a reorder of cards. Colors and radii record
+  the node's items each frame, as paint does.
+- **Layout animations, the `resize` preset:** a node whose presentation size differs from the size
+  its children were laid out for lays them out again at that size each frame
+  (`ax_layout_present`, decision 90's hook: a presentation array of its own, unrounded, the
+  target layout, its caches and the mirror untouched). Its descendants take their frames from that
+  relayout; a descendant does not animate its own frame change caused by an ancestor that starts
+  resizing in the same cycle (**a layout animation's descendants animate relative to it**, as the
+  document's coordinate spaces say).
+- **Demotion with hysteresis** (decision 76's note): a layer whose presentation transform, opacity
+  and frame have been neutral for **one second** of animator time goes back to its parent's space
+  when its window next records, recording its subtree once (counter `layers_demoted`). With zero
+  frames at rest (decision 95) it waits for the next change.
+- **Hooks for complete layout animations** (recorded for M2): per-channel curves (position and size
+  are already separate components of the frame channel; separate curves need one track per
+  channel), content modes (counter-scaling and crossfade draw from the same presentation frame),
+  choreography (a transition group shares one clock: the tracks' start times), paths and the
+  per-node C callback (they write the presentation frame the recording reads), enter and exit
+  transitions (an exiting ghost keeps its node alive until its track ends), and the budget that
+  downgrades `resize` to `scale` (counted by `present_relayouts`).
+- **Determinism:** times are integers on the world's clock, the curves use only deterministic
+  functions, so the same sequence gives the same bits: `core.anim` compares two runs frame by frame,
+  and the goldens of decision 96 are byte-identical on Linux, macOS, Windows and the web.
+- **Not animated yet:** properties registered at run time (IDL and plugins); text arrives with its
+  own channels.
+- **Tests** (`core.anim`, 13 cases; `core.anim_curves`, 5): springs and eases with their defaults,
+  the fast path counted, **velocity continuity across a retarget (numerical: 1 ms differences
+  before and after agree within 10%)**, blended timing curves, opting out, reduce motion, the
+  lookup's three levels, clamping with a bouncy spring, reordered cards, a rotation through its
+  decomposition, the resize preset's children at each interpolated width, a demotion after a
+  neutral second, the same sequence giving the same bits.
+- **Measured** (`tests/bench/bench_anim.c`, `gcc-release`, AMD Ryzen 5 3400G; 10 001 flex nodes,
+  median per animating frame; two runs agree within 10%):
+
+  | Case | animate | record | mirror |
+  | --- | --- | --- | --- |
+  | One card of 100 grows (resize preset, its 99 items laid out again each frame, 54 frames) | 0.006 ms | 0.56 ms | 0.002 ms |
+  | 1000 items fade (opacity springs) | 0.05 ms | 0.62-0.64 ms | 0.002 ms |
+  | The last card moves to the front (every card's frame springs) | 0.01-0.015 ms | 0.58-0.66 ms | 0.002 ms |
+
+  - **The mirror with the resize preset animating** (decision 70's question): 0.002 ms, its scan
+    over unchanged stamps. The mirror reflects targets, so an animation adds nothing to it.
+  - Recording dominates: it walks every node of the window each frame (decision 76's O(nodes)),
+    copying cached items; the presentation relayout of 99 items is small next to it.
+  - Demotion's cost comes in one frame: the 61 cards the resize moved were demoted together a
+    second later, recording 5490 items once.
+
+**Status.** Implementation, pending the owner's approval (the defaults, clamping and the lookup
+without the class level were approved in the plan).
+
+## 95. Zero frames at rest
+
+> Resolves decision 78's pending item ("frames at rest", 2026-11-07).
+
+**Context.** Decision 78 left the render thread presenting every refresh while a window lived. The
+owner asked, before M2, that it present only while the scene has new content or something
+animates, and that a commit wake it.
+
+**Decision.**
+- **The scene says whether a window animates:** after `ax_world_animate`, each tick stores whether
+  something under the surface's root animated (`ax_rt_surface_animating`, any thread).
+- **The render side rests:** the platform presenter passes that flag to the frame step and the
+  renderer's waits. At rest, a frame callback with nothing new to draw (the same snapshot as the
+  last one drawn) is handled as `AX_FRAME_ONLY_IF_REQUIRED`: nothing is committed, so no callback is
+  asked for, and frames stop. Configures and commit requests still draw.
+- **A commit wakes it:** the world calls a commit hook on the app thread after each successful
+  commit (`ax_world_set_commit_hook`, internal SDK). The runtime's hook calls the presenter's new
+  `wake` entry (appended to `ax_rt_presenter_vtbl`, any thread) for each surface; for a window it
+  is `ax_surface_request_commit` (new, platform, any thread): the surface's waits return
+  `AX_WAKE_COMMIT_REQUESTED`, the frame presents and asks the scene for the next one, whose tick
+  applies the commit. A change from rest therefore reaches the screen in one to two refreshes, as
+  in steady state (decision 77's latch).
+- **A latent bug, fixed:** `ax_surface_begin_frame` marks a surface as being presented and only a
+  commit cleared it, so a frame begun and not committed (nothing new at rest, content of another
+  size, busy buffers) kept the window from being destroyed (an assertion). `ax_surface_end_frame`
+  (new) ends the presenter's frame whether or not it committed; both renderers call it after every
+  frame. Frames at rest made the case common (`wayland.soft_pipeline`'s resize test).
+- **Not affected:** single-threaded hosts decide their frames themselves; the headless host's
+  threaded virtual display keeps presenting every refresh (a test fixture, no `wake`).
+- **Tests:**
+  - `runtime.threads.a_resting_surface_presents_nothing_until_a_commit_animates_it`: 0 frames in
+    300 ms at rest, 19 while the default opacity spring runs, 0 again after it (the fake display
+    rests and wakes as a compositor does);
+  - `gpu_wayland.pipeline.the_tree_is_presented` against weston: **0 frames presented in 400 ms
+    at rest**, then frames again when the bar slides; with the app thread blocked during a
+    running animation, 30 of 30 refreshes presented with a new snapshot each, as unblocked.
+
+**Status.** Implementation, pending the owner's approval.
+
+## 96. m1_nodes as animated cards, the scene driver gone, goldens of animation frames
+
+> Amends decisions 77 and 85 (the scene driver is removed; `ax_headless_settle` waits for
+> animations).
+
+**Context.** The owner asked m1_nodes to become a list of cards in flex that reorder, grow and
+change color through transactions, all animated implicitly, removing the temporary scene driver
+(decision 77) and keeping the option that blocks the app thread; and for headless goldens of
+intermediate animation frames with ax_render_soft.
+
+**Decision.**
+- **m1_nodes** (`examples/m1_nodes/m1_cards.{h,c}`, `main.c`): six cards laid out with flex, each a
+  row with an avatar, two lines, a detail below the fold, and a progress bar along its bottom
+  edge, clipped by the card's rounded corners (decision 93). One animated transaction every
+  1.2 s: the last card moves to the top (every card springs to its place), a card grows from 72
+  to 132 points or back (its content laid out at each interpolated height behind its clip), a card
+  takes the next color (a 0.2 s ease). `--block-ms`, `--block-every` and `--stats` stay; at rest
+  the window presents nothing (decision 95).
+- **The scene driver is gone:** `ax_rt_scene_driver` and the `driver` fields of `ax_rt_desc`,
+  `ax_rt_platform_desc` and `ax_headless_desc`. Tests that used it to keep frames coming commit a
+  long linear implicit animation (30 s) instead, which the scene runs every frame without the app
+  thread: the blocked-app-thread tests now check exactly what the architecture promises.
+- **bench_soft** keeps m1_nodes' former picture (`tests/bench/bench_soft_scene.{h,c}`), so decision
+  87's measurements stay comparable; its motion is one transaction per frame, not animated.
+- **`ax_headless_settle`** also waits until nothing animates.
+- **Goldens of animation frames** (`tests/unit/headless/test_anim_goldens.c`,
+  `tests/goldens/anim/`, label `golden`): m1_nodes' cards at 320 x 420, with the manual clock and
+  ax_render_soft: at rest; 2, 6 and 12 frames into a reorder; 3 and 9 frames into a card growing;
+  4 frames into a color change; at rest again. They join the cross-platform image job (decision
+  86): **byte-identical on Linux, macOS, Windows and the web**.
+- **The macOS flake** (`runtime.threads.a_blocked_app_thread_does_not_stop_frames`, failed twice on
+  GitHub's macOS Release runner on 2026-11-08): the blocked window's 500 ms sleep lasted 600 to
+  617 ms while the fake display presented the same number of frames as in the unblocked window;
+  the machine stalled every thread, the display's included, and the check scaled the expectation
+  by wall time. It is now relative to the display: while the app thread is blocked, every refresh
+  is either presented with a new snapshot or missed by the display itself, whose missed refreshes
+  are counted exactly (two refreshes of slack).
+
+**Status.** Implementation, pending the owner's approval.
