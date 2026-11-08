@@ -110,6 +110,12 @@ new entry that points back to the old one.
 | 94  | Implicit animations, layout animations and layers        | Approved       |
 | 95  | Zero frames at rest                                      | Approved       |
 | 96  | m1_nodes animated, the driver gone, animation goldens    | Approved       |
+| 97  | Text's libraries from source; C++ for HarfBuzz only      | Implementation |
+| 98  | The bundled fonts and font sources                       | Implementation |
+| 99  | Strings, text properties, style pass, text pipeline      | Implementation |
+| 100 | Glyph rasterization, the glyph cache, frame requests     | Implementation |
+| 101 | Glyph runs, atlases, coverage correction, scaled text    | Implementation |
+| 102 | Layout animations end on the pixel grid                  | Implementation |
 
 ---
 
@@ -2190,6 +2196,7 @@ scene-thread tag and the skipped generations were the owner's adjustments).
 ## 63. Property system: ids, types, registry and validation
 
 > Amended by decision 89: percentages are accepted, and layout gains its properties.
+> Amended by decision 99: the string value type (8), the text properties and the style pass.
 
 **Context.** "Property system" gives every property an id, a value type, an inherited flag, an
 animatable flag and an effect class. The owner asked for an extensible registry with ids stable
@@ -2383,6 +2390,7 @@ returns slots**.
 ## 67. The world, the transaction API and its encoding
 
 > Amended by decision 94: `ax_transition` is final; transitions take effect.
+> Amended by decision 99: `ax_txn_set_str`.
 
 **Context.** "Transactions" gives the API (`ax_txn_begin`, `create`, `set_*`, `append_child`,
 `commit`). The owner asked for:
@@ -2539,6 +2547,7 @@ SDK, on the scene thread.
 ## 69. The app thread's mirror
 
 > Amended by decision 89: the mirror reflects the frame, paint and composite values, not layout's inputs.
+> Amended by decision 99: the mirror reflects the text content (`ax_mirror_get_str`).
 
 **Context.** "The app thread keeps a cheap mirror of handles and last-published layout results, so
 it can read sizes and positions from the most recent frame without a round trip." The owner asked
@@ -4308,6 +4317,8 @@ the `scale` and `crossfade` layout presets, gestures and the driver graph.
 ## 95. Zero frames at rest
 
 > Resolves decision 78's pending item ("frames at rest", 2026-11-07).
+> Amended by decision 100: the generic wake exists (`ax_world_request_frame`); the commit hook is
+> one caller of the world's wake hook.
 
 **Context.** Decision 78 left the render thread presenting every refresh while a window lived. The
 owner asked, before M2, that it present only while the scene has new content or something
@@ -4394,3 +4405,273 @@ intermediate animation frames with ax_render_soft.
   are counted exactly (two refreshes of slack).
 
 **Status.** Approved by the owner.
+
+## 97. Text's libraries built from source; C++ for HarfBuzz only
+
+**Context.** "Text rendering" names FreeType, HarfBuzz and libunibreak. The owner asked for them to
+be built from source with CMake, pinned by version and checksum, with text/ depending only on base
+and the operating system's font APIs.
+
+**Decision.**
+- **Pins** (`cmake/AxionTextDeps.cmake`): HarfBuzz 15.0.0, FreeType 2.15.0, libunibreak 7.0, the
+  versions of the owner's system, by URL and SHA-256, unpacked into `.deps/` by
+  `ax_fetch_prebuilt` (now also for source archives); CI caches them with the WebGPU packages.
+- **Our own targets**, not the libraries' build systems, so they get the project's toolchain,
+  sanitizers and `-ffp-contract=off` (determinism, decision 81) on every platform, the web
+  included, and only the parts text uses:
+  - `ax_freetype`: sfnt, truetype, cff, psaux, pshinter, psnames, smooth, autofit
+    (`text/third_party/freetype/ax_ftmodule.h`); no gzip, LZW, PNG, brotli or OT-SVG
+    (`ax_ftoption.h`);
+  - `ax_harfbuzz`: the amalgamated `harfbuzz.cc` with its own OpenType font functions, no
+    FreeType, ICU, GLib, Core Text, DirectWrite or Uniscribe integration; `/bigobj` on MSVC;
+    `HB_NO_MT` in the single-threaded web build;
+  - `ax_unibreak`: line, word and grapheme breaking.
+  Third-party code keeps its own warnings (not `-Werror`) and hidden symbols, so the system's
+  libfreetype and libharfbuzz that fontconfig loads never interpose.
+- **C++ is enabled only for `ax_harfbuzz`** (C++11, no exceptions, no RTTI; UBSan's vptr check off
+  for it): the project declares C and CXX, and the presets name the matching C++ compiler
+  (`clang++`, `g++`, `cl`). No AXION code is C++; HarfBuzz is used through its C API.
+- **Licenses** in NOTICE (the FreeType License's credit, HarfBuzz's "Old MIT", zlib).
+- **text/ depends on base only** (and its libraries and fontconfig): `text.includes.only_base`
+  scans its sources.
+
+**Status.** Implementation, pending the owner's approval.
+
+## 98. The bundled fonts and font sources
+
+**Context.** The owner asked for a bundled OFL font set for headless runs and tests, the system's
+fonts through fontconfig on Linux behind an interface DirectWrite and Core Text will implement, and
+(approving the plan) that the cut keep GSUB and GPOS with every feature, checked on the versioned
+file; fontconfig Linux-only and optional, the bundled set the headless default.
+
+**Decision.**
+- **The bundled set** (`text/fonts/`): Noto Sans v2.015, variable (width 62.5-100, weight 100-900),
+  roman and italic, the font of the owner's KDE, so goldens and the desktop show the same
+  outlines. Cut to Latin (Basic Latin, Latin-1, Latin Extended-A, combining marks, punctuation,
+  currency, a few symbols) by `tools/fonts/subset_noto.py`: the archive is checked by SHA-256 and
+  the subsetter is fontTools 4.68.0, so it gives the same bytes (`text/fonts/README.md` records
+  them); 284 and 323 KiB. Every layout feature of the characters kept stays; those that only touch
+  removed characters go (`rtlm`; `ss03`, `ss06`, `ss07` for Greek, Cyrillic and ƒ). OFL in
+  `text/fonts/OFL.txt`. Compiled in (`embed_font.cmake`), so the web needs no file system.
+- **`ax_font_source`** (`axion/text/ax_font_source.h`): a table with `match(family, weight, style,
+  width)` that names a file (in memory or on disk) and a face, and whether the family is the one
+  asked for. Two sources:
+  - the bundled set: static, always asked last, answers every query ("Noto Sans", the generic
+    families and the empty family exactly, anything else as a fallback);
+  - fontconfig (`AX_TEXT_FONTCONFIG`, on by default when pkg-config finds it on Linux): the query
+    goes through the system's substitutions as the desktop's toolkits do; an empty family is
+    `sans-serif`; a variable font's named instance is dropped (AXION applies the axes).
+- **Matching** (`ax_text_match_font`): the first source with the exact family, else the first
+  answer; cached by query. Weight and width go to the face's `wght` and `wdth` axes, clamped to
+  their ranges. Static faces get no synthetic bold or italic (later).
+- **Who uses which:** a world makes its own text system with the bundled set on first text (the
+  headless default); `ax_runtime_create_for_app` gives the world one with fontconfig first,
+  owned by the world (`ax_world_adopt_text_system`), unless the app set one.
+- **Test** `text.fonts.the_versioned_fonts_keep_the_features_the_shaping_tests_use`: on the files in
+  the repository, `liga`, `kern`, `tnum`, `smcp`, `zero` and `frac`, both axes, Latin coverage,
+  "fi" forming one glyph; and the embedded bytes are those files.
+
+**Status.** Implementation, pending the owner's approval.
+
+## 99. Strings, text properties, the style pass and the text pipeline
+
+> Amends decisions 63 (the string value type, text properties, the style pass), 67
+> (`ax_txn_set_str`), 69 (the mirror reflects text content) and 64 (a node moved to another
+> parent gets STYLE on its subtree).
+
+**Context.** "Text rendering" and "Property system". The owner asked for: the string value type
+(8, reserved in decision 63) and `ax_txn_set_str` (pending since decision 67) with the mirror where
+the app reads it back; the style pass for inherited values with decision 64's STYLE mark; text as a
+side component with measurement through layout's protocol and the content as a layout property;
+itemization ready for bidi and fallback without rework; shaping on workers with a cache by text,
+font, size, features and axes; UAX #14 and #29 with libunibreak; greedy wrapping; re-wrapping
+without shaping where HarfBuzz marks glyphs safe to break; the measure function within decision
+90's contract, with caches safe under a parallel pass.
+
+**Decision.**
+- **Strings.** `AX_VALUE_STRING` (8). `ax_txn_set_str(t, node, prop, utf8, length)` copies the
+  bytes into an `AX_TXN_OP_SET_STR` command of variable size; core properties are checked when
+  recorded: well-formed UTF-8 (no overlongs or surrogates), at most `AX_PROP_MAX_STRING` (1 MiB),
+  and FONT_FEATURES must parse. Applied as `ax_shared_str` (base: immutable, reference-counted),
+  shared by the scene, the undo log, the mirror's copies and text. A rejected transaction restores
+  the old string and leaves an inherited property it set unset again (`ax_scene_get_own`,
+  `ax_scene_unset`).
+- **Text properties** (0x0401-0x040A): TEXT (layout); inherited FONT_FAMILY, FONT_SIZE (default
+  14), FONT_WEIGHT (400), FONT_STYLE, FONT_WIDTH (100), LINE_HEIGHT (0: the font's), FONT_FEATURES
+  (CSS font-feature-settings, `ax_text_parse_features`, at most 16), TEXT_ALIGN (paint) and COLOR
+  (paint, animatable, default opaque black). They live in a text side component a node gets when it
+  first sets one, with a bit per property it set: a tree without text pays nothing.
+- **The style pass** (`ax_scene_resolve_styles`, at the start of `ax_world_position`): for each
+  text component whose node is marked STYLE, its computed values: its own, else the nearest
+  ancestor's with a component (through nodes without one), else the defaults; ancestors first, once
+  per pass. A change marks layout and a new paragraph, or paint. Setting an inherited property marks
+  the subtree (decision 64); a node moved to another parent now marks its subtree STYLE.
+- **The mirror** reflects TEXT (`ax_mirror_get_str`, a NUL-terminated prefix and the whole length);
+  text style properties are not mirrored yet (`AX_ERR_UNSUPPORTED`), like layout inputs.
+- **A text leaf** is a node with TEXT: the text stage builds its paragraph from the content and
+  computed style (font matched, features parsed), shapes the new paragraphs in frame jobs in
+  parallel (HarfBuzz on the workers), and sets it as the node's measure function's data. The
+  paragraph is immutable once shaped, so measuring is pure and thread-safe and touches nothing of
+  the store (decision 90's contract, checked in debug builds as before). EXACT keeps the given
+  size; otherwise the wrapped size.
+- **The pipeline** (`text/src/paragraph.c`, `layout.c`):
+  - itemization is a chain of stages that only split runs: style spans, fonts, hard breaks. A run
+    already carries its bidi level, script and direction, so bidi, script and per-cluster
+    fallback are stages to insert in M3 without changing what follows;
+  - breaks (UAX #14) and graphemes (UAX #29) once per paragraph;
+  - shaping in font units, so a run's result serves every size: the cache is keyed by (text, font
+    with its variation axes, script, direction, features). The size enters the key exactly when
+    it changes shaping: through a font id of its own when an optical-size axis follows it. A
+    sharded LRU cache (16 shards, a mutex each, 8 MiB);
+  - greedy wrapping. White space is pre-wrap: newlines are hard breaks, spaces are kept and hang at
+    a line's end; a word longer than the line overflows (no emergency breaks yet). A line that ends
+    inside a run takes the paragraph's glyphs where the glyph after the break is safe to break;
+    otherwise only the fragments from the nearest safe glyphs to the break are shaped again
+    (cached). Line boxes from the font's ascent, descent and gap, or a line height; alignment
+    start (left), center, end;
+  - layouts are reference-counted and cached per paragraph by width (the last four).
+- **Measured** (`tests/bench/bench_text.c`, gcc-release, AMD Ryzen 5 3400G): a 9 870-byte
+  paragraph at 14 px: itemization and breaks 0.61 ms, shaping 1.59 ms cold and 0.05 ms from the
+  cache, layout at 600 units (112 lines) 0.56 ms; re-wrapping at 60 widths 0.20 ms per layout,
+  nothing shaped again.
+- **Tests:** `core.text_style` (strings through the mirror, recording checks, undo, the style
+  pass), `core.text_layout` (a leaf as large as its text, inheritance, wrapping 20 times without
+  shaping, 880 paragraphs shaped in frame jobs and measured in a parallel pass), `text.shaping`
+  (fi, fl, ffi, liga off; AV and To kerned, kern off; tnum, pnum, smcp, zero, frac; the cache
+  across sizes), `text.lines` (breaks within the width, overflow, hard breaks, alignment, metrics,
+  re-wrapping 40 widths with one shaping, an unsafe break after "A-" shaped in fragments, four
+  threads measuring at once), `text.features`. Text runs under TSan and in Node.
+
+**Status.** Implementation, pending the owner's approval.
+
+## 100. Glyph rasterization, the glyph cache, and frame requests
+
+> Resolves decision 95's recorded hook: `ax_world_request_frame`.
+
+**Context.** The owner asked for coverage glyphs up to about 48 device pixels at the exact size
+with 4 horizontal subpixel positions and light or no hinting, rasterized on workers with only the
+atlas upload on the render thread; and, approving the plan: a run drawn whole or not at all, never
+words in part, counted; the bitmap cache never evicting glyphs used by snapshots the render thread
+has not consumed (a test with a tiny cache); and decision 95's generic wake, which a background
+upload needs because it commits nothing.
+
+**Decision.**
+- **Rasterizing** (`text/src/glyphs.c`): FreeType renders 8-bit coverage at the instance's size (a
+  font at a raster size to 1/64 px, `ax_text_font_instance`): up to 48 device px, light hinting
+  (the autohinter's light mode, vertical only, KDE's "slight") and 4 subpixel positions (the
+  outline moved bin/4 px); up to 256 px, the exact size without hinting at whole pixels; beyond,
+  the 256 px raster scaled. FreeType's faces are not thread-safe: each rasterizer context, one
+  thread at a time from a pool, has its own library and faces over the shared font bytes. Fixed
+  point: the same bytes everywhere.
+- **The glyph cache:** entries inserted pending (a glyph is never rasterized twice), ready with
+  release order; every use stamps the snapshot's resource epoch; inserting never evicts.
+  `ax_text_glyphs_retire(oldest_live_epoch)` evicts least recently used glyphs above the budget
+  (16 MiB) only among those last used before the oldest live epoch.
+- **Epochs:** each `ax_world_record_root` is a new epoch, stamped on its glyphs and in its
+  snapshot. The mailbox knows the oldest epoch a reader may still draw: every snapshot not yet
+  replaced in its slot (`ax_ir_mailbox_oldest_epoch`, computed on the writer's side alone); after
+  each tick the runtime passes the oldest over its surfaces to `ax_world_retire_glyphs`.
+- **Rasterization at record time:** missing glyphs are rasterized at once within a per-snapshot
+  budget (1024 with a threaded job system, in frame jobs for batches over 32; with inline jobs
+  everything at once, since one thread gains nothing by deferring;
+  `ax_world_set_glyph_budget` for tests), the rest in background batches. **A glyph run whose
+  glyphs are not all ready is left out whole** and its node recorded again when they arrive
+  (`glyph_runs_deferred`); a run is a line's glyphs of one font, so words never appear in part.
+- **Frame requests** (`ax_world_request_frame(world, root)`, internal SDK, any thread): the windows
+  showing `root` (all for a null root) ask for a frame through the world's wake hook
+  (`ax_world_set_wake_hook`, replacing decision 95's commit hook; called under a lock so a runtime
+  can remove it while another thread asks). A commit is one caller (null root); background glyphs
+  are the first other one: their ready callback marks the world and wakes every window (a run knows
+  its node, not its window). The runtime wakes the surfaces whose root matches, reading only
+  atomics. Kept in the SDK until an app needs it (video, custom drawing).
+- **Tests:** `text.glyphs` (exact-size bitmaps, four subpixel bitmaps of the same ink, background
+  batches with their callback, the tiny cache: nothing a live snapshot uses goes, a newer use keeps
+  a glyph, evicted glyphs come back), `render_ir.glyph_runs` (the mailbox's oldest epoch),
+  `core.text_layout.background_glyphs_ask_for_a_frame_and_record_whole_runs`,
+  `runtime.threads.a_frame_request_wakes_the_surfaces_that_show_its_root`.
+
+**Status.** Implementation, pending the owner's approval.
+
+## 101. Glyph runs in the Render IR, the atlases, the coverage correction, scaled text
+
+**Context.** The owner asked for a glyph run item as a new minor of the Render IR with M0's
+compatibility rules, drawn by ax_render_wgpu and ax_render_soft, A8 atlases paged with LRU, the
+document's gamma and contrast correction of text coverage tuned to look like platform text, the
+minimum for large text and text under a scale animation (rasterized again once it settles, with
+hysteresis; MSDF and GPU paths recorded for later), glyph runs in decision 76's item cache, parity
+of soft and wgpu within tolerance, and (approving the plan) either serialized snapshots carrying
+their glyphs or a recorded way to reproduce them; text goldens in decision 86's job, byte-identical,
+any difference investigated before a tolerance.
+
+**Decision.**
+- **Render IR 1.1:** `AX_IR_ITEM_GLYPH_RUN` (10): color, font instance, raster scale, then the
+  glyphs (id, subpixel bin, pen position as integers on the raster grid: layer units times the
+  raster scale). The snapshot gains its glyph source (`ax_ir_glyph_source`, a lookup the render
+  thread calls) and its resource epoch (fields checked by `struct_size`). A consumer of 1.0 skips
+  the item and counts it, by M0's rules; one without a glyph source skips the run and counts it.
+- **Reproducing a snapshot (the owner's choice: both):** the dump prints runs as `id@x,y/bin`
+  (reproducible with the same font); serialization writes every glyph a snapshot's runs use, with
+  its bitmap, into the 1.1 header (a 1.0 reader skips it through `header_size`), read back as the
+  snapshot's glyph source: a serialized snapshot draws its text with no text system, for devtools'
+  replay. Goldens are images, independent of either.
+- **Recording:** a text leaf's runs (one per line and font) follow its background in the node's
+  cached items (decision 76), positioned in its content box at the layer's raster scale (the
+  window's scale times the layers' settled scales), x to a quarter pixel up to 48 px, the baseline
+  on a whole pixel. A composite-only change copies them (`core.text_layout.glyph_runs_are_cached_
+  with_the_node_items`); a node records them again when its paragraph, its color (the inherited
+  presentation value) or its raster scale changes.
+- **Scaled text:** a layer's scale (the root of its transform's determinant) settles when it has
+  held still within 0.1 % for 150 ms and differs by more than 1 % from the settled one; until then
+  the glyphs keep their raster and are drawn scaled (bilinear), and the window keeps getting frames
+  so it settles at rest too (`text_rescaled`). **MSDF and GPU path rendering of large and
+  transformed text remain for later** (the document's plan).
+- **ax_render_soft:** a command per glyph: an exact copy where raster pixels land on device pixels
+  (identity scale and a whole translation), else a bilinear sample; corrected, clipped and blended
+  like items; one path for the scalar and SIMD frames.
+- **ax_render_wgpu:** an A8 atlas of four 1024 x 1024 layers of a 2D array texture, shelves, a
+  one-texel empty border per glyph (bilinear reads zeros at the edges, as soft does), LRU eviction
+  of a whole page not used by the current frame (a glyph that finds no room is skipped and
+  counted); uploads on the render thread. Glyph quads join the rects' instanced draw, so painting
+  order holds; the shader samples the atlas and applies the correction table.
+- **The coverage correction** (`ax_ir_text_lut`, one deterministic table for both renderers):
+  Skia's mask gamma: for the text's luminance (8 buckets) and the opposite luminance assumed
+  behind it, the alpha that, blended in the renderer's sRGB space, gives the blend of a space of
+  exponent `gamma`, with `contrast` thickening dark text. Parameters provisional (gamma 1.8,
+  contrast 0.1) until tuned against the desktop's text with `tools/diag/kde_text_capture.sh` and
+  `text_weight` (see the PR); the blending space itself is issue #4's (the next PR).
+- **Measured.** Parity (`headless.text_goldens.the_gpu_renderer_draws_text_like_the_software_one`,
+  Dawn on the owner's NVIDIA): dE (OKLab) at the 99.9th percentile 0.0033 to 0.0034, mean 0.0001,
+  within decision 83's 0.02 and 0.002. `bench_text`: 40 paragraphs (11 to 48 px) animating their
+  width through the resize preset: 0.88 ms median per frame for layout, animation and recording
+  on one thread, 2.3 ms worst (3.2 ms with jobs, the workers waking), under a 260 Hz refresh's
+  3.8 ms.
+- **Goldens** (`tests/goldens/text/`): paragraphs at 11, 13, 16 and 20 px, light and dark, at
+  scales 1 and 1.325; 14 px at three widths; 28 and 48 px. **Byte-identical on Linux, macOS,
+  Windows and the web** (the determinism job: 29 identical images).
+
+**Status.** Implementation, pending the owner's approval.
+
+## 102. Layout animations end on the pixel grid
+
+> Amends decision 94 (the resize preset's presentation relayout).
+
+**Context.** The owner asked, during this work, that an animation end where pixel snapping puts the
+node at rest, so the interface does not jump when it stops.
+
+**Decision.**
+- Frame animations already go from one rounded frame (decision 90) to another, so a node's own
+  frame ends exactly on its rounded target.
+- The resize preset lays a resizing node's subtree out without rounding each frame (decision 90's
+  owner adjustment). Its descendants therefore ended an animation by moving from their unrounded
+  presentation positions to their rounded targets: up to half a device pixel. A presentation
+  relayout now carries the target's own rounding offset (the rounded target frame minus the
+  unrounded one), constant during the animation: the motion stays smooth, and the last animated
+  frame meets the frame at rest.
+- Values the app sets (a TRANSFORM with a fractional translation) end where they were set; text
+  inside such a layer is drawn bilinearly, not snapped (later, with the document's "snapping eases
+  back in as the animation settles").
+- **Test:** `core.text_layout.a_resize_ends_on_the_pixel_grid_without_a_jump`: a parent resized by
+  the default spring at scale 1.325 ends with its child on its rounded frame, the last animated
+  frame within the spring's last step (under 0.1 device px; 0.33 px before the change).
+
+**Status.** Implementation, pending the owner's approval.

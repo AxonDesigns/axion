@@ -17,8 +17,12 @@ wgpu-native kept compiling in CI), the Render IR and `ax_render_wgpu`, shown by
   blocked for 500 ms does not stop running animations (`examples/m1_nodes`).
 - `render/soft/`: the software renderer, deterministic on every platform.
 - `headless/`: runs a world without a window or a GPU.
+- `text/`: Latin text: HarfBuzz shaping with a shared cache, libunibreak's line breaks, greedy
+  wrapping that re-wraps without shaping again, glyphs rasterized by FreeType on worker threads,
+  the bundled Noto Sans and the system's fonts through fontconfig. Text leaves are measured by
+  layout and drawn by both renderers from glyph runs in the Render IR (1.1).
 
-Still to come in M1: Latin text and the accessibility tree. See the milestones in
+Still to come in M1: the blending space (issue #4) and the accessibility tree. See the milestones in
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Building
@@ -84,6 +88,7 @@ Reference benchmarks build with the tests but never run in CI. Run them on a Rel
 | `bench_soft [workers]` | the software renderer                            | 87       |
 | `bench_layout`         | full and incremental flex layout of 10 000 nodes | 92       |
 | `bench_anim`           | the frame's stages while 10 000 nodes animate    | 94       |
+| `bench_text`           | shaping, line layout, a width animation of text  | 99, 101  |
 
 ## Repository checks
 
