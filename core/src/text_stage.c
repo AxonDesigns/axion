@@ -104,6 +104,22 @@ static ax_text_system *text_system(world_impl *w)
     return w->text;
 }
 
+void ax_world_adopt_text_system(ax_world world, struct ax_text_system *text)
+{
+    world_impl *w = ax__world_from_handle(world);
+    ax_world_set_text_system(world, text);
+    if (w != NULL && text != NULL) {
+        w->text_owned = true;
+    }
+}
+
+ax_text_system *ax_world_peek_text_system(ax_world world)
+{
+    world_impl *w = ax__world_from_handle(world);
+    AX_ASSERT(w != NULL);
+    return w != NULL ? w->text : NULL;
+}
+
 ax_text_system *ax_world_text_system(ax_world world)
 {
     world_impl *w = ax__world_from_handle(world);

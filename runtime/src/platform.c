@@ -13,6 +13,8 @@
  */
 #include <string.h>
 
+#include <axion/text/ax_text.h>
+
 #include "rt_internal.h"
 
 #include <axion/ax_error.h>
@@ -493,6 +495,24 @@ ax_result ax_rt_create_for_app(const ax_runtime_desc *desc, const ax_rt_platform
         ax_atomic_init_u64(&ps->refresh, 0);
         ax_atomic_init_u32(&ps->shown_w, 0);
         ax_atomic_init_u32(&ps->shown_h, 0);
+    }
+    /* Windows show the system's fonts (decision 98): a text system with fontconfig where it
+     * exists (the bundled set after it), unless the app gave the world one. The world owns it. */
+    if (ax_world_peek_text_system(desc->world) == NULL) {
+        ax_font_source *fc = NULL;
+        ax_text_system *ts = NULL;
+        ax_text_system_desc td;
+        memset(&td, 0, sizeof td);
+        if (ax_font_source_fontconfig_create(NULL, &fc) == AX_OK) {
+            td.sources = &fc;
+            td.source_count = 1;
+            td.own_sources = true;
+        }
+        if (ax_text_system_create(&td, &ts) == AX_OK) {
+            ax_world_adopt_text_system(desc->world, ts);
+        } else {
+            ax_font_source_destroy(fc);
+        }
     }
     memset(&d, 0, sizeof d);
     d.world = desc->world;

@@ -68,9 +68,16 @@ AX_API void ax_world_set_jobs(ax_world world, struct ax_job_system *jobs);
  */
 AX_API void ax_world_set_text_system(ax_world world, struct ax_text_system *text);
 
+/* As ax_world_set_text_system, and the world destroys it with itself (a runtime's text system
+ * with the system's fonts). thread: scene */
+AX_API void ax_world_adopt_text_system(ax_world world, struct ax_text_system *text);
+
 /* The text system in use, made on first call when none was set (NULL when out of memory).
  * thread: scene */
 AX_API struct ax_text_system *ax_world_text_system(ax_world world);
+
+/* The text system set or made so far, or NULL; makes none. thread: scene */
+AX_API struct ax_text_system *ax_world_peek_text_system(ax_world world);
 
 /* True for a live world. thread: any */
 AX_API bool ax_world_is_valid(ax_world world);

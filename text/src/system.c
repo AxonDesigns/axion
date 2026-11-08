@@ -65,6 +65,7 @@ ax_result ax_text_system_create(const ax_text_system_desc *desc, ax_text_system 
         }
     }
     ts->sources[ts->source_count++] = ax_font_source_bundled(); /* always last */
+    ts->own_sources = desc != NULL && desc->own_sources;
     ax_mutex_init(&ts->fonts_mutex);
     ts->blobs = (tx_blob *)ax_mem_alloc(a, sizeof(tx_blob) * MAX_BLOBS, AX_ALIGNOF(tx_blob));
     ts->faces = (tx_face *)ax_mem_alloc(a, sizeof(tx_face) * MAX_FACES, AX_ALIGNOF(tx_face));
@@ -125,6 +126,11 @@ void ax_text_system_destroy(ax_text_system *ts)
     ax_mem_free(&a, ts->instances, sizeof(tx_instance) * TX_MAX_INSTANCES + sizeof(instance_hash));
     ax_mem_free(&a, ts->matches, sizeof(tx_match) * TX_MAX_MATCHES);
     ax_mutex_deinit(&ts->fonts_mutex);
+    if (ts->own_sources) {
+        for (i = 0; i < ts->source_count; ++i) {
+            ax_font_source_destroy(ts->sources[i]); /* the bundled one is static: a no-op */
+        }
+    }
     ax_mem_free(&a, ts, sizeof *ts);
 }
 

@@ -2,10 +2,10 @@
  * Copyright 2026 Axon Works
  * SPDX-License-Identifier: Apache-2.0
  *
- * Goldens of animation frames (decisions 82 and 94): m1_nodes' cards, headless with the manual
+ * Goldens of animation frames (decisions 82, 94 and 99): m1_nodes' cards, headless with the manual
  * clock and ax_render_soft, captured mid-way through a reorder (the default spring moving every
- * card), a card growing (the resize preset behind its rounded clip) and a color easing, and at
- * rest. The software renderer gives the same bytes on every platform (decision 86): these frames
+ * card), a card growing (the resize preset behind its rounded clip), a color easing and the list
+ * narrowing (its paragraphs re-wrapped at each width), and at rest. The software renderer gives the same bytes on every platform (decision 86): these frames
  * check that animation sampling is deterministic too.
  */
 #include <stdio.h>
@@ -76,6 +76,12 @@ AX_TEST(cards_reorder_grow_and_change_color_frame_by_frame)
     /* A card's color eases over 0.2 s. */
     AX_REQUIRE(m1_cards_step(ax_headless_world(h), &c, 2, NULL) == AX_OK);
     frame_golden(h, root, 4, "cards_color_f04");
+    AX_REQUIRE(ax_headless_settle(h, 200, NULL) == AX_OK);
+
+    /* The list narrows: every paragraph re-wraps at each interpolated width (decision 99). */
+    AX_REQUIRE(m1_cards_step(ax_headless_world(h), &c, 3, NULL) == AX_OK);
+    frame_golden(h, root, 4, "cards_narrow_f04");
+    frame_golden(h, root, 6, "cards_narrow_f10");
     AX_REQUIRE(ax_headless_settle(h, 200, NULL) == AX_OK);
     frame_golden(h, root, 1, "cards_rest_after");
     ax_headless_destroy(h);

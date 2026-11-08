@@ -71,6 +71,7 @@ typedef struct ax_text_system_desc {
      * system. */
     ax_font_source *const *sources;
     uint32_t source_count;
+    bool own_sources;         /* destroy the sources with the system */
     size_t shape_cache_bytes; /* 0: 8 MiB */
     size_t glyph_cache_bytes; /* 0: 16 MiB (evicted only below the oldest live epoch) */
 } ax_text_system_desc;

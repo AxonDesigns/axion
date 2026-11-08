@@ -128,6 +128,7 @@ struct ax_text_system {
     ax_allocator allocator;
     ax_font_source *sources[9];
     uint32_t source_count;
+    bool own_sources;
 
     /* Fonts: append-only tables under `fonts_mutex`; entries never move once published (fixed
      * capacity), so readers index them without the lock once they hold an id. */
