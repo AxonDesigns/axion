@@ -59,11 +59,15 @@ AX_TEST(malformed_feature_lists_are_rejected)
     }
     {
         /* More than the limit. */
-        char many[256] = "";
+        char many[256];
+        size_t at = 0;
         ax_result r = AX_OK;
         for (i = 0; i <= AX_TEXT_MAX_FEATURES; ++i) {
-            strcat(many, i == 0 ? "liga" : ", liga");
+            const char *item = i == 0 ? "liga" : ", liga";
+            memcpy(many + at, item, strlen(item));
+            at += strlen(item);
         }
+        many[at] = '\0';
         AX_CHECK_EQ_U(parse(many, NULL, &r), 0u);
         AX_CHECK_RESULT(r, AX_ERR_INVALID_ARGUMENT);
     }
