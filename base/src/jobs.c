@@ -784,15 +784,19 @@ static void wait_counter(ax_job_system *js, ax_job_counter *counter, uint32_t lo
 void ax_jobs_wait(ax_job_system *js, ax_job_counter *counter)
 {
     uint32_t lowest;
+    bool frame_waits_for_background;
     AX_ASSERT(js != NULL && counter != NULL);
     lowest = wait_lowest(current_worker(js));
     /* Checked before looking at the counter, so the mistake shows whatever the timing (and in
      * inline mode, where the counter is always zero by now). */
-    if (ax_atomic_load_u32(&counter->priority, AX_MO_RELAXED) == AX_JOB_BACKGROUND &&
-        lowest == AX_JOB_FRAME) {
-        AX_ASSERT_MSG(false, "ax_jobs_wait: frame work must not wait for background jobs (a "
-                             "thread that is not a worker, or a frame job, waits on a counter "
-                             "of background jobs); see decision 80");
+    frame_waits_for_background =
+        ax_atomic_load_u32(&counter->priority, AX_MO_RELAXED) == AX_JOB_BACKGROUND &&
+        lowest == AX_JOB_FRAME;
+    AX_ASSERT_MSG(!frame_waits_for_background,
+                  "ax_jobs_wait: frame work must not wait for background jobs (a thread that is "
+                  "not a worker, or a frame job, waits on a counter of background jobs); see "
+                  "decision 80");
+    if (frame_waits_for_background) {
         lowest = AX_JOB_BACKGROUND; /* release builds: lose the frame rather than hang */
     }
     wait_counter(js, counter, lowest);
