@@ -75,6 +75,14 @@ AX_API ax_result ax_surface_prepare_commit(ax_surface surface, const ax_frame_ta
 AX_API ax_result ax_surface_commit_failed(ax_surface surface);
 
 /*
+ * Ends the presenter's frame begun with ax_surface_begin_frame, whether it was committed or not
+ * (it drew nothing new at rest, its content had another size, every buffer was busy...). Until
+ * then the window may not be destroyed: begin_frame marks the surface as being presented and only
+ * a commit or this clears it (decision 95). Harmless after a commit. thread: presenter
+ */
+AX_API void ax_surface_end_frame(ax_surface surface);
+
+/*
  * Waits until the compositor has reported the fate (presented or discarded) of every commit made
  * so far, and two refreshes have passed since the last presentation (a swapchain may add commits
  * of its own that wait one refresh behind ours), dispatching the surface's queue meanwhile;
@@ -109,6 +117,12 @@ typedef enum ax_wake_reason {
  */
 AX_API ax_result ax_surface_wait_frame(ax_surface surface, uint64_t timeout_ns,
                                        ax_wake_reason *out_reason);
+
+/* Asks the presenter for a frame although nothing on the surface asked for one: the surface's
+ * content is about to change while it rests without frames (a transaction was committed; decision
+ * 95). Its waits then return AX_WAKE_COMMIT_REQUESTED, as for commit-time state. A stale surface
+ * is ignored. thread: any */
+AX_API void ax_surface_request_commit(ax_surface surface);
 
 #define AX_SURFACE_WAIT_MAX 64u
 

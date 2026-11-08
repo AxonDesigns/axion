@@ -39,6 +39,8 @@ typedef struct rt_surface {
     ax_atomic_u64 shown_ir;
     ax_atomic_u64 shown_ns;
     ax_atomic_u32 shown_world_clock;
+    /* Scene -> render side: something under the root animated at the last tick (decision 95). */
+    ax_atomic_u32 animating;
 
     /* Acknowledgements of a removal. */
     ax_atomic_u32 scene_done;

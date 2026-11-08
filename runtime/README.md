@@ -16,3 +16,7 @@ frame jobs. The scene stage and the single-threaded mode depend on core and the 
 need base's threads; the platform presenter (windows, the renderer, decision 57's frame step) is
 built with the platform module, and uses ax_render_wgpu when the gpu module is built, falling back
 to ax_render_soft in shared-memory buffers when it is not or no GPU is usable (decision 84).
+
+Each tick animates the world after layout (decision 94) and stores whether a surface animates
+(`ax_rt_surface_animating`). A window at rest presents nothing; a commit wakes it through the
+presenter's `wake` (decision 95).

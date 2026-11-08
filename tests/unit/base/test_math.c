@@ -265,3 +265,46 @@ AX_TEST(elementary_functions_give_the_same_bits_everywhere)
     printf("hash %08x\n", (unsigned)h);
     AX_CHECK_EQ_U(h, 0x028cc3c1u);
 }
+
+/* The deterministic elementary functions against libm (decisions 81 and 94), and a hash of their
+ * bits that CI checks on every platform. */
+AX_TEST(deterministic_exp_log_atan2_and_sin_cos_are_accurate_and_stable)
+{
+    uint32_t h = 2166136261u;
+    int i;
+    for (i = -400; i <= 400; ++i) {
+        const float x = (float)i * 0.05f; /* -20 .. 20 */
+        float s, c;
+        const float e = ax_expf(x * 0.5f);
+        ax_sin_cos(x, &s, &c);
+        AX_CHECK(fabs((double)e - exp((double)x * 0.5)) <= 2e-6 * exp((double)x * 0.5));
+        AX_CHECK(fabs((double)s - sin((double)x)) < 3e-6);
+        AX_CHECK(fabs((double)c - cos((double)x)) < 3e-6);
+        if (x > 0.0f) {
+            AX_CHECK(fabs((double)ax_log2f(x) - log2((double)x)) < 3e-6);
+        }
+        {
+            const float yy = (float)((i * 37) % 23) - 11.0f, xx = (float)((i * 11) % 19) - 9.0f;
+            AX_CHECK(fabs((double)ax_atan2f(yy, xx) - atan2((double)yy, (double)xx)) < 2e-6);
+        }
+    }
+    AX_CHECK(ax_expf(-200.0f) == 0.0f);
+    AX_CHECK(ax_log2f(-1.0f) != ax_log2f(-1.0f));
+    AX_CHECK(ax_atan2f(0.0f, 0.0f) == 0.0f);
+    for (i = 0; i < 16; ++i) {
+        const float x = (float)i * 0.37f - 2.5f;
+        float v[5];
+        int k;
+        ax_sin_cos(x, &v[0], &v[1]);
+        v[2] = ax_expf(x);
+        v[3] = ax_log2f(x + 3.0f);
+        v[4] = ax_atan2f(x, 1.3f - x);
+        for (k = 0; k < 5; ++k) {
+            uint32_t bits;
+            memcpy(&bits, &v[k], sizeof bits);
+            h = (h ^ bits) * 16777619u;
+        }
+    }
+    printf("hash %08x\n", (unsigned)h);
+    AX_CHECK_EQ_U(h, 0x27c11065u);
+}

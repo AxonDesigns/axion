@@ -4,6 +4,8 @@
 # Core tests: the node store, properties, transactions and the app thread's mirror.
 
 set(_ax_core_tests
+    test_anim.c
+    test_anim_curves.c
     test_abi_headers.c
     test_apply.c
     test_dirty.c

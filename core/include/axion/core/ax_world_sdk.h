@@ -24,6 +24,7 @@
 
 #include "../ax_txn.h"
 #include "../ax_world.h"
+#include "ax_anim.h"
 #include "ax_prop_registry.h"
 #include "ax_scene.h"
 #include <axion/base/ax_compiler.h>
@@ -38,6 +39,11 @@ AX_API void ax_world_bind_scene_thread(ax_world world);
 
 /* The calling thread becomes the world's app thread. The previous one must not be using it. */
 AX_API void ax_world_bind_app_thread(ax_world world);
+
+/* Called on the app thread after each successful ax_txn_commit (NULL removes it): a runtime wakes
+ * surfaces that rest without frames (decision 95). It must not call back into the world.
+ * thread: app */
+AX_API void ax_world_set_commit_hook(ax_world world, void (*hook)(void *user), void *user);
 
 /* The job system the scene's frame stages may use for frame jobs (layout's independent relayout
  * boundaries), or NULL (the default) for one thread. It must outlive its use. thread: scene */
@@ -107,14 +113,11 @@ typedef struct ax_txn_cmd_remove {
 
 typedef struct ax_txn_cmd_transition {
     ax_txn_cmd h;
-    ax_prop prop; /* a longhand: shorthands are expanded when recording */
-    uint32_t kind;
-    ax_node node;
-    float delay;
-    float duration;
-    float curve[4];
-    float bounce;
+    ax_prop prop; /* a longhand or AX_PROP_LAYOUT: shorthands and layout properties are mapped
+                   * when recording */
     uint32_t reserved;
+    ax_node node;   /* null: the world's default for prop (ax_txn_set_default_transition) */
+    ax_curve curve; /* validated (ax_anim.h) */
 } ax_txn_cmd_transition;
 
 /* A committed transaction, as the scene thread reads it. */

@@ -233,8 +233,7 @@ static ax_result wl_init(ax_app_impl *app, const ax_app_desc *desc)
     return AX_OK;
 }
 
-/* ---- pump
- * ---------------------------------------------------------------------------------------- */
+/* ---- pump ----------------------------------------------------------------------------------- */
 
 static ax_result connection_lost(wl_app *wl)
 {

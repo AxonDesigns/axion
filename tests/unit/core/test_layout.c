@@ -315,8 +315,7 @@ AX_TEST(the_pass_lays_out_dirty_roots_and_reports_changed_frames)
     AX_CHECK_EQ_U(fixture_deinit(&f), 0);
 }
 
-/* ---- Relayout boundaries (decision 92)
- * ----------------------------------------------------------- */
+/* ---- Relayout boundaries (decision 92) ------------------------------------------------------ */
 
 typedef struct app_scene {
     ax_node window, sidebar, main, list;

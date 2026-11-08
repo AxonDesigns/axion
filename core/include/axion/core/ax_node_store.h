@@ -146,6 +146,12 @@ typedef struct ax_node_layout {
     uint32_t laid_out;     /* nonzero once the node has been laid out (`performed` is valid) */
     uint32_t last_work;    /* nodes laid out or measured the last time it was a layout root */
     uint32_t changed_pass; /* the pass that listed its frame as changed */
+    /* For layout animations (decision 94): the frame before its latest change and the parent it
+     * had then, and whether it had been laid out before that change. */
+    ax_rect prev_frame;
+    uint32_t prev_parent;
+    uint32_t frame_parent; /* the parent when `frame` was written */
+    uint32_t had_frame;    /* bit 0: a frame was written; bit 1: prev_frame holds one */
     uint32_t changed_next; /* the next slot of that list (AX_NODE_NONE: the last) */
     /* The cached layout; the request of the last layout (performed, not measured) and the
      * containing block it had, from which a relayout boundary is laid out again. */

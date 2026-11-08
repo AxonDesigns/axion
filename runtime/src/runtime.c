@@ -103,6 +103,8 @@ static void free_runtime(rt_impl *r)
     ax_mem_free(&a, r, sizeof *r);
 }
 
+static void on_commit(void *user);
+
 ax_result ax_rt_create(const ax_rt_desc *desc, ax_runtime *out_runtime)
 {
     const ax_allocator *a = ax_default_allocator();
@@ -190,6 +192,7 @@ ax_result ax_rt_create(const ax_rt_desc *desc, ax_runtime *out_runtime)
     if (desc->mode != AX_RUNTIME_THREADED) {
         ax_world_set_jobs(desc->world, r->jobs); /* inline: the caller is the scene thread */
     } else {
+        ax_world_set_commit_hook(desc->world, on_commit, r); /* wakes resting surfaces */
         res = ax__rt_start_threads(r);
         if (res != AX_OK) {
             ax_atomic_store_ptr(&g_runtimes[slot], NULL, AX_MO_RELEASE);
@@ -217,12 +220,42 @@ ax_result ax_runtime_create(const ax_runtime_desc *desc, ax_runtime *out_runtime
     return ax_rt_create(&d, out_runtime);
 }
 
+/* A commit while surfaces rest without frames (decision 95): each one asks for a frame. App
+ * thread: the surfaces it added are its own to read. */
+static void on_commit(void *user)
+{
+    rt_impl *r = (rt_impl *)user;
+    const ax_rt_presenter_vtbl *p = r->desc.presenter;
+    uint32_t i;
+    if (p == NULL || p->struct_size < sizeof(ax_rt_presenter_vtbl) || p->wake == NULL) {
+        return;
+    }
+    for (i = 0; i < AX_RUNTIME_MAX_SURFACES; ++i) {
+        const rt_surface *s = &r->surfaces[i];
+        if (s->app_used && !s->removing) {
+            p->wake(r->desc.presenter_self, i, s->native);
+        }
+    }
+}
+
+bool ax_rt_surface_animating(ax_runtime rt, uint32_t surface)
+{
+    rt_impl *r = ax__rt_from_handle(rt);
+    if (r == NULL || surface >= AX_RUNTIME_MAX_SURFACES) {
+        return false;
+    }
+    return ax_atomic_load_u32(&r->surfaces[surface].animating, AX_MO_ACQUIRE) != 0;
+}
+
 ax_result ax_runtime_destroy(ax_runtime runtime)
 {
     rt_impl *r = ax__rt_from_handle(runtime);
     uint32_t i;
     if (r == NULL) {
         return ax_set_error(AX_ERR_INVALID_HANDLE, "ax_runtime_destroy: invalid runtime");
+    }
+    if (r->desc.mode == AX_RUNTIME_THREADED && ax_world_is_valid(r->desc.world)) {
+        ax_world_set_commit_hook(r->desc.world, NULL, NULL);
     }
     if (r->threads_running) {
         ax__rt_stop_threads(r); /* detaches every surface on the render thread */
@@ -317,6 +350,7 @@ ax_result ax_rt_add_surface(ax_runtime rt, ax_node root, const ax_rt_surface_des
     ax_atomic_store_u64(&s->shown_ir, 0, AX_MO_RELAXED);
     ax_atomic_store_u64(&s->shown_ns, 0, AX_MO_RELAXED);
     ax_atomic_store_u32(&s->shown_world_clock, 0, AX_MO_RELAXED);
+    ax_atomic_store_u32(&s->animating, 0, AX_MO_RELAXED);
     ax_atomic_store_u32(&s->scene_done, 0, AX_MO_RELAXED);
     ax_atomic_store_u32(&s->render_done, 0, AX_MO_RELAXED);
     s->app_used = true;
@@ -553,16 +587,17 @@ static void tick(rt_impl *r, uint32_t index, const ax_rt_request *q)
     if (!ax_node_store_is_live(&scene->store, s->root)) {
         return; /* the root's transaction has not applied yet */
     }
-    /* 3. The root's viewport. 4. The examples' driver, which may read it. */
+    /* 3. The root's viewport. */
     if (ax_world_set_root_viewport(world, s->root, q->logical_width, q->logical_height,
                                    q->scale > 0.0f ? q->scale : 1.0f) != AX_OK) {
         return; /* out of memory, or the root has gained a parent: nothing to record */
     }
-    if (r->desc.driver != NULL) {
-        r->desc.driver(r->desc.driver_user, world, s->root, t, q->logical_width, q->logical_height);
-    }
-    /* 5. Positioning, then recording when this surface's content changed. */
+    /* 4. Layout and implicit animations (sampled at the frame's time), then recording when this
+     * surface's content changed. */
     (void)ax_world_position(world);
+    (void)ax_world_animate(world, t);
+    ax_atomic_store_u32(&s->animating, ax_world_root_animating(world, s->root) ? 1u : 0u,
+                        AX_MO_RELEASE);
     ax_world_record_collect(world);
     if (ax_world_root_changed(world, s->root, &changed_seq)) {
         ax_ir_builder *b = ax_ir_mailbox_begin(&s->mailbox, q->logical_width, q->logical_height, t,

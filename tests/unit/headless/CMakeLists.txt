@@ -27,3 +27,11 @@ if("address" IN_LIST AX_SANITIZE)
     set_property(TEST ${_tests} APPEND PROPERTY ENVIRONMENT
         "LSAN_OPTIONS=fast_unwind_on_malloc=0:suppressions=${PROJECT_SOURCE_DIR}/tools/sanitizers/lsan-gpu-drivers.supp")
 endif()
+
+# Goldens of animation frames (decision 94), on m1_nodes' cards.
+ax_add_unit_test(headless test_anim_goldens.c)
+target_sources(test_headless_anim_goldens PRIVATE "${PROJECT_SOURCE_DIR}/examples/m1_nodes/m1_cards.c")
+target_include_directories(test_headless_anim_goldens PRIVATE "${PROJECT_SOURCE_DIR}/examples/m1_nodes")
+target_link_libraries(test_headless_anim_goldens PRIVATE ax_headless ax_test_golden)
+set_property(TEST headless.anim_goldens.cards_reorder_grow_and_change_color_frame_by_frame
+             APPEND PROPERTY LABELS golden)

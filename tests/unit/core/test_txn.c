@@ -181,8 +181,10 @@ AX_TEST(commands_reach_the_scene_in_order_with_their_fields)
         if (n >= 7 && n <= 10) {
             const ax_txn_cmd_transition *tc = (const ax_txn_cmd_transition *)(const void *)cmd;
             AX_CHECK_EQ_U(tc->prop, AX_PROP_CORNER_RADIUS_TOP_LEFT + (n - 7u));
-            AX_CHECK_EQ_U(tc->kind, AX_TRANSITION_SPRING);
-            AX_CHECK(tc->bounce == 0.2f);
+            AX_CHECK_EQ_U(tc->curve.kind, AX_TRANSITION_SPRING);
+            /* resolved when recorded: 0.4 s, bounce 0.2 -> damping ratio 0.8 */
+            AX_CHECK_NEAR_F(tc->curve.stiffness, 246.74f, 0.01f);
+            AX_CHECK_NEAR_F(tc->curve.damping, 25.13f, 0.01f);
         }
         n++;
     }

@@ -8,6 +8,7 @@
  *
  *     ax_world_apply_pending(world, deadline);   // ax_world_sdk.h
  *     ax_world_position(world);                   // layout (ax_layout.h): flex
+ *     ax_world_animate(world, frame_time);        // implicit animations, sampled at T
  *     ax_world_record_collect(world);             // what changed, before the flags are cleared
  *     if (ax_world_root_changed(world, root, &seq))
  *         ax_world_record_root(world, root, builder);   // into the root's mailbox
@@ -55,6 +56,9 @@
 #include <axion/base/ax_compiler.h>
 #include <axion/render/ax_render_ir.h>
 
+#include "ax_anim.h"
+#include "ax_prop_registry.h"
+
 AX_EXTERN_C_BEGIN
 
 /*
@@ -71,6 +75,34 @@ AX_API void ax_world_remove_root(ax_world world, ax_node root);
 
 /* Lays out the dirty part of the tree. Returns how many frames changed. */
 AX_API uint32_t ax_world_position(ax_world world);
+
+/*
+ * Implicit animations (decision 94), after layout and before recording: starts or retargets the
+ * animations of the frames layout changed (when an animated transaction caused the change and it
+ * was not a viewport's resize), samples every running animation at frame_time_ns (the frame's
+ * predicted present time, on the world's clock) and marks what moved for recording, which then
+ * draws presentation values. The first call starts the animator: changes applied before it (a
+ * window's first content, tests that never animate) take effect at once. Returns the number of
+ * nodes still animating.
+ */
+AX_API uint32_t ax_world_animate(ax_world world, uint64_t frame_time_ns);
+
+/* Whether something under the window root animated at the last ax_world_animate: the window needs
+ * the next frame even without new transactions. */
+AX_API bool ax_world_root_animating(ax_world world, ax_node root);
+
+/*
+ * What a node shows at the last ax_world_animate (decision 94): a paint or composite property's
+ * presentation value (target plus animation); its frame
+ * goes through ax_world_presentation_frame. Hit testing and devtools read these; the mirror
+ * reflects targets. Errors: AX_ERR_INVALID_HANDLE, AX_ERR_INVALID_ARGUMENT (a property that
+ * does not animate).
+ */
+AX_API ax_result ax_world_presentation(ax_world world, ax_node node, ax_prop prop, ax_value *out);
+AX_API ax_result ax_world_presentation_frame(ax_world world, ax_node node, ax_rect *out);
+
+/* The animator's counters since the last reset (ax_anim.h). */
+AX_API void ax_world_get_anim_counters(ax_world world, ax_anim_counters *out, bool reset);
 
 /*
  * Reads the dirty flags before they are cleared: marks the items of nodes with PAINT for
@@ -93,14 +125,16 @@ AX_API ax_result ax_world_record_root(ax_world world, ax_node root, ax_ir_builde
 
 /* Counters since the last reset, for tests and profiles. */
 typedef struct ax_frame_counters {
-    uint64_t frames_changed;  /* layout: frames that changed */
-    uint64_t nodes_recorded;  /* nodes whose items were recorded again */
-    uint64_t items_recorded;  /* items made from properties */
-    uint64_t items_reused;    /* items copied from the cache */
-    uint64_t layers;          /* layers recorded */
-    uint64_t layers_promoted; /* nodes that became layers */
-    uint64_t clips;           /* clip layers recorded (overflow hidden) */
-    uint64_t snapshots;       /* ax_world_record_root calls that succeeded */
+    uint64_t frames_changed;    /* layout: frames that changed */
+    uint64_t nodes_recorded;    /* nodes whose items were recorded again */
+    uint64_t items_recorded;    /* items made from properties */
+    uint64_t items_reused;      /* items copied from the cache */
+    uint64_t layers;            /* layers recorded */
+    uint64_t layers_promoted;   /* nodes that became layers */
+    uint64_t clips;             /* clip layers recorded (overflow hidden) */
+    uint64_t layers_demoted;    /* layers back in their parent's space after a neutral second */
+    uint64_t present_relayouts; /* resizing nodes whose children were laid out again */
+    uint64_t snapshots;         /* ax_world_record_root calls that succeeded */
 } ax_frame_counters;
 
 AX_API void ax_world_get_frame_counters(ax_world world, ax_frame_counters *out, bool reset);

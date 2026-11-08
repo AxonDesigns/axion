@@ -2,9 +2,9 @@
  * Copyright 2026 Axon Works
  * SPDX-License-Identifier: Apache-2.0
  *
- * m1_nodes' picture as a node tree, and the scene driver that moves it: shared by the example
- * and by the software renderer's benchmark (tests/bench/bench_soft.c), which draws the same
- * scene headless.
+ * The software renderer's benchmark scene (tests/bench/bench_soft.c, decision 87): m1_nodes'
+ * picture before M1's fourth prompt (m0_window's scene as a node tree), kept here so the
+ * benchmark's numbers stay comparable, and its motion as one transaction per frame.
  */
 #ifndef M1_SCENE_H
 #define M1_SCENE_H
@@ -28,7 +28,7 @@
 #define COLOR_BAND     0xFF262A33u
 #define COLOR_CORNER   0xFF3A4152u
 
-/* The nodes the scene driver moves. The app thread fills them before it commits the tree and
+/* The nodes m1_scene_move moves. The app thread fills them before it commits the tree and
  * then sets `ready` (release); the driver reads them only after it sees `ready` (acquire). */
 typedef struct m1_moving {
     ax_atomic_u32 ready;
@@ -49,8 +49,7 @@ ax_rgba m1_c8(uint32_t argb);
 ax_node m1_scene_build(ax_world world, ax_node root, m1_moving *m, float w, float h,
                        uint64_t *out_seq);
 
-/* The scene driver (ax_rt_scene_driver): turns and moves nodes from the frame's time, and places
- * what depends on the window's size. user: the m1_moving. Scene thread. */
-void m1_scene_slide(void *user, ax_world world, ax_node root, uint64_t time_ns, float w, float h);
+/* Moves the scene to its state at time_ns: one transaction, not animated. App thread. */
+void m1_scene_move(ax_world world, m1_moving *m, uint64_t time_ns, float w, float h);
 
 #endif

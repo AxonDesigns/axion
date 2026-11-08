@@ -20,7 +20,7 @@
  *     ax_node root;
  *     ax_headless_add_surface(h, &s, &root);
  *     ... transactions on ax_headless_world(h) under root ...
- *     ax_headless_settle(h, 100, NULL);          // frames until every transaction is shown
+ *     ax_headless_settle(h, 100, NULL);          // until every transaction is shown, at rest
  *     ax_headless_write_png(h, root, "shot.png");
  *     ax_headless_destroy(h);
  *
@@ -49,8 +49,9 @@ typedef struct ax_headless ax_headless;
 #define AX_HEADLESS_THREADS                                            \
     0x1u /* the runtime's scene and render threads, the real clock and \
           * a threaded job system: not deterministic */
-#define AX_HEADLESS_SYSTEM_FONTS 0x2u /* reserved: the system's fonts instead of the bundled set \
-                                       */
+#define AX_HEADLESS_SYSTEM_FONTS                                    \
+    0x2u /* reserved: the system's fonts instead of the bundled set \
+          */
 
 typedef enum ax_headless_renderer {
     AX_HEADLESS_RENDER_SOFT = 0, /* ax_render_soft (the default; deterministic) */
@@ -68,10 +69,6 @@ typedef struct ax_headless_desc {
     /* The font set text uses (decision 85's hook). NULL: the bundled set, which arrives with
      * text later in M1; nothing reads it yet. */
     const void *fonts;
-    /* Examples and benchmarks only (ax_runtime_sdk.h): moves nodes at every tick until
-     * implicit animations exist. */
-    ax_rt_scene_driver driver;
-    void *driver_user;
 } ax_headless_desc;
 
 AX_API ax_headless_desc ax_headless_default_desc(void);
@@ -148,9 +145,9 @@ AX_API ax_result ax_headless_step(ax_headless *h, uint32_t count);
 AX_API ax_result ax_headless_advance_time(ax_headless *h, uint64_t ns);
 
 /* Runs frames until every committed transaction is applied (ax_world_last_applied_seq reaches
- * ax_world_last_committed_seq) and drawn, at most max_frames (with threads: for at most
- * max_frames refreshes of time). *out_frames (may be NULL) gets how many ran. Animations will
- * join the condition when they exist. Errors: AX_ERR_TIMEOUT when it did not settle. */
+ * ax_world_last_committed_seq) and drawn, and nothing animates (decision 94), at most max_frames
+ * (with threads: for at most max_frames refreshes of time). *out_frames (may be NULL) gets how
+ * many ran. Errors: AX_ERR_TIMEOUT when it did not settle. */
 AX_API ax_result ax_headless_settle(ax_headless *h, uint32_t max_frames, uint32_t *out_frames);
 
 /* ---- snapshots ------------------------------------------------------------------------------- */

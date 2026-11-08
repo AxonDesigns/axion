@@ -16,12 +16,15 @@
 #include <axion/core/ax_frame.h>
 #include <axion/core/ax_layout.h>
 
+#include "anim/anim_internal.h"
+
 /* A window root and its viewport. */
 typedef struct frame_root {
     ax_node node;
     float width, height;
     float scale;          /* pixels per logical unit, for rounding layout */
     bool changed;         /* content changed since it was last recorded */
+    bool animating;       /* something under it animated at the last ax_world_animate */
     uint64_t changed_seq; /* newest transaction applied when it changed */
 } frame_root;
 
@@ -31,8 +34,9 @@ typedef struct rec_entry {
     uint32_t layer;      /* slot of the layer whose space the items are in (AX_NODE_NONE: none) */
     ax_vec2 origin;      /* the node's top-left in that space */
     float width, height;
-    bool stale;    /* marked PAINT since (LAYOUT shows as a new size or origin) */
-    bool promoted; /* the node records a layer (sticky) */
+    bool stale;             /* marked PAINT since (LAYOUT shows as a new size or origin) */
+    bool promoted;          /* the node records a layer (until demoted, decision 94) */
+    uint64_t neutral_since; /* animator time since its layer has been neutral; 0: not neutral */
     uint8_t *items;
     uint32_t size, capacity;
 } rec_entry;
@@ -44,8 +48,10 @@ typedef struct rec_frame {
     ax_vec2 origin; /* the node's top-left in that layer's space */
     uint32_t next;  /* next child to visit; AX_NODE_NONE when done */
     bool entered;
-    bool pushed;  /* a layer was pushed for the node */
-    bool clipped; /* a clip layer was pushed for its children (overflow hidden) */
+    bool pushed;           /* a layer was pushed for the node */
+    bool clipped;          /* a clip layer was pushed for its children (overflow hidden) */
+    bool in_present;       /* its frame comes from a presentation relayout (the resize preset) */
+    bool children_present; /* its children's frames do */
 } rec_frame;
 
 struct frame_state {
@@ -55,6 +61,8 @@ struct frame_state {
     uint32_t rec_capacity;
     rec_frame *stack;
     uint32_t stack_capacity;
+    ax_node_layout *pbox; /* presentation relayouts (the resize preset), by row */
+    uint32_t pbox_capacity;
     ax_frame_counters counters;
 };
 
@@ -93,6 +101,7 @@ void ax__frame_free(world_impl *w)
     ax_mem_free(&w->allocator, f->rec, sizeof(rec_entry) * f->rec_capacity);
     ax_mem_free(&w->allocator, f->roots, sizeof(frame_root) * f->root_capacity);
     ax_mem_free(&w->allocator, f->stack, sizeof(rec_frame) * f->stack_capacity);
+    ax_mem_free(&w->allocator, f->pbox, sizeof(ax_node_layout) * f->pbox_capacity);
     ax_mem_free(&w->allocator, f, sizeof *f);
     w->frame = NULL;
 }
@@ -187,6 +196,9 @@ ax_result ax_world_set_root_viewport(ax_world world, ax_node root, float width, 
         r->changed_seq = ax_atomic_load_u64(&w->applied_seq, AX_MO_RELAXED);
     }
     if (r->width != width || r->height != height || r->scale != scale) {
+        if (r->width >= 0.0f) {
+            ax__anim_viewport_changed(w); /* a window's resize never animates frames */
+        }
         r->width = width;
         r->height = height;
         r->scale = scale;
@@ -228,7 +240,48 @@ static void frame_changed(void *user, uint32_t slot)
 {
     world_impl *w = (world_impl *)user;
     ax__mirror_touch_slot(w, slot);
+    ax__anim_on_frame_changed(w, slot);
     w->frame->counters.frames_changed++;
+}
+
+/* ---- Animations (decision 94) ---------------------------------------------------------------- */
+
+static void mark_root_animating(world_impl *w, uint32_t root_slot)
+{
+    frame_root *r = (frame_root *)root_of_slot(w->frame, &w->scene.store, root_slot);
+    if (r != NULL) {
+        r->animating = true;
+    }
+}
+
+uint32_t ax_world_animate(ax_world world, uint64_t frame_time_ns)
+{
+    world_impl *w = scene_world(world);
+    uint32_t i;
+    if (w == NULL || state(w) == NULL) {
+        return 0;
+    }
+    for (i = 0; i < w->frame->root_count; ++i) {
+        w->frame->roots[i].animating = false;
+    }
+    return ax__anim_step(w, frame_time_ns, mark_root_animating);
+}
+
+bool ax_world_root_animating(ax_world world, ax_node root)
+{
+    world_impl *w = scene_world(world);
+    const frame_root *r = w != NULL ? find_root(w->frame, root) : NULL;
+    return r != NULL && r->animating;
+}
+
+void ax_world_get_anim_counters(ax_world world, ax_anim_counters *out, bool reset)
+{
+    world_impl *w = scene_world(world);
+    AX_ASSERT(out != NULL);
+    memset(out, 0, sizeof *out);
+    if (w != NULL) {
+        ax__anim_get_counters(w, out, reset);
+    }
 }
 
 uint32_t ax_world_position(ax_world world)
@@ -331,11 +384,90 @@ static bool append_item(world_impl *w, rec_entry *e, const void *record, uint32_
 }
 
 /* Makes the node's items from its properties, in its layer's space at `origin`. */
-static bool record_items(world_impl *w, rec_entry *e, uint32_t row, ax_vec2 origin)
+/* What a node shows this frame (decision 94): its targets, or the animator's presentation values,
+ * the frame being the target plus the frame channel's offset. */
+typedef struct pres {
+    ax_rect frame;
+    ax_node_paint paint;
+    ax_node_composite composite;
+    bool moving; /* its frame animates: recorded as a layer, so moving it records no items */
+} pres;
+
+static void presentation(world_impl *w, uint32_t row, pres *out)
 {
     const ax_node_store *s = &w->scene.store;
-    const ax_node_paint *p = &s->paint[row];
-    const ax_rect frame = s->layout[row].frame;
+    const axa_node *an = ax__anim_node(w, row);
+    out->frame = s->layout[row].frame;
+    out->paint = s->paint[row];
+    out->composite = s->composite[row];
+    out->moving = false;
+    if (an != NULL) {
+        out->paint.background = an->background;
+        memcpy(out->paint.corner_radius, an->radii, sizeof an->radii);
+        out->composite.opacity = an->opacity;
+        out->composite.transform = an->transform;
+        if (an->active & (1u << AXA_FRAME)) {
+            const float *o = an->track[AXA_FRAME].off;
+            out->frame.x += o[0];
+            out->frame.y += o[1];
+            out->frame.w = out->frame.w + o[2] > 0.0f ? out->frame.w + o[2] : 0.0f;
+            out->frame.h = out->frame.h + o[3] > 0.0f ? out->frame.h + o[3] : 0.0f;
+            out->moving = true;
+        }
+    }
+}
+
+ax_result ax_world_presentation(ax_world world, ax_node node, ax_prop prop, ax_value *out)
+{
+    world_impl *w = scene_world(world);
+    uint32_t row;
+    pres pr;
+    memset(out, 0, sizeof *out);
+    if (w == NULL || (row = ax_node_store_row(&w->scene.store, node)) == AX_NODE_NONE) {
+        return ax_set_error(AX_ERR_INVALID_HANDLE, "ax_world_presentation: stale node");
+    }
+    presentation(w, row, &pr);
+    switch (prop) {
+    case AX_PROP_BACKGROUND_COLOR:
+        out->color = pr.paint.background;
+        return AX_OK;
+    case AX_PROP_CORNER_RADIUS_TOP_LEFT:
+    case AX_PROP_CORNER_RADIUS_TOP_RIGHT:
+    case AX_PROP_CORNER_RADIUS_BOTTOM_RIGHT:
+    case AX_PROP_CORNER_RADIUS_BOTTOM_LEFT:
+        out->f32 = pr.paint.corner_radius[prop - AX_PROP_CORNER_RADIUS_TOP_LEFT];
+        return AX_OK;
+    case AX_PROP_OPACITY:
+        out->f32 = pr.composite.opacity;
+        return AX_OK;
+    case AX_PROP_TRANSFORM:
+        out->transform2d = pr.composite.transform;
+        return AX_OK;
+    default:
+        return ax_set_error(AX_ERR_INVALID_ARGUMENT,
+                            "ax_world_presentation: property 0x%x does not animate",
+                            (unsigned)prop);
+    }
+}
+
+ax_result ax_world_presentation_frame(ax_world world, ax_node node, ax_rect *out)
+{
+    world_impl *w = scene_world(world);
+    uint32_t row;
+    pres pr;
+    memset(out, 0, sizeof *out);
+    if (w == NULL || (row = ax_node_store_row(&w->scene.store, node)) == AX_NODE_NONE) {
+        return ax_set_error(AX_ERR_INVALID_HANDLE, "ax_world_presentation_frame: stale node");
+    }
+    presentation(w, row, &pr);
+    *out = pr.frame;
+    return AX_OK;
+}
+
+static bool record_items(world_impl *w, rec_entry *e, const pres *pr, ax_vec2 origin)
+{
+    const ax_node_paint *p = &pr->paint;
+    const ax_rect frame = pr->frame;
     const ax_rect rect = ax_rect_make(origin.x, origin.y, frame.w, frame.h);
     e->size = 0;
     w->frame->counters.nodes_recorded++;
@@ -366,18 +498,18 @@ static bool record_items(world_impl *w, rec_entry *e, uint32_t row, ax_vec2 orig
 }
 
 /* Emits the node's items: from the cache when still valid, recorded again otherwise. */
-static bool emit_items(world_impl *w, ax_ir_builder *b, uint32_t slot, uint32_t row, uint32_t layer,
-                       ax_vec2 origin)
+static bool emit_items(world_impl *w, ax_ir_builder *b, uint32_t slot, const pres *pr,
+                       uint32_t layer, ax_vec2 origin)
 {
     rec_entry *e = &w->frame->rec[slot];
     const ax_node_store *s = &w->scene.store;
-    const ax_rect frame = s->layout[row].frame;
+    const ax_rect frame = pr->frame;
     uint32_t off = 0;
     bool reuse = e->generation == s->slots[slot].generation && !e->stale && e->layer == layer &&
                  e->origin.x == origin.x && e->origin.y == origin.y && e->width == frame.w &&
                  e->height == frame.h;
     if (!reuse) {
-        if (!record_items(w, e, row, origin)) {
+        if (!record_items(w, e, pr, origin)) {
             return false;
         }
         e->generation = s->slots[slot].generation;
@@ -400,26 +532,26 @@ static bool emit_items(world_impl *w, ax_ir_builder *b, uint32_t slot, uint32_t 
 
 /* The clip layer of an overflow-hidden node at `origin` in its layer: its frame, rounded by its
  * corner radii, around its children (decision 93). */
-static ax_ir_layer_desc clip_desc(const ax_node_store *s, uint32_t row, ax_vec2 origin)
+static ax_ir_layer_desc clip_desc(const pres *pr, ax_vec2 origin)
 {
     ax_ir_layer_desc d = ax_ir_layer_desc_default();
-    const float *r = s->paint[row].corner_radius;
+    const float *r = pr->paint.corner_radius;
     d.transform = ax_affine2_translate(origin.x, origin.y);
     d.clip.kind = (r[0] > 0.0f || r[1] > 0.0f || r[2] > 0.0f || r[3] > 0.0f)
                       ? AX_IR_CLIP_ROUNDED_RECT
                       : AX_IR_CLIP_RECT;
     d.clip.path = AX_IR_NO_INDEX;
-    d.clip.rect = ax_rect_make(0.0f, 0.0f, s->layout[row].frame.w, s->layout[row].frame.h);
+    d.clip.rect = ax_rect_make(0.0f, 0.0f, pr->frame.w, pr->frame.h);
     memcpy(d.clip.radii, r, sizeof d.clip.radii);
     return d;
 }
 
 /* The layer record of a promoted node at `origin` in its parent layer: translate there, then the
  * node's transform about its frame's center (decision 63). */
-static ax_ir_layer_desc layer_desc(const ax_node_store *s, uint32_t row, ax_vec2 origin)
+static ax_ir_layer_desc layer_desc(const pres *pr, ax_vec2 origin)
 {
-    const ax_node_composite *c = &s->composite[row];
-    const ax_rect frame = s->layout[row].frame;
+    const ax_node_composite *c = &pr->composite;
+    const ax_rect frame = pr->frame;
     const float cx = frame.w * 0.5f, cy = frame.h * 0.5f;
     ax_ir_layer_desc d = ax_ir_layer_desc_default();
     ax_affine2 m = ax_affine2_translate(origin.x, origin.y);
@@ -457,41 +589,92 @@ ax_result ax_world_record_root(ax_world world, ax_node root, ax_ir_builder *b)
     f->stack[0].entered = false;
     f->stack[0].pushed = false;
     f->stack[0].clipped = false;
+    f->stack[0].in_present = false;
+    f->stack[0].children_present = false;
     depth = 1;
     while (depth > 0) {
         rec_frame *top = &f->stack[depth - 1u];
         uint32_t row = s->slots[top->slot].row;
         if (!top->entered) {
             rec_entry *e = &f->rec[top->slot];
-            const ax_node_composite *c = &s->composite[row];
+            pres pr;
+            const ax_node_composite *c = &pr.composite;
             top->entered = true;
             if (s->style[row].display == AX_DISPLAY_NONE) {
                 depth--; /* takes no space and draws nothing, with its subtree */
                 continue;
             }
+            presentation(w, row, &pr);
+            {
+                /* The frame its animation offsets: the target, or, under a resizing ancestor,
+                 * the presentation relayout's (the resize preset, decision 94). */
+                const ax_rect target = s->layout[row].frame;
+                ax_rect base = target;
+                if (top->in_present) {
+                    const ax_node_layout *pb = &f->pbox[row];
+                    base = ax_rect_make(pb->pos[AX_EDGE_LEFT], pb->pos[AX_EDGE_TOP], pb->measured_w,
+                                        pb->measured_h);
+                    pr.frame.x += base.x - target.x;
+                    pr.frame.y += base.y - target.y;
+                    pr.frame.w = base.w + (pr.frame.w - target.w);
+                    pr.frame.h = base.h + (pr.frame.h - target.h);
+                    pr.frame.w = pr.frame.w > 0.0f ? pr.frame.w : 0.0f;
+                    pr.frame.h = pr.frame.h > 0.0f ? pr.frame.h : 0.0f;
+                }
+                /* The parent placed this node at its target frame's origin. */
+                top->origin.x += pr.frame.x - target.x;
+                top->origin.y += pr.frame.y - target.y;
+                top->children_present = top->in_present;
+                if ((pr.frame.w != base.w || pr.frame.h != base.h) &&
+                    s->links[row].first_child != AX_NODE_NONE &&
+                    grow(w, (void **)&f->pbox, &f->pbox_capacity, s->row_count,
+                         sizeof(ax_node_layout))) {
+                    /* Resizing: its children laid out again at the interpolated size. */
+                    ax_layout_present(&w->scene, row, pr.frame.w, pr.frame.h, f->pbox);
+                    f->counters.present_relayouts++;
+                    top->children_present = true;
+                }
+            }
+            {
+                /* Demotion with hysteresis: a layer whose transform, opacity and frame have been
+                 * neutral for a second goes back to its parent's space (one re-recording). */
+                const uint64_t now = ax__anim_time(w);
+                const bool neutral = is_identity(&c->transform) && c->opacity == 1.0f && !pr.moving;
+                if (e->promoted && neutral && now != 0) {
+                    if (e->neutral_since == 0) {
+                        e->neutral_since = now;
+                    } else if (now - e->neutral_since >= 1000000000ull) {
+                        e->promoted = false;
+                        e->neutral_since = 0;
+                        f->counters.layers_demoted++;
+                    }
+                } else if (!neutral) {
+                    e->neutral_since = 0;
+                }
+            }
             if (e->generation != s->slots[top->slot].generation) {
                 e->promoted = false; /* a new node in a reused slot */
                 e->generation = 0;
             }
-            if (!e->promoted && (!is_identity(&c->transform) || c->opacity != 1.0f)) {
+            if (!e->promoted && (!is_identity(&c->transform) || c->opacity != 1.0f || pr.moving)) {
                 e->promoted = true;
                 f->counters.layers_promoted++;
             }
             if (e->promoted) {
-                ax_ir_layer_desc d = layer_desc(s, row, top->origin);
+                ax_ir_layer_desc d = layer_desc(&pr, top->origin);
                 ax_ir_push_layer(b, &d);
                 f->counters.layers++;
                 top->pushed = true;
                 top->layer = top->slot;
                 top->origin = ax_vec2_make(0.0f, 0.0f);
             }
-            if (!emit_items(w, b, top->slot, row, top->layer, top->origin)) {
+            if (!emit_items(w, b, top->slot, &pr, top->layer, top->origin)) {
                 return ax_set_error(AX_ERR_OUT_OF_MEMORY, "ax_world_record_root: out of memory");
             }
             if (s->style[row].overflow == AX_OVERFLOW_HIDDEN &&
                 s->links[row].first_child != AX_NODE_NONE) {
                 /* The children only: the node's own items keep their edges unclipped. */
-                ax_ir_layer_desc d = clip_desc(s, row, top->origin);
+                ax_ir_layer_desc d = clip_desc(&pr, top->origin);
                 ax_ir_push_layer(b, &d);
                 f->counters.layers++;
                 f->counters.clips++;
@@ -519,6 +702,8 @@ ax_result ax_world_record_root(ax_world world, ax_node root, ax_ir_builder *b)
             next->entered = false;
             next->pushed = false;
             next->clipped = false;
+            next->in_present = top->children_present;
+            next->children_present = false;
             continue;
         }
         if (top->clipped) {

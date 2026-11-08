@@ -18,8 +18,7 @@
 #include <axion/core/ax_layout.h>
 #include <axion/core/ax_scene.h>
 
-/* ---- The pass context
- * ---------------------------------------------------------------------------- */
+/* ---- The pass context ----------------------------------------------------------------------- */
 
 struct ax_layout_ctx {
     ax_scene *scene;
@@ -52,8 +51,7 @@ static inline ax_node_layout *axl_box(const ax_layout_ctx *c, uint32_t row)
     return &c->box[row];
 }
 
-/* ---- Numbers
- * ------------------------------------------------------------------------------------- */
+/* ---- Numbers -------------------------------------------------------------------------------- */
 
 #define AXL_UNDEF NAN
 
@@ -91,8 +89,7 @@ static inline bool axl_inexact_eq(float a, float b)
     return axl_undef(a) && axl_undef(b);
 }
 
-/* ---- Axes and edges
- * ------------------------------------------------------------------------------ */
+/* ---- Axes and edges ------------------------------------------------------------------------- */
 
 /* Axes are ax_flex_direction values. */
 static inline bool axl_is_row(uint32_t axis)
@@ -165,8 +162,7 @@ static inline void axl_set_measured(ax_node_layout *b, int dim, float v)
     }
 }
 
-/* ---- Style
- * ---------------------------------------------------------------------------------------- */
+/* ---- Style ---------------------------------------------------------------------------------- */
 
 static inline bool axl_dim_eq(ax_dimension a, ax_dimension b)
 {
@@ -307,8 +303,7 @@ static inline float axl_bound(const ax_node_style *st, uint32_t axis, float valu
                           axl_pad_border_axis(st, axis, width_size));
 }
 
-/* ---- Shared by the core and protocols
- * -------------------------------------------------------------- */
+/* ---- Shared by the core and protocols ------------------------------------------------------- */
 
 /* The measure function of a node, if it has one. */
 const ax_layout_measure_fn *axl_measure_of(ax_layout_ctx *c, uint32_t row, void **out_user);

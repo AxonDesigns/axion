@@ -68,8 +68,7 @@ static void set_scale(ax_window_impl *w, float scale)
     }
 }
 
-/* ---- wl_surface
- * ---------------------------------------------------------------------------------- */
+/* ---- wl_surface ----------------------------------------------------------------------------- */
 
 static void surface_enter(void *data, struct wl_surface *s, struct wl_output *output)
 {
@@ -117,8 +116,7 @@ static void fractional_preferred_scale(void *data, struct wp_fractional_scale_v1
 static const struct wp_fractional_scale_v1_listener fractional_listener = {
     fractional_preferred_scale};
 
-/* ---- xdg
- * ----------------------------------------------------------------------------------------- */
+/* ---- xdg ------------------------------------------------------------------------------------ */
 
 static void toplevel_configure(void *data, struct xdg_toplevel *t, int32_t width, int32_t height,
                                struct wl_array *states)
@@ -230,8 +228,7 @@ static void decoration_configure(void *data, struct zxdg_toplevel_decoration_v1 
 static const struct zxdg_toplevel_decoration_v1_listener decoration_listener = {
     decoration_configure};
 
-/* ---- lifecycle
- * ------------------------------------------------------------------------------------ */
+/* ---- lifecycle ------------------------------------------------------------------------------ */
 
 static void apply_size_limits(wl_window *ww)
 {
@@ -401,8 +398,7 @@ ax_window_impl *ax_wl_window_from_surface(ax_app_impl *app, struct wl_surface *s
     return NULL;
 }
 
-/* ---- test hooks (wl_testing.h)
- * --------------------------------------------------------------------- */
+/* ---- test hooks (wl_testing.h) -------------------------------------------------------------- */
 
 #include "wl_testing.h"
 

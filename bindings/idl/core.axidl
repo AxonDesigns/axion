@@ -29,7 +29,9 @@ module core {
     enum value_type : u32 { f32 = 1; dimension = 2; vec2 = 3; color = 4; transform2d = 5;
                             u32 = 6; bool = 7; /* 8 reserved: str */ }
     enum effect_class : u32 { layout = 1; paint = 2; composite = 3; }
-    enum transition_kind : u32 { none = 1; timing = 2; spring = 3; }
+    enum transition_kind : u32 { none = 1; timing = 2; spring = 3; decay = 4; default = 5; }
+    enum easing : u32 { cubic_bezier = 0; steps = 1; linear = 2; }
+    enum step_position : u32 { jump_end = 0; jump_start = 1; jump_none = 2; jump_both = 3; }
     // Layout enumerations (decision 89); values fixed forever, stored in one byte.
     enum display : u32 { flex = 0; none = 1; }
     enum position : u32 { relative = 0; absolute = 1; static = 2; }
@@ -58,12 +60,22 @@ module core {
         ptr clock_user;
     }
 
-    [extensible, provisional]   // fields may change with animations, before the ABI freezes
+    struct linear_stop { f32 input, output; }
+    const u32 transition_max_stops = 16;
+
+    // Decision 94. Zero-initialized fields are defaults (an all-zero curve is linear).
+    [extensible]
     struct transition {
         transition_kind kind;
-        f32 delay, duration;
-        f32[4] curve;
-        f32 bounce;
+        f32 delay, duration;          // seconds
+        easing easing;                // timing
+        f32[4] curve;                 // cubic_bezier: x1, y1, x2, y2
+        u32 steps;                    // steps
+        step_position step_position;
+        [copied] linear_stop[]? stops; // linear: 2..transition_max_stops, as (pointer, count)
+        f32 bounce;                   // spring, perceptual (with duration)
+        f32 stiffness, damping, mass; // spring, physical when stiffness > 0
+        f32 rate;                     // decay, per second
     }
 
     enum world_event_type : u32 { none = 0; close_requested = 1; resized = 2; scale_changed = 3;
@@ -154,6 +166,8 @@ module core {
         0x0134  border_width                 : f32         layout     [animatable]
                 shorthand(border_left_width, border_top_width, border_right_width,
                           border_bottom_width);
+        // Not a value: the frame layout computes, as a layout transition's target (decision 94).
+        0x01FF  layout                       : none        layout     [animatable, transition_only];
         0x0201  background_color             : color       paint      [animatable];
         0x0202  corner_radius_top_left       : f32         paint      [animatable] min(0);
         0x0203  corner_radius_top_right      : f32         paint      [animatable] min(0);
@@ -197,6 +211,7 @@ module core {
     [thread(app), sticky(t)]           fn txn_remove(txn t, node node);
     [thread(app), sticky(t)]           fn txn_set_animated(txn t, bool animated);
     [thread(app), sticky(t)]           fn txn_set_transition(txn t, node node, prop prop, transition transition);
+    [thread(app), sticky(t)]           fn txn_set_default_transition(txn t, prop prop, transition transition);
     [thread(app), consumes(t)]         fn txn_commit(txn t, out u64? seq) -> result;
     [thread(app), consumes(t)]         fn txn_abort(txn t);
 

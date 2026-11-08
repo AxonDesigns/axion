@@ -44,8 +44,9 @@ typedef struct app_ctx {
     uint32_t presented_status;
     uint64_t presented_time;
     float resized_w, resized_h;
-    ax_rt_window_counters before, after;         /* around the blocked window */
-    ax_rt_window_counters ref_before, ref_after; /* around the reference window */
+    ax_rt_window_counters before, after;           /* around the blocked window */
+    ax_rt_window_counters ref_before, ref_after;   /* around the reference window */
+    ax_rt_window_counters rest_before, rest_after; /* 400 ms at rest (TASK_PRESENT) */
     char failure[160];
 } app_ctx;
 
@@ -57,19 +58,20 @@ static ax_dimension pt(float v)
     return d;
 }
 
-/* The scene driver: a bar moving at 400 units a second, so every frame has new content. */
-static void slide(void *user, ax_world world, ax_node root, uint64_t t, float w, float h)
+/* A motion that lasts: the bar slides 280 points over 30 s, linearly (an implicit animation the
+ * scene runs every frame without the app thread), so every frame has new content. */
+static void start_sliding(ax_world world, ax_node bar)
 {
-    (void)w;
-    (void)h;
-    ax_scene *scene = ax_world_scene(world);
-    ax_node bar = ax_node_store_last_child(&scene->store, root);
-    ax_value v;
-    (void)user;
-    if (!AX_HANDLE_IS_NULL(bar)) {
-        v.dimension = pt((float)((t / MS) * 400u / 1000u % 300u));
-        (void)ax_scene_set(scene, bar, AX_PROP_LEFT, AX_VALUE_DIMENSION, &v);
-    }
+    ax_txn *t = ax_txn_begin(world);
+    ax_transition tr;
+    ax_transform2d m = {1, 0, 0, 1, 280, 0};
+    memset(&tr, 0, sizeof tr);
+    tr.struct_size = sizeof tr;
+    tr.kind = AX_TRANSITION_TIMING;
+    tr.duration = 30.0f; /* linear: an all-zero curve */
+    ax_txn_set_transition(t, bar, AX_PROP_TRANSFORM, &tr);
+    ax_txn_set_transform(t, bar, AX_PROP_TRANSFORM, m);
+    (void)ax_txn_commit(t, NULL);
 }
 
 static void on_presented(void *user, uint64_t seq, ax_presented_status status, uint64_t t)
@@ -167,7 +169,6 @@ static int app_main(void *arg)
     memset(&pd, 0, sizeof pd);
     pd.app = c->app;
     pd.renderer_desc = &rd;
-    pd.driver = slide;
     pd.max_wait_ns = c->task == TASK_RESIZE ? 50 * MS : 0; /* generous on loaded runners */
     if (ax_rt_create_for_app(&d, &pd, &rt) != AX_OK ||
         ax_runtime_add_window(rt, c->window, &root) != AX_OK) {
@@ -177,7 +178,7 @@ static int app_main(void *arg)
         goto out;
     }
 
-    /* The tree: a background, a card and the moving bar (the driver moves the last child). */
+    /* The tree: a background, a card and the bar that slides once the tree is shown. */
     t = ax_txn_begin(world);
     card = ax_txn_create(t, AX_NODE_VIEW);
     bar = ax_txn_create(t, AX_NODE_VIEW);
@@ -210,6 +211,14 @@ static int app_main(void *arg)
             (void)ax_world_wait_event(world, &e, 20 * MS);
         }
     }
+    if (c->task == TASK_PRESENT) {
+        /* Nothing moves: the window rests without frames (decision 95). */
+        idle_for(world, 300 * MS);
+        (void)ax_rt_get_window_counters(rt, c->window, &c->rest_before);
+        idle_for(world, 400 * MS);
+        (void)ax_rt_get_window_counters(rt, c->window, &c->rest_after);
+    }
+    start_sliding(world, bar);
     ax_atomic_store_u32(&c->phase, 1, AX_MO_RELEASE);
 
     if (c->task == TASK_RESIZE) {
@@ -239,6 +248,7 @@ static int app_main(void *arg)
         sleep_for(500 * MS); /* blocked: no polling, no commits */
         (void)ax_rt_get_window_counters(rt, c->window, &c->after);
     } else {
+        idle_for(world, 200 * MS); /* sliding */
         (void)ax_rt_get_window_counters(rt, c->window, &c->after);
     }
 
@@ -495,6 +505,11 @@ AX_TEST(the_tree_is_presented)
     AX_CHECK(c.after.frames > 0);
     AX_CHECK(c.after.snapshots_shown > 0);
     AX_CHECK(c.after.shown_width == 320.0f && c.after.shown_height == 200.0f);
+    /* At rest, nothing presented (decision 95); then the sliding bar presents again. */
+    printf("at rest: %llu presented in 400 ms\n",
+           (unsigned long long)(c.rest_after.presented - c.rest_before.presented));
+    AX_CHECK_EQ_U(c.rest_after.presented - c.rest_before.presented, 0);
+    AX_CHECK(c.after.presented > c.rest_after.presented);
 }
 
 AX_TEST(a_resize_is_answered_with_a_snapshot_of_the_new_size)

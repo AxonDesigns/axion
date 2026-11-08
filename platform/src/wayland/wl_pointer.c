@@ -141,8 +141,7 @@ static void set_cursor(wl_app *wl, ax_cursor c, bool force)
     }
 }
 
-/* ---- hit testing
- * ----------------------------------------------------------------------------------- */
+/* ---- hit testing ---------------------------------------------------------------------------- */
 
 static uint32_t region_under_pointer(wl_app *wl)
 {
@@ -283,8 +282,7 @@ static const struct wl_pointer_listener pointer_listener = {
     .axis_discrete = pointer_axis_discrete,
 };
 
-/* ---- wl_seat
- * ------------------------------------------------------------------------------------- */
+/* ---- wl_seat -------------------------------------------------------------------------------- */
 
 static void release_pointer(wl_app *wl)
 {

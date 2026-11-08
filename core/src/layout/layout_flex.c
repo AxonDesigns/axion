@@ -162,8 +162,7 @@ static float available_inner(const ax_node_style *st, int dim, float avail, floa
     return inner;
 }
 
-/* ---- Flex basis
- * ------------------------------------------------------------------------------------ */
+/* ---- Flex basis ----------------------------------------------------------------------------- */
 
 static void basis_for_child(ax_layout_ctx *c, uint32_t node, uint32_t child, float width,
                             ax_layout_mode width_mode, float height, float owner_w, float owner_h,
@@ -305,8 +304,7 @@ static float basis_for_children(ax_layout_ctx *c, uint32_t node, float inner_w, 
     return total;
 }
 
-/* ---- Lines
- * ------------------------------------------------------------------------------------------ */
+/* ---- Lines ---------------------------------------------------------------------------------- */
 
 static void collect_line(ax_layout_ctx *c, uint32_t node, uint32_t start, uint32_t line_index,
                          float owner_w, float main_owner, float inner_w, float inner_main,
@@ -368,8 +366,7 @@ static void collect_line(ax_layout_ctx *c, uint32_t node, uint32_t start, uint32
         if (!in_flow(axl_style(c, (row_) = axl_row((s), slot_)))) {                      \
         } else
 
-/* ---- Resolving flexible lengths
- * -------------------------------------------------------------------- */
+/* ---- Resolving flexible lengths ------------------------------------------------------------- */
 
 typedef struct flex_frame {
     uint32_t node;
@@ -586,8 +583,7 @@ static void justify(ax_layout_ctx *c, const flex_frame *f, flex_line *line,
     line->main_dim += trail_pb;
 }
 
-/* ---- Absolute children
- * ------------------------------------------------------------------------------ */
+/* ---- Absolute children ---------------------------------------------------------------------- */
 
 static float opposite_edge(ax_layout_ctx *c, float position, uint32_t axis, uint32_t containing,
                            uint32_t row)
@@ -797,8 +793,7 @@ static void layout_abs_descendants(ax_layout_ctx *c, uint32_t containing, uint32
     }
 }
 
-/* ---- The protocol
- * ------------------------------------------------------------------------------------- */
+/* ---- The protocol --------------------------------------------------------------------------- */
 
 static void flex_layout(ax_layout_ctx *c, uint32_t node, const ax_layout_request *req)
 {

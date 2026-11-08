@@ -12,6 +12,8 @@
 #include <axion/base/ax_memory.h>
 #include <axion/core/ax_scene.h>
 
+size_t ax__anim_node_size(void); /* anim/animator.c */
+
 /* The stable value types mirror base's math types, so values cross without conversion. */
 AX_STATIC_ASSERT(sizeof(ax_rgba) == sizeof(ax_color), "ax_rgba mirrors ax_color");
 AX_STATIC_ASSERT(sizeof(ax_transform2d) == sizeof(ax_affine2), "ax_transform2d mirrors ax_affine2");
@@ -30,6 +32,15 @@ void ax_scene_init(ax_scene *scene, const ax_node_store_desc *desc)
         cd.size = sizeof(void *) * 2u;
         cd.align = AX_ALIGNOF(void *);
         r = ax_node_store_register_component(&scene->store, &cd, &scene->measure_component);
+        AX_ASSERT(r == AX_OK);
+        /* The animator's (decision 94): a node's own transitions and its running animations. */
+        cd.size = sizeof(uint16_t) * 8u;
+        cd.align = AX_ALIGNOF(uint16_t);
+        r = ax_node_store_register_component(&scene->store, &cd, &scene->transitions_component);
+        AX_ASSERT(r == AX_OK);
+        cd.size = ax__anim_node_size();
+        cd.align = 8u;
+        r = ax_node_store_register_component(&scene->store, &cd, &scene->anim_component);
         AX_ASSERT(r == AX_OK);
         (void)r;
     }

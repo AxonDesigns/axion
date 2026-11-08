@@ -129,8 +129,8 @@ static void vt_detach(void *self, ax_surface surface)
     *s = r->surfaces[--r->surface_count];
 }
 
-static ax_result vt_render(void *self, ax_surface surface, const ax_render_ir *ir,
-                           ax_frame_info info)
+static ax_result render_frame(void *self, ax_surface surface, const ax_render_ir *ir,
+                              ax_frame_info info)
 {
     ax_render_wgpu *r = (ax_render_wgpu *)self;
     rw_surface *s = find_surface(r, surface);
@@ -214,6 +214,16 @@ static ax_result vt_render(void *self, ax_surface surface, const ax_render_ir *i
         s->stats.attach_to_first_content_ns = ax_time_monotonic_ns() - s->attach_ns;
     }
     return AX_OK;
+}
+
+/* Every frame, committed or not, ends the presenter's frame (decision 95): a frame that drew
+ * nothing must not keep the window from being destroyed. */
+static ax_result vt_render(void *self, ax_surface surface, const ax_render_ir *ir,
+                           ax_frame_info info)
+{
+    ax_result r = render_frame(self, surface, ir, info);
+    ax_surface_end_frame(surface);
+    return r;
 }
 
 static void vt_query_caps(void *self, ax_renderer_caps *out)

@@ -145,6 +145,66 @@ static float pow_pos(float x, float e)
     return exp2_det(e * log2_pos(x));
 }
 
+void ax_sin_cos(float x, float *out_sin, float *out_cos)
+{
+    sin_cos(x, out_sin, out_cos);
+}
+
+float ax_exp2f(float y)
+{
+    if (y != y) {
+        return y;
+    }
+    return exp2_det(y);
+}
+
+float ax_expf(float x)
+{
+    return ax_exp2f(x * 1.44269504f); /* log2(e) */
+}
+
+float ax_log2f(float x)
+{
+    if (!(x >= 1.17549435e-38f) || x - x != 0.0f) {
+        return NAN;
+    }
+    return log2_pos(x);
+}
+
+/* atan on [0, inf): Cephes' reduction (tan(3pi/8) and tan(pi/8)) and polynomial. */
+static float atan_pos(float x)
+{
+    float y = 0.0f, z;
+    if (x > 2.414213562f) {
+        y = 1.570796327f;
+        x = -1.0f / x;
+    } else if (x > 0.414213562f) {
+        y = 0.785398163f;
+        x = (x - 1.0f) / (x + 1.0f);
+    }
+    z = x * x;
+    return y + ((((8.05374449538e-2f * z - 1.38776856032e-1f) * z + 1.99777106478e-1f) * z -
+                 3.33329491539e-1f) *
+                    z * x +
+                x);
+}
+
+float ax_atan2f(float y, float x)
+{
+    float a;
+    if (y != y || x != x) {
+        return y + x;
+    }
+    if (x == 0.0f) {
+        return y > 0.0f ? 1.570796327f : (y < 0.0f ? -1.570796327f : 0.0f);
+    }
+    a = atan_pos(fabsf(y / x));
+    if (x < 0.0f) {
+        a = 3.141592654f - a;
+    }
+    return y < 0.0f ? -a : a;
+}
+
 ax_affine2 ax_affine2_rotate(float radians)
 {
     float c, s;

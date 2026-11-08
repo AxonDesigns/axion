@@ -30,8 +30,7 @@ typedef struct measure_component {
     void *user;
 } measure_component;
 
-/* ---- Context accessors (SDK)
- * ----------------------------------------------------------------------- */
+/* ---- Context accessors (SDK) ---------------------------------------------------------------- */
 
 ax_node_store *ax_layout_store(ax_layout_ctx *ctx)
 {
@@ -98,8 +97,7 @@ void ax_layout_zero_subtree(ax_layout_ctx *ctx, uint32_t row)
     }
 }
 
-/* ---- Leaves
- * ---------------------------------------------------------------------------------------- */
+/* ---- Leaves --------------------------------------------------------------------------------- */
 
 static float pb_row(const ax_node_layout *b)
 {
@@ -184,8 +182,7 @@ static bool measure_fixed(ax_layout_ctx *ctx, uint32_t row, float aw, float ah, 
     return false;
 }
 
-/* ---- The entry for every node
- * ---------------------------------------------------------------------- */
+/* ---- The entry for every node --------------------------------------------------------------- */
 
 static void layout_impl(ax_layout_ctx *ctx, uint32_t row, const ax_layout_request *req)
 {
@@ -377,8 +374,7 @@ bool ax_layout_node(ax_layout_ctx *ctx, uint32_t row, const ax_layout_request *r
     return visit || cached == NULL;
 }
 
-/* ---- Rounding and output
- * ----------------------------------------------------------------------------- */
+/* ---- Rounding and output -------------------------------------------------------------------- */
 
 /* Yoga's rounding to the pixel grid, with floor() for the fraction (exact everywhere). */
 static float round_grid(double value, double scale, bool force_ceil, bool force_floor)
@@ -446,9 +442,15 @@ static bool round_node(ax_layout_ctx *ctx, uint32_t row, double abs_left, double
     b->abs_x = ax;
     b->abs_y = ay;
     if (memcmp(&b->frame, &frame, sizeof frame) != 0) {
+        /* What layout animations start from (decision 94): bit 0 of had_frame says a frame was
+         * written before, bit 1 that prev_frame holds one. */
+        b->prev_frame = b->frame;
+        b->prev_parent = b->frame_parent;
+        b->had_frame = 1u | ((b->had_frame & 1u) << 1);
         b->frame = frame;
         note_changed(ctx, row);
     }
+    b->frame_parent = ctx->s->links[row].parent;
     return moved;
 }
 
@@ -485,8 +487,7 @@ static void round_subtree(ax_layout_ctx *ctx, uint32_t root_row, double abs_left
     }
 }
 
-/* ---- Roots
- * ------------------------------------------------------------------------------------------- */
+/* ---- Roots ---------------------------------------------------------------------------------- */
 
 static void ctx_init(ax_layout_ctx *ctx, ax_scene *scene)
 {
@@ -630,8 +631,7 @@ static void ctx_for_tree(ax_layout_ctx *ctx, const ax_layout_pass_desc *desc, ui
     }
 }
 
-/* ---- The pass
- * ------------------------------------------------------------------------------------------ */
+/* ---- The pass ------------------------------------------------------------------------------- */
 
 typedef struct root_job {
     ax_layout_ctx ctx;
@@ -917,6 +917,48 @@ void ax_layout_tree(ax_scene *scene, ax_node root, float owner_w, float owner_h,
     scene->layout_counters.measure_calls += ctx.counters.measure_calls;
     scene->layout_counters.frames_changed += ctx.counters.frames_changed;
     ctx_free(&ctx);
+}
+
+void ax_layout_present(ax_scene *scene, uint32_t row, float width, float height,
+                       ax_node_layout *boxes)
+{
+    ax_layout_ctx ctx;
+    const ax_node_layout *target = &scene->store.layout[row];
+    ax_node_style *vs = &ctx.viewport_style;
+    ax_layout_request req;
+    int e;
+    ctx_init(&ctx, scene);
+    ctx.box = boxes;
+    ctx.force = true; /* every node of the subtree, into `boxes` */
+    ctx.scale = 0.0f; /* intermediate frames are not rounded */
+    ctx.pass = ++scene->present_pass;
+    if (ctx.pass == 0) {
+        ctx.pass = ++scene->present_pass;
+    }
+    /* The node at exactly width x height: its own size, margins and bounds set aside. */
+    *vs = scene->store.style[row];
+    vs->width.value = width;
+    vs->width.unit = AX_UNIT_POINTS;
+    vs->height.value = height;
+    vs->height.unit = AX_UNIT_POINTS;
+    vs->min_width.unit = vs->min_height.unit = AX_UNIT_AUTO;
+    vs->max_width.unit = vs->max_height.unit = AX_UNIT_AUTO;
+    vs->box_sizing = AX_BOX_SIZING_BORDER_BOX;
+    for (e = 0; e < 4; ++e) {
+        vs->margin[e].value = 0.0f;
+        vs->margin[e].unit = AX_UNIT_POINTS;
+    }
+    ctx.viewport_row = row;
+    memset(&req, 0, sizeof req);
+    req.avail_w = width;
+    req.avail_h = height;
+    req.mode_w = AX_LAYOUT_EXACT;
+    req.mode_h = AX_LAYOUT_EXACT;
+    req.owner_w = target->owner_w;
+    req.owner_h = target->owner_h;
+    req.perform = true;
+    (void)ax_layout_node(&ctx, row, &req);
+    scene->layout_counters.present_layouts += ctx.counters.layouts + ctx.counters.measures;
 }
 
 void ax_layout_get_counters(ax_scene *scene, ax_layout_counters *out, bool reset)

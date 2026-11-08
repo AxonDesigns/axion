@@ -330,59 +330,31 @@ void ax_txn_set_animated(ax_txn *t, bool animated)
     }
 }
 
-static bool finite_nonnegative(float f)
-{
-    return isfinite(f) && f >= 0.0f;
-}
-
-static void record_transition(ax_txn *t, ax_node node, ax_prop prop, const ax_transition *tr)
+static void record_transition(ax_txn *t, ax_node node, ax_prop prop, const ax_curve *c)
 {
     ax_txn_cmd_transition *cmd =
         (ax_txn_cmd_transition *)emit(t, AX_TXN_OP_TRANSITION, sizeof *cmd);
     if (cmd != NULL) {
         cmd->prop = prop;
-        cmd->kind = tr->kind;
         cmd->node = node;
-        cmd->delay = tr->delay;
-        cmd->duration = tr->duration;
-        memcpy(cmd->curve, tr->curve, sizeof cmd->curve);
-        cmd->bounce = tr->bounce;
+        cmd->curve = *c;
     }
 }
 
-void ax_txn_set_transition(ax_txn *t, ax_node node, ax_prop prop, const ax_transition *transition)
+/* Records a transition for a node (or the world's default, with a null node). */
+static void transition(ax_txn *t, ax_node node, ax_prop prop, const ax_transition *tr)
 {
+    ax_curve c;
+    ax_result r;
     uint32_t i;
-    if (!can_record(t)) {
+    r = ax_curve_from_transition(tr, &c);
+    if (r != AX_OK) {
+        fail(t, r, "%s", ax_last_error()->message.ptr);
         return;
     }
-    if (AX_HANDLE_IS_NULL(node)) {
-        fail(t, AX_ERR_INVALID_HANDLE, "transition on a null node");
+    if (prop == AX_PROP_LAYOUT) {
+        record_transition(t, node, prop, &c);
         return;
-    }
-    if (transition == NULL || transition->struct_size < sizeof(ax_transition)) {
-        fail(t, AX_ERR_ABI_MISMATCH, "transition: NULL, or struct_size smaller than %u",
-             (unsigned)sizeof(ax_transition));
-        return;
-    }
-    if (transition->kind < AX_TRANSITION_NONE || transition->kind > AX_TRANSITION_SPRING ||
-        !finite_nonnegative(transition->delay) || !finite_nonnegative(transition->duration) ||
-        !isfinite(transition->bounce) || transition->bounce < -1.0f || transition->bounce > 1.0f) {
-        fail(t, AX_ERR_INVALID_ARGUMENT, "transition: unknown kind, or a value out of range");
-        return;
-    }
-    if (transition->kind == AX_TRANSITION_TIMING) {
-        for (i = 0; i < 4; ++i) {
-            if (!isfinite(transition->curve[i])) {
-                fail(t, AX_ERR_INVALID_ARGUMENT, "transition: curve not finite");
-                return;
-            }
-        }
-        if (transition->curve[0] < 0.0f || transition->curve[0] > 1.0f ||
-            transition->curve[2] < 0.0f || transition->curve[2] > 1.0f) {
-            fail(t, AX_ERR_INVALID_ARGUMENT, "transition: curve x outside 0..1");
-            return;
-        }
     }
     if (prop < AX_PROP_FIRST_IDL) {
         const ax_prop_desc *d = ax_prop_builtin(prop);
@@ -391,15 +363,40 @@ void ax_txn_set_transition(ax_txn *t, ax_node node, ax_prop prop, const ax_trans
                  (unsigned)prop, d == NULL ? "unknown" : "not animatable");
             return;
         }
+        if (d->effect == AX_EFFECT_LAYOUT) {
+            /* Layout properties animate through the frame (decision 94). */
+            record_transition(t, node, AX_PROP_LAYOUT, &c);
+            return;
+        }
         if (d->storage == AX_PROP_EXPANDS) {
             /* A shorthand's transition is each longhand's. */
             for (i = 0; i < d->longhand_count; ++i) {
-                record_transition(t, node, d->longhands[i], transition);
+                record_transition(t, node, d->longhands[i], &c);
             }
             return;
         }
     }
-    record_transition(t, node, prop, transition);
+    record_transition(t, node, prop, &c);
+}
+
+void ax_txn_set_transition(ax_txn *t, ax_node node, ax_prop prop, const ax_transition *tr)
+{
+    if (!can_record(t)) {
+        return;
+    }
+    if (AX_HANDLE_IS_NULL(node)) {
+        fail(t, AX_ERR_INVALID_HANDLE, "transition on a null node");
+        return;
+    }
+    transition(t, node, prop, tr);
+}
+
+void ax_txn_set_default_transition(ax_txn *t, ax_prop prop, const ax_transition *tr)
+{
+    ax_node none = AX_HANDLE_NULL_INIT;
+    if (can_record(t)) {
+        transition(t, none, prop, tr);
+    }
 }
 
 /* ---- Ending ---------------------------------------------------------------------------------- */
@@ -458,6 +455,9 @@ ax_result ax_txn_commit(ax_txn *t, uint64_t *out_seq)
     ax__world_reclaim(w);
     if (out_seq != NULL) {
         *out_seq = t->seq;
+    }
+    if (w->commit_hook != NULL) {
+        w->commit_hook(w->commit_hook_user);
     }
     return AX_OK;
 }

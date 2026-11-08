@@ -87,6 +87,7 @@ static void free_world(world_impl *w)
     }
     ax__apply_free(w);
     ax__frame_free(w);
+    ax__anim_free(w);
     ax__mirror_free(w);
     ax_mem_free(&a, w->free_handles, sizeof(ax_node) * w->free_handle_capacity);
     ax_mem_free(&a, w->recycle_backlog, sizeof(ax_node) * w->recycle_backlog_capacity);
@@ -129,6 +130,7 @@ ax_result ax_world_create(const ax_world_desc *desc, ax_world *out_world)
     w->head = &w->stub;
     ax_atomic_init_u64(&w->applied_seq, 0);
     ax_atomic_init_u32(&w->dropped_failures, 0);
+    ax_atomic_init_u32(&w->reduce_motion, 0);
 
     if (ax_spsc_ring_init(&w->recycled, a, RECYCLED_CAPACITY, sizeof(ax_node)) != AX_OK ||
         ax_spsc_ring_init(&w->returned, a, RETURNED_CAPACITY, sizeof(ax_txn *)) != AX_OK ||
@@ -229,6 +231,24 @@ void ax_world_bind_scene_thread(ax_world world)
     if (w != NULL) {
         w->scene_thread = ax_thread_current_id();
         ax_node_store_bind_thread(&w->scene.store);
+    }
+}
+
+void ax_world_set_commit_hook(ax_world world, void (*hook)(void *user), void *user)
+{
+    world_impl *w = ax__world_from_handle(world);
+    AX_ASSERT(w != NULL);
+    if (w != NULL) {
+        w->commit_hook = hook;
+        w->commit_hook_user = user;
+    }
+}
+
+void ax_world_set_reduce_motion(ax_world world, bool reduce)
+{
+    world_impl *w = ax__world_from_handle(world);
+    if (w != NULL) {
+        ax_atomic_store_u32(&w->reduce_motion, reduce ? 1u : 0u, AX_MO_RELAXED);
     }
 }
 
