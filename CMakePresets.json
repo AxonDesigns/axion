@@ -64,6 +64,13 @@
       "inherits": ["base", "release"],
       "toolchainFile": "$env{EMSDK}/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake",
       "cacheVariables": { "AX_BUILD_TESTS": "OFF", "AX_WEB_THREADS": "OFF" }
+    },
+    {
+      "name": "emscripten-tests",
+      "displayName": "Emscripten tests in Node (single-threaded)",
+      "description": "Needs EMSDK set (emsdk_env). Builds the tests too; ctest runs them in Node (the toolchain's CMAKE_CROSSCOMPILING_EMULATOR).",
+      "inherits": "emscripten",
+      "cacheVariables": { "AX_BUILD_TESTS": "ON", "AX_BUILD_EXAMPLES": "OFF" }
     }
   ],
   "buildPresets": [
@@ -76,7 +83,8 @@
     { "name": "gcc-debug",     "configurePreset": "gcc-debug" },
     { "name": "gcc-release",   "configurePreset": "gcc-release" },
     { "name": "gcc-asan",      "configurePreset": "gcc-asan" },
-    { "name": "emscripten",    "configurePreset": "emscripten" }
+    { "name": "emscripten",    "configurePreset": "emscripten" },
+    { "name": "emscripten-tests", "configurePreset": "emscripten-tests" }
   ],
   "testPresets": [
     {
@@ -108,6 +116,13 @@
     { "name": "clang-tsan",    "configurePreset": "clang-tsan",    "inherits": "test-tsan" },
     { "name": "gcc-debug",     "configurePreset": "gcc-debug",     "inherits": "test-base" },
     { "name": "gcc-release",   "configurePreset": "gcc-release",   "inherits": "test-base" },
-    { "name": "gcc-asan",      "configurePreset": "gcc-asan",      "inherits": "test-sanitize" }
+    { "name": "gcc-asan",      "configurePreset": "gcc-asan",      "inherits": "test-sanitize" },
+    {
+      "name": "emscripten-tests",
+      "configurePreset": "emscripten-tests",
+      "inherits": "test-base",
+      "description": "The single-threaded build's tests in Node: core, the Render IR and the runtime's cooperative mode (decision 79).",
+      "filter": { "include": { "label": "^(core|render_ir|runtime)$" }, "exclude": { "label": "^death$" } }
+    }
   ]
 }

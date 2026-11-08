@@ -175,6 +175,9 @@ AX_TEST(events_cross_threads_while_the_app_waits)
     ax_thread t;
     uint32_t next = 0;
     uint64_t until;
+    if (!ax_threads_supported()) {
+        AX_SKIP("needs threads");
+    }
     memset(&c, 0, sizeof c);
     c.world = make_world(NULL);
     c.count = 20000u;
@@ -413,6 +416,9 @@ AX_TEST(waiting_for_events_returns_when_a_callback_is_due)
     ax_thread t;
     ax_world_event e = empty_event();
     uint64_t start;
+    if (!ax_threads_supported()) {
+        AX_SKIP("needs threads");
+    }
     memset(&r, 0, sizeof r);
     memset(&log, 0, sizeof log);
     tag.log = &log;

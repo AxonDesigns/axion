@@ -92,6 +92,7 @@ new entry that points back to the old one.
 | 76  | Positioning, the layer rule and incremental recording    | Implementation |
 | 77  | The runtime, the frame's order and the single thread     | Implementation |
 | 78  | The scene and render threads; vsync on the render thread | Deviation      |
+| 79  | The cooperative mode's tests in Node                     | Implementation |
 
 ---
 
@@ -3254,3 +3255,29 @@ surface from one render thread. The owner asked for:
 
 **Status.** Deviation (the vsync), recorded as the owner asked; the rest Implementation, pending
 the owner's approval.
+
+## 79. The cooperative mode's tests in Node
+
+**Context.** core already built in the Emscripten job. The owner asked for a proof of the
+cooperative mode that runs there in CI, for example core's tests in Node.
+
+**Decision.**
+- **A new preset, `emscripten-tests`.** It inherits `emscripten` (Release, single-threaded,
+  `AX_WEB_THREADS=OFF`) and turns the tests on, with the examples off. ctest runs each test's
+  `.js` in Node through Emscripten's toolchain (`CMAKE_CROSSCOMPILING_EMULATOR`). Its test
+  preset includes the labels `core`, `render_ir` and `runtime` and excludes `death` (a death test
+  passes by catching SIGABRT, which WebAssembly does not raise).
+  - The `runtime` tests include decision 77's single-threaded pipeline with its manual clock,
+    so the cooperative scheduler, `ax_host_frame` and the inline job system run as the web will
+    run them.
+- **Tests that need threads skip** (`ax_threads_supported()` is false there). Two of core's
+  tests gained the guard the others already had: `core.events.events_cross_threads_while_the_app_waits`
+  and `core.events.waiting_for_events_returns_when_a_callback_is_due`.
+- **CI:** the `emscripten` job now configures, builds and tests with `emscripten-tests`, which
+  also builds every library the old job built.
+- **Locally** (emsdk 4.0.10, CI's version, Node 24): 98 tests, 11 skipped for lack of threads,
+  none failed.
+- base's tests stay out for now: many of them create threads without the guard. They join when
+  someone needs them on the web.
+
+**Status.** Implementation, pending the owner's approval (part of the approved plan).

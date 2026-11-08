@@ -212,8 +212,11 @@ jobs:
           AX_REQUIRE_WP_FIFO: "1"
         run: tools/ci/with-weston.sh ctest --preset gcc-debug -L "^(wayland|gpu_wayland)$"
 
+  # The single-threaded web build, with core's, the Render IR's and the runtime's tests run in
+  # Node: the cooperative mode (ax_host_frame) and the inline job system as the web runs them
+  # (decision 79). Tests that need threads skip.
   emscripten:
-    name: Web / Emscripten / base only (single-threaded)
+    name: Web / Emscripten / single-threaded (core, render IR and runtime tests in Node)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -235,7 +238,10 @@ jobs:
           echo "EMSDK=$(cd "$(dirname "$(command -v emcc)")/../.." && pwd)" >> "$GITHUB_ENV"
 
       - name: Configure
-        run: cmake --preset emscripten
+        run: cmake --preset emscripten-tests
 
       - name: Build
-        run: cmake --build --preset emscripten -- -k 0
+        run: cmake --build --preset emscripten-tests -- -k 0
+
+      - name: Test (Node)
+        run: ctest --preset emscripten-tests
