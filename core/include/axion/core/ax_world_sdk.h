@@ -75,7 +75,8 @@ typedef enum ax_txn_op {
     AX_TXN_OP_SET = 2,
     AX_TXN_OP_INSERT = 3, /* insert_before; append when before is null */
     AX_TXN_OP_REMOVE = 4,
-    AX_TXN_OP_TRANSITION = 5
+    AX_TXN_OP_TRANSITION = 5,
+    AX_TXN_OP_SET_STR = 6 /* a string value, its bytes inline (decision 99) */
 } ax_txn_op;
 
 typedef struct ax_txn_cmd {
@@ -119,6 +120,20 @@ typedef struct ax_txn_cmd_transition {
     ax_node node;   /* null: the world's default for prop (ax_txn_set_default_transition) */
     ax_curve curve; /* validated (ax_anim.h) */
 } ax_txn_cmd_transition;
+
+/* SET_STR: `length` bytes of UTF-8 follow the fixed part, padded to a multiple of 8 (the
+ * command's size is sizeof(ax_txn_cmd_set_str) + length rounded up to 8). */
+typedef struct ax_txn_cmd_set_str {
+    ax_txn_cmd h;
+    ax_prop prop;
+    uint32_t length;
+    ax_node node;
+} ax_txn_cmd_set_str;
+
+static inline const char *ax_txn_cmd_str_bytes(const ax_txn_cmd_set_str *c)
+{
+    return (const char *)(c + 1);
+}
 
 /* A committed transaction, as the scene thread reads it. */
 typedef struct ax_txn_info {

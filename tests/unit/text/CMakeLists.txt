@@ -16,3 +16,6 @@ add_test(NAME text.includes.only_base
          COMMAND "${CMAKE_COMMAND}" "-DTEXT_DIR=${PROJECT_SOURCE_DIR}/text"
                  -P "${CMAKE_CURRENT_SOURCE_DIR}/check_includes.cmake")
 set_tests_properties(text.includes.only_base PROPERTIES LABELS text)
+
+ax_add_unit_test(text test_features.c)
+target_link_libraries(test_text_features PRIVATE ax_text)

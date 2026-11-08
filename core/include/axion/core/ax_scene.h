@@ -31,7 +31,8 @@
  *     local, so a transform change never touches the subtree.
  *   - An inherited property: STYLE plus its effect on the node and on every descendant.
  * Children added or removed mark the parent LAYOUT; if the parent is not a boundary, dirtiness
- * climbs from its parent. A moved node gets LAYOUT. Setting a property to the value it already
+ * climbs from its parent. A moved node gets LAYOUT, and a node moved to another parent gets STYLE
+ * on its whole subtree (what it inherits may change). Setting a property to the value it already
  * has marks nothing.
  *
  * Flags stay set until the frame that consumes them clears them (ax_scene_clear_dirty). Marking
@@ -78,6 +79,9 @@ typedef struct ax_scene {
     /* Animations (decision 94). */
     ax_component_type transitions_component; /* a node's own transitions */
     ax_component_type anim_component;        /* a node's running animations */
+    /* Text (decision 99): ax_node_text (ax_text_node.h). */
+    ax_component_type text_component;
+    uint32_t style_pass; /* the newest style pass */
     uint32_t layout_pass;                    /* the newest pass */
     uint32_t present_pass;                   /* the newest presentation pass (ax_layout_present) */
     ax_layout_counters layout_counters;

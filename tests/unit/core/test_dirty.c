@@ -228,7 +228,9 @@ AX_TEST(structural_changes_mark_both_parents)
     AX_CHECK(FLAGS(t.sidebar) & AX_DIRTY_LAYOUT);
     AX_CHECK(FLAGS(t.window) & AX_DIRTY_LAYOUT_ROOT); /* new side climbs to the window */
     AX_CHECK(FLAGS(t.item) & AX_DIRTY_LAYOUT);
-    AX_CHECK_EQ_U(FLAGS(t.label), 0); /* the moved subtree's insides are untouched */
+    /* The moved subtree's insides keep their layout; only STYLE (what they inherit may change,
+     * decision 99). */
+    AX_CHECK_EQ_U(FLAGS(t.label), AX_DIRTY_STYLE);
 
     /* Children of a fixed node: only that node. */
     ax_scene_clear_dirty(&scene);

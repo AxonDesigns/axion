@@ -27,6 +27,7 @@
 #include <axion/ax_error.h>
 #include <axion/base/ax_error_set.h>
 #include <axion/base/ax_memory.h>
+#include <axion/core/ax_text_node.h>
 
 typedef enum undo_op {
     UNDO_CREATE = 1, /* destroy the created node */
@@ -44,6 +45,9 @@ typedef struct undo_entry {
     ax_node before; /* UNDO_MOVE: null when it was the last child */
     ax_value value; /* UNDO_SET */
 } undo_entry;
+
+/* undo_entry.reserved for UNDO_SET of a text property: the node had set it. */
+#define UNDO_WAS_SET 1u
 
 /* Per transaction, at most this many undo entries per command (a shorthand set). */
 #define UNDO_PER_COMMAND AX_PROP_MAX_LONGHANDS
@@ -189,6 +193,69 @@ static bool apply_create(apply_state *st, const ax_txn_cmd_create *c)
     return true;
 }
 
+/* The old value of a longhand, so the change can be undone. A text property also keeps whether
+ * the node had set it (unset again means inheriting again), and a string keeps a reference,
+ * dropped once the transaction is done (release_undo). */
+static void push_undo_set(apply_state *st, ax_node node, const ax_prop_desc *d)
+{
+    undo_entry *u = push_undo(st, UNDO_SET, node);
+    u->prop = d->id;
+    u->type = (uint32_t)d->type;
+    if (d->storage == AX_PROP_IN_TEXT) {
+        bool was_set = false;
+        (void)ax_scene_get_own(st->scene, node, d->id, &u->value, &was_set);
+        u->reserved = was_set ? UNDO_WAS_SET : 0u;
+    } else {
+        (void)ax_scene_get(st->scene, node, d->id, &u->value);
+    }
+    if (d->type == AX_VALUE_STRING) {
+        ax_shared_str_retain(u->value.str);
+    }
+}
+
+static void release_undo(apply_state *st)
+{
+    uint32_t i;
+    for (i = 0; i < st->undo_count; ++i) {
+        if (st->undo[i].op == UNDO_SET && st->undo[i].type == AX_VALUE_STRING) {
+            ax_shared_str_release(st->undo[i].value.str);
+            st->undo[i].value.str = NULL;
+        }
+    }
+}
+
+static bool apply_set_str(apply_state *st, const ax_txn_cmd_set_str *c)
+{
+    const ax_prop_desc *d = ax_prop_registry_find(&st->scene->props, c->prop);
+    ax_value v;
+    ax_result r;
+    if (!check_node(st, c->node, "the node")) {
+        return false;
+    }
+    if (d == NULL || d->type != AX_VALUE_STRING) {
+        failf(st, AX_ERR_INVALID_ARGUMENT, "set: property 0x%x %s", (unsigned)c->prop,
+              d == NULL ? "is unknown" : "does not take a string");
+        return false;
+    }
+    memset(&v, 0, sizeof v);
+    v.str = ax_shared_str_create(&st->w->allocator, ax_txn_cmd_str_bytes(c), c->length);
+    if (v.str == NULL) {
+        failf(st, AX_ERR_OUT_OF_MEMORY, "set: out of memory for a string of %u bytes",
+              (unsigned)c->length);
+        return false;
+    }
+    push_undo_set(st, c->node, d);
+    ax_clear_error();
+    r = ax_scene_set(st->scene, c->node, c->prop, AX_VALUE_STRING, &v);
+    ax_shared_str_release(v.str);
+    if (r != AX_OK) {
+        fail_from(st, r, "set");
+        return false;
+    }
+    ax__mirror_touch_slot(st->w, ax_handle_slot(c->node.h));
+    return true;
+}
+
 static bool apply_set(apply_state *st, const ax_txn_cmd_set *c)
 {
     const ax_prop_desc *d = ax_prop_registry_find(&st->scene->props, c->prop);
@@ -204,16 +271,10 @@ static bool apply_set(apply_state *st, const ax_txn_cmd_set *c)
     /* Old values first (each longhand of a shorthand), so the change can be undone. */
     if (d->storage == AX_PROP_EXPANDS) {
         for (i = 0; i < d->longhand_count; ++i) {
-            undo_entry *u = push_undo(st, UNDO_SET, c->node);
-            u->prop = d->longhands[i];
-            u->type = (uint32_t)d->type;
-            (void)ax_scene_get(st->scene, c->node, d->longhands[i], &u->value);
+            push_undo_set(st, c->node, ax_prop_registry_find(&st->scene->props, d->longhands[i]));
         }
     } else {
-        undo_entry *u = push_undo(st, UNDO_SET, c->node);
-        u->prop = c->prop;
-        u->type = (uint32_t)d->type;
-        (void)ax_scene_get(st->scene, c->node, c->prop, &u->value);
+        push_undo_set(st, c->node, d);
     }
     ax_clear_error();
     r = ax_scene_set(st->scene, c->node, c->prop, (ax_value_type)c->type, &c->value);
@@ -285,7 +346,16 @@ static void undo_all(apply_state *st)
             r = ax_node_store_destroy(&scene->store, u->node);
             break;
         case UNDO_SET:
-            r = ax_scene_set(scene, u->node, u->prop, (ax_value_type)u->type, &u->value);
+            if (ax_prop_builtin(u->prop) != NULL &&
+                ax_prop_builtin(u->prop)->storage == AX_PROP_IN_TEXT &&
+                (u->reserved & UNDO_WAS_SET) == 0) {
+                r = ax_scene_unset(scene, u->node, u->prop);
+            } else {
+                r = ax_scene_set(scene, u->node, u->prop, (ax_value_type)u->type, &u->value);
+            }
+            if (u->type == AX_VALUE_STRING) {
+                ax_shared_str_release(u->value.str); /* the undo log's reference */
+            }
             break;
         case UNDO_MOVE:
             if (AX_HANDLE_IS_NULL(u->parent)) {
@@ -350,6 +420,9 @@ static void apply_one(apply_state *st, ax_txn *t)
         case AX_TXN_OP_TRANSITION:
             ok = apply_transition(st, (const ax_txn_cmd_transition *)(const void *)cmd);
             break;
+        case AX_TXN_OP_SET_STR:
+            ok = apply_set_str(st, (const ax_txn_cmd_set_str *)(const void *)cmd);
+            break;
         }
     }
     if (ok && ax_txn_next_cmd(&info, cmd) != NULL) {
@@ -359,7 +432,7 @@ static void apply_one(apply_state *st, ax_txn *t)
     }
 
     if (!ok) {
-        undo_all(st);
+        undo_all(st); /* drops the undo log's string references as it goes */
         ax_world_finish_txn(st->handle, t, st->error, st->command, st->message);
         return;
     }
@@ -381,6 +454,7 @@ static void apply_one(apply_state *st, ax_txn *t)
             }
         }
         ax__anim_txn_applied(w, info.animated);
+        release_undo(st);
     }
     /* Every command succeeded: now the removed subtrees go (their slots are recycled). */
     for (i = 0; i < st->removed_count; ++i) {

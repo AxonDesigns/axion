@@ -16,6 +16,7 @@ set(_ax_core_tests
     test_mirror.c
     test_node_store.c
     test_props.c
+    test_text_style.c
     test_txn.c)
 
 foreach(_t IN LISTS _ax_core_tests)

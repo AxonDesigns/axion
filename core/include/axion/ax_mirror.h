@@ -22,6 +22,7 @@
 #define AX_MIRROR_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "ax_node.h"
@@ -63,6 +64,17 @@ AX_API ax_result ax_mirror_get_dimension(ax_world world, ax_node node, ax_prop p
 AX_API ax_result ax_mirror_get_color(ax_world world, ax_node node, ax_prop prop, ax_rgba *out);
 AX_API ax_result ax_mirror_get_transform(ax_world world, ax_node node, ax_prop prop,
                                          ax_transform2d *out);
+
+/*
+ * A string property's value in the latched publication: AX_PROP_TEXT, the content the app set
+ * (decision 99). Copies at most capacity - 1 bytes and a NUL into buffer (may be NULL with
+ * capacity 0), and sets *out_length (may be NULL) to the whole value's length, so a caller can
+ * size its buffer first. A node without text reads as "". The text style properties (font
+ * family, features) are not mirrored yet: AX_ERR_UNSUPPORTED. Errors: AX_ERR_INVALID_HANDLE,
+ * AX_ERR_INVALID_ARGUMENT (not a string property). thread: app
+ */
+AX_API ax_result ax_mirror_get_str(ax_world world, ax_node node, ax_prop prop, char *buffer,
+                                   size_t capacity, size_t *out_length);
 
 /* The frame layout computed for the node (in its parent's space, before its transform, rounded to
  * its window's pixel grid), as of the latched publication. Errors: AX_ERR_INVALID_HANDLE.

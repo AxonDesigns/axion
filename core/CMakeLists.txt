@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # core: the retained node tree, properties and transactions (layout, animation, gestures and the
-# rest arrive with their milestones). Depends on base and the Render IR (render/ir).
+# rest arrive with their milestones). Depends on base, the Render IR (render/ir) and text.
 #
 # Headers:
 #   include/axion/        stable C ABI (nodes, property values, transactions)
@@ -20,6 +20,7 @@ add_library(ax_core STATIC
     src/node_store.c
     src/prop_registry.c
     src/scene.c
+    src/text_node.c
     src/txn.c
     src/world.c)
 add_library(axion::core ALIAS ax_core)
@@ -29,5 +30,5 @@ target_include_directories(ax_core
     PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 # The scene records the Render IR (decision 76): core reads only ax_render_ir.h and the mailbox,
 # never the renderer interface (ax_renderer.h), which pulls in the platform module.
-target_link_libraries(ax_core PUBLIC ax_base ax_render_ir)
+target_link_libraries(ax_core PUBLIC ax_base ax_render_ir ax_text)
 ax_target_defaults(ax_core)

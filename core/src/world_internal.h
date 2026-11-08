@@ -63,6 +63,7 @@ typedef struct mirror_node {
     ax_rect frame;
     ax_node_paint paint;
     ax_node_composite composite;
+    const ax_shared_str *text; /* AX_PROP_TEXT, a reference the copy holds (decision 99) */
 } mirror_node;
 
 /* A published copy, indexed by slot. */
