@@ -779,7 +779,7 @@ ax_result ax_png_decode(const ax_allocator *allocator, const void *data, size_t 
     bool have_ihdr = false, have_iend = false;
     buf idat;
     uint8_t *raw = NULL, *rgba = NULL;
-    size_t row_bytes, raw_size, x, y;
+    size_t row_bytes = 0, raw_size = 0, x, y;
     ax_result res = AX_OK;
 
     memset(out, 0, sizeof *out);

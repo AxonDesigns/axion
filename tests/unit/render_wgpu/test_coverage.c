@@ -267,6 +267,21 @@ static void check_scene_ex(env *e, const char *scene, const ax_render_ir *ir, ui
     printf("%s: dE p99.9 %.4f, mean %.5f, max %.4f at (%u, %u); max channel difference %u/255\n",
            scene, res.de_percentile, res.de_mean, res.de_max, res.worst_x, res.worst_y,
            res.max_channel);
+    {
+        /* The measures go with the images, so CI's artifacts carry every implementation's. */
+        const char *dir = getenv("AX_TEST_ARTIFACT_DIR");
+        if (dir != NULL && dir[0] != '\0') {
+            char path[1024];
+            FILE *f;
+            snprintf(path, sizeof path, "%s/measures.txt", dir);
+            f = fopen(path, "a");
+            if (f != NULL) {
+                fprintf(f, "%s: dE p99.9 %.4f mean %.5f max %.4f channel %u\n", scene,
+                        res.de_percentile, res.de_mean, res.de_max, res.max_channel);
+                fclose(f);
+            }
+        }
+    }
     if (res.de_percentile > DE_PERCENTILE_LIMIT) {
         ax_test_fail(__FILE__, __LINE__, "%s: dE at the 99.9th percentile %.4f > %.3f", scene,
                      res.de_percentile, DE_PERCENTILE_LIMIT);
