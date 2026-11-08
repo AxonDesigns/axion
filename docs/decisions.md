@@ -107,9 +107,9 @@ new entry that points back to the old one.
 | 91  | Flex conformance against Yoga                            | Approved       |
 | 92  | Parallel boundaries, `ax_measure_sync`, benchmark        | Approved       |
 | 93  | Clips: overflow hidden, and in `ax_render_wgpu`          | Approved       |
-| 94  | Implicit animations, layout animations and layers        | Implementation |
-| 95  | Zero frames at rest                                      | Implementation |
-| 96  | m1_nodes animated, the driver gone, animation goldens    | Implementation |
+| 94  | Implicit animations, layout animations and layers        | Approved       |
+| 95  | Zero frames at rest                                      | Approved       |
+| 96  | m1_nodes animated, the driver gone, animation goldens    | Approved       |
 
 ---
 
