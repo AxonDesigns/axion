@@ -1735,7 +1735,8 @@ tested against. It arrives in M1; M0's renderer needs a reference now.
   lavapipe differed by at most 1/255; the two lavapipe runs were identical.
 
 **Status.** Approved (part of the approved plan; the owner asked for the reference to be recorded
-as provisional).
+as provisional). Superseded by decision 83: the GPU renderer is now compared with ax_render_soft,
+and this reference tests the software renderer (decision 81).
 
 ## 57. Render-thread frame step: bounded size handshake
 
@@ -3526,6 +3527,47 @@ corrupt input under ASan.
   (SIMD128) produce byte-identical PNGs.
 - The web tests link with `-sNODERAWFS=1` (they read goldens and write artifacts on the host's
   file system) and `-sALLOW_MEMORY_GROWTH=1`.
+
+**Status.** Implementation, pending the owner's approval.
+
+## 83. GPU renderers against the software reference: a perceptual tolerance
+
+**Context.** "Antialiasing and image quality" (Verification): golden-image tests compare each GPU
+renderer to the software reference within a perceptual tolerance, on antialiasing torture scenes.
+Until now ax_render_wgpu's coverage tests compared with decision 56's supersampled reference. The
+owner asked for a percentile (for example 99.9% of the pixels within dE 0.02) plus the mean,
+not a per-pixel maximum, calibrated with Dawn, wgpu-native and Metal.
+
+**Decision.** `tests/unit/render_wgpu/test_coverage.c` draws each shared scene (tests/scenes) with
+ax_render_wgpu into an RGBA8 texture and with ax_render_soft, and compares the two.
+- **The measure:** per pixel, both 8-bit sRGB values decoded to linear light (the exact formula,
+  in double precision: test code) and converted to OKLab; dE is the Euclidean distance. OKLab is
+  close to perceptually uniform, and dE 0.02 is about one just noticeable difference.
+- **The tolerance:** the 99.9th percentile of the pixels' dE at most **0.02**, and the mean at most
+  **0.002**. A percentile, as the owner asked: both renderers compute the same coverage, but the GPU
+  rounds into its 8-bit target after every blend and the software renderer once, so a few pixels
+  may differ more than the rest; near black, one step of 8 bits is a large dE (the `rotated`
+  scene's worst pixel is 1/255 and dE 0.067).
+- **Scenes:** the seven coverage scenes, the rotating hairlines (four frames), the zone plate, the
+  derivative path's scene, and the linear-blend diagnostic against the software renderer's
+  (`AX_RENDER_SOFT_DIAG_LINEAR_BLEND`). Not compared, because ax_render_wgpu does not draw them
+  yet: the zone plate behind nested rounded clips (it skips clipped layers), group opacity (it
+  approximates) and linear layers. Each joins when the GPU renderer draws it; the software
+  renderer's goldens cover them meanwhile. The fallback scene checks its counts only.
+- **Measured** (Debug builds; dE at the 99.9th percentile, mean dE, worst channel difference):
+
+  | Implementation and adapter | p99.9 (worst scene) | mean (worst scene) | channel |
+  | --- | --- | --- | --- |
+  | Dawn, NVIDIA 615.78 (GTX 1650) | 0.0062 (zone plate) | 0.00076 (zone plate) | 2/255 |
+  | Dawn, lavapipe (Mesa, LLVM 23) | 0.0051 (zone plate) | 0.00094 (zone plate) | 2/255 |
+  | wgpu-native, NVIDIA | 0.0062 | 0.00076 | 2/255 |
+  | wgpu-native, lavapipe | 0.0051 | 0.00094 | 2/255 |
+
+  Each implementation matches the other on the same adapter, scene by scene. The limits leave a
+  factor of three on the percentile and two on the mean.
+- **CI:** the coverage jobs (Dawn on lavapipe, wgpu-native on lavapipe, Dawn on Metal) run these
+  tests, and `compare-coverage` still compares their images with each other within 3/255.
+- decision 56's supersampled reference stays as a test of the software renderer itself.
 
 **Status.** Implementation, pending the owner's approval.
 

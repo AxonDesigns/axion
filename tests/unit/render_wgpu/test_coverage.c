@@ -2,19 +2,17 @@
  * Copyright 2026 Axon Works
  * SPDX-License-Identifier: Apache-2.0
  *
- * Coverage tests for ax_render_wgpu (decision 56): fixed scenes rendered offscreen and compared
- * pixel by pixel with coverage_reference.c, the provisional CPU reference (supersampled exact
- * area coverage, sRGB-space compositing), until ax_render_soft arrives in M1.
- *
- * Tolerances, per channel, on 8-bit values:
- *   - EDGE_TOLERANCE away from corners, where the renderer's coverage is exact (straight edges
- *     at any angle and slabs, including rects thinner than a pixel): 3/255 covers the 8-bit
- *     rounding of each blend and the reference's sampling error (at most 1/128 of the area);
- *   - CORNER_TOLERANCE near a rect's vertex under rotation or a rounded corner's arc, where it
- *     multiplies two slabs or treats the arc as straight;
- *   - MEAN_TOLERANCE for the mean error over the whole image.
- * Each test prints its measured errors. With AX_TEST_ARTIFACT_DIR set, every image is also written
- * there as <scene>.ppm, for CI to compare implementations with each other
+ * ax_render_wgpu against ax_render_soft, the reference (decisions 81 and 83): the shared scenes
+ * (tests/scenes) rendered offscreen and compared with the software renderer's drawing of the
+ * same snapshot, within a perceptual tolerance:
+ *   - per pixel, the color difference in OKLab (Euclidean, from both pixels decoded to linear
+ *     light), dE;
+ *   - PERCENTILE of the pixels within DE_PERCENTILE_LIMIT, and the mean dE within DE_MEAN_LIMIT.
+ * A percentile rather than a maximum: both renderers compute the same coverage, but a GPU rounds
+ * into its 8-bit target after every blend while the software renderer rounds once, so a few
+ * pixels where many translucent edges overlap may differ by more than the rest.
+ * Each test prints its measures. With AX_TEST_ARTIFACT_DIR set, every image is also written there
+ * as <scene>.ppm, for CI to compare WebGPU implementations with each other
  * (tools/ci/compare_ppm.py).
  */
 #if defined(__linux__)
@@ -28,14 +26,15 @@
 
 #include "ax_test.h"
 #include "axion/ax_error.h"
+#include "axion/render/ax_render_soft.h"
 #include "axion/render/ax_render_wgpu.h"
-#include "coverage_reference.h"
+#include "axt_scenes.h"
 #include "gpu_test_util.h"
 #include "rw_testing.h"
 
-#define EDGE_TOLERANCE   3.0
-#define CORNER_TOLERANCE 20.0
-#define MEAN_TOLERANCE   0.35
+#define PERCENTILE          0.999 /* of the pixels ... */
+#define DE_PERCENTILE_LIMIT 0.02  /* ... within this dE (OKLab) */
+#define DE_MEAN_LIMIT       0.002
 
 #define PI_F 3.14159265358979f
 
@@ -160,74 +159,145 @@ static void write_artifact(const char *scene, const uint8_t *rgba, uint32_t w, u
 }
 
 typedef struct compare_result {
-    double max_edge, max_corner, mean;
+    double de_percentile, de_mean, de_max;
+    uint32_t max_channel; /* 8-bit, for reference */
     uint32_t worst_x, worst_y;
 } compare_result;
 
-/* Renders, compares with the reference, checks the tolerances, prints the errors. */
-static void check_scene(env *e, const char *scene, const ax_render_ir *ir, uint32_t w, uint32_t h,
-                        float scale, compare_result *out)
+static double srgb_to_linear(double v)
 {
-    axt_reference ref;
+    return v <= 0.04045 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4);
+}
+
+/* OKLab of an 8-bit sRGB pixel (opaque: every scene has an opaque background). */
+static void oklab(const uint8_t *p, double out[3])
+{
+    const double r = srgb_to_linear(p[0] / 255.0), g = srgb_to_linear(p[1] / 255.0),
+                 b = srgb_to_linear(p[2] / 255.0);
+    const double l = cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+    const double m = cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+    const double s = cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+    out[0] = 0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s;
+    out[1] = 1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s;
+    out[2] = 0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s;
+}
+
+static int cmp_double(const void *a, const void *b)
+{
+    const double x = *(const double *)a, y = *(const double *)b;
+    return x < y ? -1 : (x > y ? 1 : 0);
+}
+
+/* The software renderer's drawing of ir (RGBA8, like the GPU's target). */
+static uint8_t *reference(const ax_render_ir *ir, uint32_t w, uint32_t h, float scale,
+                          uint32_t diag)
+{
+    ax_render_soft_desc d;
+    ax_render_soft *r = NULL;
+    ax_soft_target t;
+    uint8_t *px = (uint8_t *)malloc((size_t)w * h * 4u);
+    memset(&d, 0, sizeof d);
+    d.diagnostic_flags = diag;
+    memset(&t, 0, sizeof t);
+    t.struct_size = sizeof t;
+    t.pixels = px;
+    t.width = w;
+    t.height = h;
+    t.stride = (size_t)w * 4u;
+    t.format = AX_SOFT_RGBA8;
+    t.scale = scale;
+    t.background = ax_color_make(0, 0, 0, 1);
+    if (px == NULL || ax_render_soft_create(NULL, &d, &r) != AX_OK ||
+        ax_render_soft_draw_ir(r, &t, ir, NULL) != AX_OK) {
+        free(px);
+        px = NULL;
+    }
+    ax_render_soft_destroy(r);
+    return px;
+}
+
+/* Renders, compares with the software renderer, checks the tolerance, prints the measures. */
+static void check_scene_ex(env *e, const char *scene, const ax_render_ir *ir, uint32_t w,
+                           uint32_t h, float scale, uint32_t soft_diag, compare_result *out)
+{
     ax_frame_status status = AX_FRAME_NOTHING;
     uint8_t *got = render(e, ir, w, h, scale, &status, NULL);
-    compare_result res = {0, 0, 0, 0, 0};
+    uint8_t *want;
+    double *de;
+    compare_result res;
     double sum = 0.0;
-    uint32_t i;
+    uint32_t i, n = w * h;
 
     if (got == NULL) {
         return;
     }
+    memset(&res, 0, sizeof res);
     AX_CHECK_EQ_U(status, AX_FRAME_PRESENTED);
     write_artifact(scene, got, w, h);
-    if (!axt_reference_render(ir, w, h, scale, 128, &ref)) {
+    want = reference(ir, w, h, scale, soft_diag);
+    de = (double *)malloc(sizeof(double) * n);
+    if (want == NULL || de == NULL) {
         ax_test_fail(__FILE__, __LINE__, "out of memory");
         free(got);
+        free(want);
+        free(de);
         return;
     }
-    for (i = 0; i < w * h; ++i) {
+    for (i = 0; i < n; ++i) {
+        double a[3], b[3];
         int k;
+        oklab(got + i * 4u, a);
+        oklab(want + i * 4u, b);
+        de[i] = sqrt((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) +
+                     (a[2] - b[2]) * (a[2] - b[2]));
+        sum += de[i];
+        if (de[i] > res.de_max) {
+            res.de_max = de[i];
+            res.worst_x = i % w;
+            res.worst_y = i / w;
+        }
         for (k = 0; k < 4; ++k) {
-            const double expected = floor((double)ref.rgba[i * 4 + k] * 255.0 + 0.5);
-            const double err = fabs((double)got[i * 4 + k] - expected);
-            sum += err;
-            if (ref.corner[i]) {
-                if (err > res.max_corner) {
-                    res.max_corner = err;
-                }
-            } else if (err > res.max_edge) {
-                res.max_edge = err;
-                res.worst_x = i % w;
-                res.worst_y = i / w;
-            }
+            const uint32_t d = (uint32_t)abs((int)got[i * 4u + k] - (int)want[i * 4u + k]);
+            res.max_channel = d > res.max_channel ? d : res.max_channel;
         }
     }
-    res.mean = sum / (double)(w * h * 4);
-    printf(
-        "%s: max error %.0f/255 at edges (worst at %u,%u), %.0f/255 near corners, mean %.3f/255\n",
-        scene, res.max_edge, res.worst_x, res.worst_y, res.max_corner, res.mean);
-    if (res.max_edge > EDGE_TOLERANCE) {
-        const uint8_t *p = got + ((size_t)res.worst_y * w + res.worst_x) * 4;
-        const float *q = ref.rgba + ((size_t)res.worst_y * w + res.worst_x) * 4;
-        ax_test_fail(__FILE__, __LINE__,
-                     "%s: edge error %.0f/255 > %.0f at (%u, %u): got %u %u %u, expected %.1f "
-                     "%.1f %.1f",
-                     scene, res.max_edge, EDGE_TOLERANCE, res.worst_x, res.worst_y, p[0], p[1],
-                     p[2], (double)q[0] * 255.0, (double)q[1] * 255.0, (double)q[2] * 255.0);
+    res.de_mean = sum / (double)n;
+    qsort(de, n, sizeof(double), cmp_double);
+    res.de_percentile = de[(size_t)((double)(n - 1u) * PERCENTILE)];
+    printf("%s: dE p99.9 %.4f, mean %.5f, max %.4f at (%u, %u); max channel difference %u/255\n",
+           scene, res.de_percentile, res.de_mean, res.de_max, res.worst_x, res.worst_y,
+           res.max_channel);
+    if (res.de_percentile > DE_PERCENTILE_LIMIT) {
+        ax_test_fail(__FILE__, __LINE__, "%s: dE at the 99.9th percentile %.4f > %.3f", scene,
+                     res.de_percentile, DE_PERCENTILE_LIMIT);
     }
-    if (res.max_corner > CORNER_TOLERANCE) {
-        ax_test_fail(__FILE__, __LINE__, "%s: corner error %.0f/255 > %.0f", scene, res.max_corner,
-                     CORNER_TOLERANCE);
-    }
-    if (res.mean > MEAN_TOLERANCE) {
-        ax_test_fail(__FILE__, __LINE__, "%s: mean error %.3f/255 > %.2f", scene, res.mean,
-                     MEAN_TOLERANCE);
+    if (res.de_mean > DE_MEAN_LIMIT) {
+        ax_test_fail(__FILE__, __LINE__, "%s: mean dE %.5f > %.4f", scene, res.de_mean,
+                     DE_MEAN_LIMIT);
     }
     if (out != NULL) {
         *out = res;
     }
-    axt_reference_free(&ref);
+    free(de);
+    free(want);
     free(got);
+}
+
+static void check_scene(env *e, const char *scene, const ax_render_ir *ir, uint32_t w, uint32_t h,
+                        float scale, compare_result *out)
+{
+    check_scene_ex(e, scene, ir, w, h, scale, 0, out);
+}
+
+/* A shared scene (tests/scenes), at its size and scale. */
+static void check_shared(env *e, const char *name)
+{
+    const axt_scene *s = axt_scene_find(name);
+    const ax_render_ir *ir;
+    AX_REQUIRE(s != NULL);
+    ir = axt_scene_record(s, &e->b);
+    AX_REQUIRE(ir != NULL);
+    check_scene(e, name, ir, s->width, s->height, s->scale, NULL);
 }
 
 static const ax_render_ir *finish(env *e)
@@ -247,137 +317,74 @@ static ax_color white(void)
 /* ---- scenes -----------------------------------------------------------------------------------
  */
 
+/* The shared scenes ax_render_wgpu draws exactly (no clips, group opacity or linear layers). */
+
 AX_TEST(axis_aligned_rects_at_fractional_positions)
 {
     env e;
-    const ax_render_ir *ir;
-    int i;
     ENV_INIT(&e);
-    ax_ir_builder_begin(&e.b, 96, 64, 0, ax_color_make(0, 0, 0, 1));
-    for (i = 0; i < 8; ++i) {
-        const float f = (float)i / 8.0f;
-        ax_ir_rect(&e.b, ax_rect_make(2.0f + (float)i * 11.0f + f, 3.0f + f, 7.5f + f, 20.25f),
-                   white());
-        ax_ir_rect(&e.b, ax_rect_make(2.0f + (float)i * 11.0f, 30.0f + f * 0.5f, 6.0f + f, 3.3f),
-                   ax_color_from_srgb8(0xFF4F7CFFu));
-    }
-    ir = finish(&e);
-    if (ir != NULL) {
-        check_scene(&e, "axis_aligned", ir, 96, 64, 1.0f, NULL);
-    }
+    check_shared(&e, "axis_aligned");
     env_deinit(&e);
 }
 
 AX_TEST(thin_rects_keep_their_area)
 {
-    /* Thinner than a pixel: drawn at their true area (a 0.25 px line is a 1 px line at 25%). */
-    static const float widths[] = {0.1f, 0.25f, 0.5f, 0.75f, 1.0f, 1.5f};
     env e;
-    const ax_render_ir *ir;
-    size_t i;
     ENV_INIT(&e);
-    ax_ir_builder_begin(&e.b, 80, 64, 0, ax_color_make(0, 0, 0, 1));
-    for (i = 0; i < AX_COUNTOF(widths); ++i) {
-        const float x = 4.0f + (float)i * 12.0f + 0.3f;
-        ax_ir_rect(&e.b, ax_rect_make(x, 4.0f, widths[i], 26.0f), white()); /* vertical */
-        ax_ir_rect(&e.b, ax_rect_make(4.0f, 36.0f + (float)i * 4.0f + 0.6f, 70.0f, widths[i]),
-                   white()); /* horizontal */
-    }
-    ir = finish(&e);
-    if (ir != NULL) {
-        check_scene(&e, "thin", ir, 80, 64, 1.0f, NULL);
-    }
+    check_shared(&e, "thin");
     env_deinit(&e);
-}
-
-static void rotated(env *e, float degrees, float x, float y, float w, float h, ax_color c)
-{
-    ax_ir_layer_desc d = ax_ir_layer_desc_default();
-    d.transform =
-        ax_affine2_mul(ax_affine2_translate(x, y), ax_affine2_rotate(degrees * PI_F / 180));
-    ax_ir_push_layer(&e->b, &d);
-    ax_ir_rect(&e->b, ax_rect_make(-w * 0.5f, -h * 0.5f, w, h), c);
-    ax_ir_pop_layer(&e->b);
 }
 
 AX_TEST(rotated_rects_have_smooth_edges)
 {
     env e;
-    const ax_render_ir *ir;
     ENV_INIT(&e);
-    ax_ir_builder_begin(&e.b, 128, 96, 0, ax_color_make(0, 0, 0, 1));
-    rotated(&e, 7.0f, 22.3f, 24.6f, 30.0f, 18.0f, white());
-    rotated(&e, 30.0f, 64.0f, 24.0f, 28.0f, 20.0f, white());
-    rotated(&e, 45.0f, 104.5f, 24.5f, 26.0f, 26.0f, white());
-    rotated(&e, 30.0f, 32.0f, 70.0f, 50.0f, 0.5f, white()); /* a rotated hairline */
-    rotated(&e, -60.0f, 80.0f, 70.0f, 40.0f, 1.25f, white());
-    rotated(&e, 15.0f, 112.0f, 72.0f, 12.0f, 30.0f, ax_color_from_srgb8(0xFFE8ECF4u));
-    ir = finish(&e);
-    if (ir != NULL) {
-        check_scene(&e, "rotated", ir, 128, 96, 1.0f, NULL);
-    }
+    check_shared(&e, "rotated");
     env_deinit(&e);
 }
 
 AX_TEST(rounded_rects_with_radii_per_corner)
 {
     env e;
-    const ax_render_ir *ir;
-    const float r1[4] = {0.0f, 4.0f, 10.0f, 16.0f};
-    const float r2[4] = {12.0f, 12.0f, 12.0f, 12.0f};
-    const float pill[4] = {100.0f, 100.0f, 100.0f, 100.0f}; /* clamped to half the height */
-    const float tiny[4] = {0.5f, 1.0f, 1.5f, 2.0f};
     ENV_INIT(&e);
-    ax_ir_builder_begin(&e.b, 128, 80, 0, ax_color_from_srgb8(0xFF1E2129u));
-    ax_ir_rounded_rect(&e.b, ax_rect_make(4.25f, 4.5f, 52.0f, 36.0f), r1, white());
-    ax_ir_rounded_rect(&e.b, ax_rect_make(64.6f, 4.2f, 30.0f, 30.0f), r2,
-                       ax_color_from_srgb8(0xFF4F7CFFu));
-    ax_ir_rounded_rect(&e.b, ax_rect_make(6.4f, 48.3f, 70.0f, 17.5f), pill, white());
-    ax_ir_rounded_rect(&e.b, ax_rect_make(100.5f, 10.5f, 6.0f, 50.0f), tiny, white());
-    ax_ir_rounded_rect(&e.b, ax_rect_make(84.0f, 46.0f, 36.0f, 28.0f), r1,
-                       ax_color_from_srgb8(0xFFE8ECF4u));
-    ir = finish(&e);
-    if (ir != NULL) {
-        check_scene(&e, "rounded", ir, 128, 80, 1.0f, NULL);
-    }
+    check_shared(&e, "rounded");
     env_deinit(&e);
-}
-
-/* The same logical scene at fractional and integer device scales, with nested transforms. */
-static const ax_render_ir *nested_scene(env *e, float lw, float lh)
-{
-    ax_ir_layer_desc d = ax_ir_layer_desc_default();
-    const float r[4] = {3.0f, 6.0f, 0.0f, 9.0f};
-    ax_ir_builder_begin(&e->b, lw, lh, 0, ax_color_from_srgb8(0xFF1E2129u));
-    ax_ir_rect(&e->b, ax_rect_make(2.5f, 2.5f, 30.3f, 0.75f), white());
-    d.transform = ax_affine2_translate(10.4f, 8.2f);
-    ax_ir_push_layer(&e->b, &d);
-    ax_ir_rounded_rect(&e->b, ax_rect_make(0, 0, 28.0f, 18.0f), r,
-                       ax_color_from_srgb8(0xFF4F7CFFu));
-    d.transform =
-        ax_affine2_mul(ax_affine2_translate(48.0f, 6.0f),
-                       ax_affine2_mul(ax_affine2_rotate(0.4f), ax_affine2_scale(1.5f, 0.75f)));
-    ax_ir_push_layer(&e->b, &d);
-    ax_ir_rounded_rect(&e->b, ax_rect_make(-8.0f, -6.0f, 16.0f, 12.0f), r, white());
-    ax_ir_pop_layer(&e->b);
-    ax_ir_pop_layer(&e->b);
-    return finish(e);
 }
 
 AX_TEST(fractional_and_integer_device_scales)
 {
     env e;
-    const ax_render_ir *ir;
     ENV_INIT(&e);
-    ir = nested_scene(&e, 80, 40);
-    if (ir != NULL) {
-        check_scene(&e, "scale_1_325", ir, 106, 53, 1.325f, NULL);
-    }
-    ir = nested_scene(&e, 80, 40);
-    if (ir != NULL) {
-        check_scene(&e, "scale_2", ir, 160, 80, 2.0f, NULL);
-    }
+    check_shared(&e, "scale_1_325");
+    check_shared(&e, "scale_2");
     env_deinit(&e);
+}
+
+/* Antialiasing torture scenes ("Antialiasing and image quality", Verification). The zone plate
+ * behind nested rounded clips is compared once ax_render_wgpu draws clips (it skips clipped layers
+ * until then); the software renderer's golden covers it meanwhile. */
+AX_TEST(rotating_hairlines)
+{
+    env e;
+    ENV_INIT(&e);
+    check_shared(&e, "hairlines_0");
+    check_shared(&e, "hairlines_1");
+    check_shared(&e, "hairlines_2");
+    check_shared(&e, "hairlines_3");
+    env_deinit(&e);
+}
+
+AX_TEST(zone_plate)
+{
+    env e;
+    ENV_INIT(&e);
+    check_shared(&e, "zone_plate");
+    env_deinit(&e);
+}
+
+static void rotated(env *e, float degrees, float x, float y, float w, float h, ax_color c)
+{
+    axt_rotated_rect(&e->b, degrees, x, y, w, h, c);
 }
 
 AX_TEST(blending_is_in_srgb_space_with_premultiplied_alpha)
@@ -450,6 +457,8 @@ AX_TEST(the_linear_blend_diagnostic_mixes_in_linear_light)
         AX_CHECK(c[0] >= 186 && c[0] <= 190);
         free(got);
     }
+    /* And the same as the software renderer's diagnostic. */
+    check_scene_ex(&e, "linear_blend", ir, 64, 48, 2.0f, AX_RENDER_SOFT_DIAG_LINEAR_BLEND, NULL);
     env_deinit(&e);
 }
 
@@ -498,7 +507,7 @@ AX_TEST(unknown_items_and_clips_follow_the_ir_rules)
         AX_CHECK_EQ_U(got[(4 * 48 + 36) * 4], 0);   /* skipped: clipped layer */
         free(got);
     }
-    check_scene(&e, "fallbacks", ir, 48, 16, 1.0f, NULL);
+    /* No image comparison: the software renderer draws the clipped layer this one skips. */
     env_deinit(&e);
 }
 
