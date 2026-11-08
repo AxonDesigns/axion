@@ -218,6 +218,7 @@ static uint64_t set_card_color(pipeline *p, ax_rgba c)
     ax_txn *t = ax_txn_begin(p->world);
     uint64_t seq = 0;
     ax_txn_set_color(t, p->card, AX_PROP_BACKGROUND_COLOR, c);
+    ax_txn_set_animated(t, false); /* these tests check when changes apply, not how they move */
     return ax_txn_commit(t, &seq) == AX_OK ? seq : 0;
 }
 
@@ -521,6 +522,7 @@ AX_TEST(measure_sync_lays_out_what_was_committed_without_a_frame)
     AX_REQUIRE(frame_at(&p, 100 * MS));
     t = ax_txn_begin(p.world);
     ax_txn_set_dimension(t, p.card, AX_PROP_WIDTH, pt(140));
+    ax_txn_set_animated(t, false); /* the recorded width is checked at once below */
     AX_REQUIRE(ax_txn_commit(t, NULL) == AX_OK);
     AX_CHECK_RESULT(ax_measure_sync(p.rt, p.card, &f), AX_OK);
     AX_CHECK(f.x == 10.0f && f.y == 20.0f && f.w == 140.0f && f.h == 50.0f);

@@ -561,8 +561,10 @@ static void tick(rt_impl *r, uint32_t index, const ax_rt_request *q)
     if (r->desc.driver != NULL) {
         r->desc.driver(r->desc.driver_user, world, s->root, t, q->logical_width, q->logical_height);
     }
-    /* 5. Positioning, then recording when this surface's content changed. */
+    /* 5. Layout and implicit animations (sampled at the frame's time), then recording when this
+     * surface's content changed. */
     (void)ax_world_position(world);
+    (void)ax_world_animate(world, t);
     ax_world_record_collect(world);
     if (ax_world_root_changed(world, s->root, &changed_seq)) {
         ax_ir_builder *b = ax_ir_mailbox_begin(&s->mailbox, q->logical_width, q->logical_height, t,

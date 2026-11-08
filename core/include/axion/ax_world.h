@@ -57,6 +57,11 @@ typedef struct ax_world_desc {
  * world's app and scene thread) */
 AX_API ax_result ax_world_create(const ax_world_desc *desc, ax_world *out_world);
 
+/* The system's reduce-motion setting (decision 94): while on, layout and transform changes take
+ * effect at once and other animations become a short linear fade; running animations finish
+ * their course. Runtimes set it from the platform; apps may override it. thread: any */
+AX_API void ax_world_set_reduce_motion(ax_world world, bool reduce);
+
 /* Destroys the world, its tree and every transaction not applied yet. No other thread may be
  * using it. thread: app */
 AX_API ax_result ax_world_destroy(ax_world world);

@@ -363,6 +363,25 @@ static void apply_one(apply_state *st, ax_txn *t)
         ax_world_finish_txn(st->handle, t, st->error, st->command, st->message);
         return;
     }
+    /* Animations (decision 94): this transaction's transitions first, so its own changes use
+     * them, then its changes, from the values the undo log kept. */
+    {
+        const ax_txn_cmd *c2 = NULL;
+        for (i = 0; i < info.command_count; ++i) {
+            c2 = ax_txn_next_cmd(&info, c2);
+            if (c2 != NULL && c2->op == AX_TXN_OP_TRANSITION) {
+                const ax_txn_cmd_transition *tc = (const ax_txn_cmd_transition *)(const void *)c2;
+                ax__anim_set_transition(w, tc->node, tc->prop, &tc->curve);
+            }
+        }
+        for (i = 0; i < st->undo_count; ++i) {
+            const undo_entry *u = &st->undo[i];
+            if (u->op == UNDO_SET) {
+                ax__anim_on_set(w, info.seq, u->node, u->prop, &u->value, info.animated);
+            }
+        }
+        ax__anim_txn_applied(w, info.animated);
+    }
     /* Every command succeeded: now the removed subtrees go (their slots are recycled). */
     for (i = 0; i < st->removed_count; ++i) {
         ax_result r = ax_scene_destroy(st->scene, st->removed[i]);
@@ -386,6 +405,7 @@ uint32_t ax_world_apply_pending(ax_world world, uint64_t deadline_ns)
     st.w = w;
     st.handle = world;
     st.scene = &w->scene;
+    ax__anim_txn_begin(w, deadline_ns); /* animations start at the frame's latch point */
     for (;;) {
         const ax_txn *next = ax_world_peek_txn(world);
         ax_txn *t;

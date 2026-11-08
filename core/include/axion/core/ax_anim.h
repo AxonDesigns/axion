@@ -55,6 +55,17 @@ AX_API ax_curve ax_curve_default_spring(void); /* perceptual, 0.4 s, bounce 0 */
 AX_API ax_curve ax_curve_default_ease(void);   /* timing, 0.2 s, cubic-bezier(.25, .1, .25, 1) */
 AX_API ax_curve ax_curve_none(void);
 
+/* The animator's counters (ax_world_get_anim_counters, ax_frame.h). */
+typedef struct ax_anim_counters {
+    uint64_t started;    /* animations started from rest */
+    uint64_t retargeted; /* running animations given a new target */
+    uint64_t finished;   /* channels that came to rest */
+    uint64_t snapped;    /* changes made at once (NONE, not animated, reduce motion) */
+    uint64_t folded;     /* timing curves folded into the next, past three on a channel */
+    uint64_t samples;    /* node samples */
+    uint32_t active;     /* nodes animating after the last sample */
+} ax_anim_counters;
+
 /* ---- Easing (TIMING) ---------------------------------------------------------------------------
  */
 

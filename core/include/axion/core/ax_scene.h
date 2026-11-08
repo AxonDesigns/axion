@@ -75,7 +75,10 @@ typedef struct ax_scene {
     ax_dirty_set dirty;
     /* Layout (ax_layout.h). */
     ax_component_type measure_component; /* a leaf's measure function */
-    uint32_t layout_pass;                /* the newest pass */
+    /* Animations (decision 94). */
+    ax_component_type transitions_component; /* a node's own transitions */
+    ax_component_type anim_component;        /* a node's running animations */
+    uint32_t layout_pass;                    /* the newest pass */
     ax_layout_counters layout_counters;
 } ax_scene;
 

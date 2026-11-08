@@ -106,6 +106,7 @@ typedef struct presented_reg {
 } presented_reg;
 
 typedef struct frame_state frame_state; /* frame.c */
+typedef struct anim_state anim_state;   /* anim/animator.c */
 
 typedef struct world_impl {
     ax_allocator allocator;
@@ -180,8 +181,10 @@ typedef struct world_impl {
     ax_node *removed; /* subtrees removed by the transaction being applied */
     uint32_t removed_capacity;
     bool scene_ready;
-    frame_state *frame;         /* frame.c: window roots, the recording cache (scene thread) */
-    struct ax_job_system *jobs; /* frame jobs for the scene's stages, or NULL */
+    frame_state *frame;          /* frame.c: window roots, the recording cache (scene thread) */
+    struct ax_job_system *jobs;  /* frame jobs for the scene's stages, or NULL */
+    anim_state *anim;            /* anim/animator.c: implicit animations (scene thread) */
+    ax_atomic_u32 reduce_motion; /* ax_world_set_reduce_motion (app thread writes) */
 } world_impl;
 
 world_impl *ax__world_from_handle(ax_world world);
@@ -243,5 +246,20 @@ void ax__frame_free(world_impl *w);
 /* Mirror setup and teardown. */
 void ax__mirror_init(world_impl *w);
 void ax__mirror_free(world_impl *w);
+
+/* ---- The animator (anim/animator.c, decision 94) ---- */
+struct axa_node;
+struct ax_curve;
+void ax__anim_free(world_impl *w);
+void ax__anim_txn_begin(world_impl *w, uint64_t deadline);
+void ax__anim_txn_applied(world_impl *w, bool animated);
+void ax__anim_set_transition(world_impl *w, ax_node node, ax_prop prop, const struct ax_curve *c);
+void ax__anim_on_set(world_impl *w, uint64_t seq, ax_node node, ax_prop prop, const ax_value *old,
+                     bool animated);
+void ax__anim_on_frame_changed(world_impl *w, uint32_t slot);
+void ax__anim_viewport_changed(world_impl *w);
+uint32_t ax__anim_step(world_impl *w, uint64_t t, void (*on_root)(world_impl *, uint32_t));
+const struct axa_node *ax__anim_node(world_impl *w, uint32_t row);
+void ax__anim_get_counters(world_impl *w, ax_anim_counters *out, bool reset);
 
 #endif /* AX_CORE_WORLD_INTERNAL_H */

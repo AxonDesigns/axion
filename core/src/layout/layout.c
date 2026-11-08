@@ -446,9 +446,15 @@ static bool round_node(ax_layout_ctx *ctx, uint32_t row, double abs_left, double
     b->abs_x = ax;
     b->abs_y = ay;
     if (memcmp(&b->frame, &frame, sizeof frame) != 0) {
+        /* What layout animations start from (decision 94): bit 0 of had_frame says a frame was
+         * written before, bit 1 that prev_frame holds one. */
+        b->prev_frame = b->frame;
+        b->prev_parent = b->frame_parent;
+        b->had_frame = 1u | ((b->had_frame & 1u) << 1);
         b->frame = frame;
         note_changed(ctx, row);
     }
+    b->frame_parent = ctx->s->links[row].parent;
     return moved;
 }
 
