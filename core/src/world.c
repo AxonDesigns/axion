@@ -80,6 +80,7 @@ static void free_world(world_impl *w)
     ax_spsc_ring_deinit(&w->recycled);
     ax_spsc_ring_deinit(&w->returned);
     ax_spsc_ring_deinit(&w->failures);
+    ax__events_free(w);
     if (w->scene_ready) {
         ax_node_store_bind_thread(&w->scene.store); /* torn down on the calling thread */
         ax_scene_deinit(&w->scene);
@@ -130,7 +131,8 @@ ax_result ax_world_create(const ax_world_desc *desc, ax_world *out_world)
 
     if (ax_spsc_ring_init(&w->recycled, a, RECYCLED_CAPACITY, sizeof(ax_node)) != AX_OK ||
         ax_spsc_ring_init(&w->returned, a, RETURNED_CAPACITY, sizeof(ax_txn *)) != AX_OK ||
-        ax_spsc_ring_init(&w->failures, a, AX_TXN_ERROR_QUEUE, sizeof(txn_failure)) != AX_OK) {
+        ax_spsc_ring_init(&w->failures, a, AX_TXN_ERROR_QUEUE, sizeof(txn_failure)) != AX_OK ||
+        ax__events_init(w) != AX_OK) {
         free_world(w);
         return ax_set_error(AX_ERR_OUT_OF_MEMORY, "ax_world_create: out of memory");
     }
@@ -172,6 +174,8 @@ ax_result ax_world_destroy(ax_world world)
         return ax_set_error(AX_ERR_INVALID_HANDLE, "ax_world_destroy: invalid or destroyed world");
     }
     AX_ASSERT_MSG(ax__world_on_app_thread(w), "ax_world_destroy: not the world's app thread");
+    /* Every ax_txn_on_presented callback still waiting comes now, while the world is valid. */
+    ax__events_world_destroyed(w);
     ax_atomic_store_ptr(&g_worlds[w->slot], NULL, AX_MO_RELEASE);
     free_world(w);
     return AX_OK;
@@ -181,6 +185,35 @@ uint64_t ax_world_now(ax_world world)
 {
     world_impl *w = ax__world_from_handle(world);
     return w != NULL ? ax__world_now(w) : 0;
+}
+
+bool ax_world_clock_is_monotonic(ax_world world)
+{
+    world_impl *w = ax__world_from_handle(world);
+    return w != NULL && w->clock == default_clock;
+}
+
+uint64_t ax_world_time_from_monotonic(ax_world world, uint64_t monotonic_ns)
+{
+    world_impl *w = ax__world_from_handle(world);
+    uint64_t now_mono;
+    uint64_t now_world;
+    if (w == NULL) {
+        return 0;
+    }
+    if (w->clock == default_clock) {
+        return monotonic_ns; /* the same clock (ax_time_monotonic_ns) */
+    }
+    now_mono = ax_time_monotonic_ns();
+    now_world = ax__world_now(w);
+    if (monotonic_ns >= now_mono) {
+        uint64_t ahead = monotonic_ns - now_mono;
+        return ahead > UINT64_MAX - now_world ? UINT64_MAX : now_world + ahead;
+    }
+    {
+        uint64_t behind = now_mono - monotonic_ns;
+        return behind > now_world ? 0 : now_world - behind;
+    }
 }
 
 void ax_world_bind_scene_thread(ax_world world)
@@ -404,6 +437,11 @@ void ax_world_finish_txn(ax_world world, ax_txn *t, ax_result result, uint32_t c
         }
     }
     ax_atomic_store_u64(&w->applied_seq, t->seq, AX_MO_RELEASE);
+    if (result != AX_OK) {
+        /* For ax_txn_on_presented; the details stay in the failures ring above. Queued before
+         * any report that covers this seq. */
+        ax__events_rejected(w, t->seq);
+    }
 }
 
 /* ---- Results (app thread) -------------------------------------------------------------------- */

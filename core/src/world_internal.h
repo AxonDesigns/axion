@@ -81,6 +81,29 @@ typedef struct txn_failure {
     char message[AX_TXN_MESSAGE_SIZE];
 } txn_failure;
 
+/* A record of the queue from the scene thread to the app thread (events.c). */
+typedef enum world_rec_kind {
+    WORLD_REC_EVENT = 1,    /* an ax_world_event for the app */
+    WORLD_REC_REJECTED = 2, /* transaction `seq` was rejected */
+    WORLD_REC_PRESENTED = 3 /* applied transactions up to `seq` are on screen at time_ns */
+} world_rec_kind;
+
+typedef struct world_rec {
+    uint32_t kind;
+    uint32_t reserved;
+    uint64_t seq;
+    uint64_t time_ns;
+    ax_world_event event;
+} world_rec;
+
+/* An ax_txn_on_presented registration, waiting on the app thread. */
+typedef struct presented_reg {
+    uint64_t seq;
+    ax_presented_fn fn;
+    void *user;
+    bool rejected;
+} presented_reg;
+
 typedef struct world_impl {
     ax_allocator allocator;
     uint32_t slot;
@@ -102,12 +125,26 @@ typedef struct world_impl {
     txn_link *tail;            /* queue producer end */
     txn_failure last_failure;  /* the record ax_world_poll_txn_error last returned */
     uint32_t failures_dropped; /* app side: counted when the ring was full (scene side) */
+    /* on_presented (events.c): registrations sorted by seq, what the scene reported. */
+    presented_reg *regs;
+    uint32_t reg_count;
+    uint32_t reg_capacity;
+    uint64_t presented_through; /* applied transactions up to here are on screen */
+    uint64_t presented_time;
+    uint64_t rejected_seq[AX_TXN_PRESENTED_WINDOW]; /* by seq % window: the seq, if rejected */
+    bool delivering;                                /* a callback is running (no reentry) */
 
     /* ---- Shared ---- */
     txn_link stub;
-    ax_spsc_ring recycled; /* scene -> app: ax_node handles to hand out again */
-    ax_spsc_ring returned; /* scene -> app: ax_txn * taken and finished */
-    ax_spsc_ring failures; /* scene -> app: txn_failure */
+    ax_spsc_ring recycled;      /* scene -> app: ax_node handles to hand out again */
+    ax_spsc_ring returned;      /* scene -> app: ax_txn * taken and finished */
+    ax_spsc_ring failures;      /* scene -> app: txn_failure */
+    ax_spsc_ring events;        /* scene -> app: world_rec */
+    ax_atomic_u64 event_gen;    /* bumped after each record is queued (wake handshake) */
+    ax_atomic_u32 app_sleeping; /* the app thread waits in ax_world_wait_event */
+    ax_mutex event_lock;        /* only for that handoff */
+    ax_cond event_cond;
+    bool event_sync_ready;
     ax_atomic_u64 applied_seq;
     ax_atomic_u32 dropped_failures;
 
@@ -121,7 +158,11 @@ typedef struct world_impl {
     ax_txn **return_backlog;
     uint32_t return_backlog_count;
     uint32_t return_backlog_capacity;
-    bool suppress_recycle; /* rolling back: the app thread recycles a rejected txn's creates */
+    bool suppress_recycle;    /* rolling back: the app thread recycles a rejected txn's creates */
+    world_rec *event_backlog; /* records the events ring could not take yet */
+    uint32_t event_backlog_count;
+    uint32_t event_backlog_capacity;
+    uint64_t reported_through; /* the last ax_world_report_presented */
     /* Mirror (mirror.c): three copies behind a triple buffer; the scene writes, the app reads. */
     mirror_copy mirror[3];
     ax_triple_buffer mirror_tb;
@@ -181,6 +222,14 @@ void ax__apply_free(world_impl *w);
 
 /* Scene thread: the slot's state changed; the next publication copies it. Never fails. */
 void ax__mirror_touch_slot(world_impl *w, uint32_t slot);
+
+/* Events: setup, the app thread's teardown (WORLD_DESTROYED callbacks), freeing. */
+ax_result ax__events_init(world_impl *w);
+void ax__events_world_destroyed(world_impl *w);
+void ax__events_free(world_impl *w);
+
+/* Scene thread: queues a rejection record (ax_world_finish_txn). */
+void ax__events_rejected(world_impl *w, uint64_t seq);
 
 /* Mirror setup and teardown. */
 void ax__mirror_init(world_impl *w);

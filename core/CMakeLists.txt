@@ -10,6 +10,7 @@
 
 add_library(ax_core STATIC
     src/apply.c
+    src/events.c
     src/mirror.c
     src/node_store.c
     src/prop_registry.c

@@ -146,6 +146,40 @@ AX_API bool ax_world_poll_txn_error(ax_world world, ax_txn_error *out, uint32_t 
  * app */
 AX_API uint64_t ax_world_last_applied_seq(ax_world world);
 
+/* ---- When a change is on screen -------------------------------------------------------------- */
+
+typedef enum ax_presented_status {
+    AX_PRESENTED = 1,                /* the change is on screen (see ax_txn_on_presented) */
+    AX_PRESENTED_REJECTED = 2,       /* the scene rejected the transaction; nothing changed */
+    AX_PRESENTED_WORLD_DESTROYED = 3 /* the world was destroyed first */
+} ax_presented_status;
+
+/* present_time_ns: for AX_PRESENTED, when the change reached the screen (world clock), 0
+ * otherwise. */
+typedef void (*ax_presented_fn)(void *user, uint64_t seq, ax_presented_status status,
+                                uint64_t present_time_ns);
+
+/*
+ * Calls fn once transaction `seq` is on screen, on the app thread, from ax_world_poll_event or
+ * ax_world_wait_event (or ax_world_destroy). The callback always comes, exactly once, with a
+ * status, and callbacks come in sequence order:
+ *   - AX_PRESENTED when every visible window whose content the transaction (or an earlier one)
+ *     changed has shown a frame that includes it. A transaction that changes no visible window
+ *     is presented when it is applied. A window that closes stops holding it back; a hidden
+ *     window does not hold it back, and one that becomes visible again holds back what it has
+ *     not shown yet.
+ *   - AX_PRESENTED_REJECTED when the scene rejected it (the details are in
+ *     ax_world_poll_txn_error).
+ *   - AX_PRESENTED_WORLD_DESTROYED when the world is destroyed before either.
+ * A transaction already presented or rejected is reported on the next poll. The seq must be one
+ * of the last AX_TXN_PRESENTED_WINDOW committed.
+ * Errors: AX_ERR_INVALID_HANDLE, AX_ERR_INVALID_ARGUMENT (fn NULL, seq 0, not committed yet, or
+ * too old), AX_ERR_OUT_OF_MEMORY, AX_ERR_WRONG_THREAD. thread: app
+ */
+AX_API ax_result ax_txn_on_presented(ax_world world, uint64_t seq, ax_presented_fn fn, void *user);
+
+#define AX_TXN_PRESENTED_WINDOW 1024u
+
 AX_EXTERN_C_END
 
 #endif /* AX_TXN_H */

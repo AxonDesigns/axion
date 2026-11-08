@@ -15,6 +15,10 @@
  * default the monotonic clock base uses (nanoseconds, arbitrary origin). A headless host or a
  * test injects a manual clock; the frame pipeline compares deadlines with the vsync's predicted
  * present time on the same clock.
+ *
+ * Events. The scene thread sends the app thread what happened (window events, and when
+ * transactions reached the screen) through a queue the app thread drains with ax_world_poll_event
+ * or ax_world_wait_event.
  */
 #ifndef AX_WORLD_H
 #define AX_WORLD_H
@@ -55,6 +59,62 @@ AX_API ax_result ax_world_destroy(ax_world world);
 
 /* The world's clock, in nanoseconds. thread: any */
 AX_API uint64_t ax_world_now(ax_world world);
+
+/* ---- Events (scene thread -> app thread) ----------------------------------------------------- */
+
+/*
+ * What the scene thread tells the app thread, in order: the windowing system's events for the
+ * windows whose roots the world owns (the scene thread consumes the platform's events and forwards
+ * them), with times on the world's clock. Values match the platform's ax_event_type.
+ * Delivery: nothing is dropped (resizes are already coalesced per window by the platform).
+ */
+typedef enum ax_world_event_type {
+    AX_WORLD_EVENT_NONE = 0,            /* nothing was waiting */
+    AX_WORLD_EVENT_CLOSE_REQUESTED = 1, /* the user asked to close the window */
+    AX_WORLD_EVENT_RESIZED = 2,         /* the window has a new size (and scale) */
+    AX_WORLD_EVENT_SCALE_CHANGED = 3,
+    AX_WORLD_EVENT_FOCUS = 4,
+    AX_WORLD_EVENT_OCCLUSION = 5
+} ax_world_event_type;
+
+typedef struct ax_world_event {
+    uint32_t struct_size; /* set by the caller: sizeof(ax_world_event) */
+    uint32_t type;        /* ax_world_event_type */
+    uint64_t window;      /* the window's handle value (platform's ax_window) */
+    uint64_t root;        /* the window's root node (ax_node.h), 0 when it has none */
+    uint64_t time_ns;     /* world clock */
+    union {
+        struct {
+            float width, height; /* logical units */
+            uint32_t pixel_width, pixel_height;
+            float scale;
+        } resized;
+        struct {
+            float scale;
+        } scale_changed;
+        struct {
+            bool focused;
+        } focus;
+        struct {
+            bool occluded;
+        } occlusion;
+        uint64_t reserved[8];
+    } data;
+} ax_world_event;
+
+/*
+ * Takes the next event (out->type AX_WORLD_EVENT_NONE when there is none). First runs, in sequence
+ * order, the ax_txn_on_presented callbacks that are due (ax_txn.h).
+ * Errors: AX_ERR_INVALID_HANDLE, AX_ERR_ABI_MISMATCH (struct_size). thread: app
+ */
+AX_API ax_result ax_world_poll_event(ax_world world, ax_world_event *out);
+
+/*
+ * As ax_world_poll_event, waiting up to timeout_ns until an event arrives or a callback is due.
+ * Returns with out->type AX_WORLD_EVENT_NONE when callbacks ran but no event came, or on timeout.
+ * Without threads it does not wait. thread: app
+ */
+AX_API ax_result ax_world_wait_event(ax_world world, ax_world_event *out, uint64_t timeout_ns);
 
 AX_EXTERN_C_END
 

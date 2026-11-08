@@ -88,6 +88,7 @@ new entry that points back to the old one.
 | 72  | Wayland layer-shell surfaces                             | Approved       |
 | 73  | Extension chains: the `next` header                      | Approved       |
 | 74  | Platform pieces for one render thread and the scene      | Implementation |
+| 75  | Events to the app thread, `on_presented`, the clock      | Implementation |
 
 ---
 
@@ -2925,3 +2926,68 @@ through a per-role function.
 
 **Status.** Implementation, pending the owner's approval (part of the approved plan for the
 thread split).
+
+## 75. Events to the app thread, `on_presented`, the clock
+
+**Context.** "Queues" gives the scene-to-app direction a ring of events, and
+`ax_txn_on_presented(seq, cb)` tells the app when a change is on screen. The owner asked for:
+- the platform's events (resize, close, scale) on that ring;
+- a callback that always arrives, with a status: `PRESENTED`, `REJECTED` or `WORLD_DESTROYED`;
+- rejections staying in their own ring (`ax_world_poll_txn_error` is stable ABI), not duplicated;
+- the vsync's predicted present time on the world's clock, also when the clock is injected.
+
+**Decision.**
+- **One queue, scene thread to app thread** (`core/src/events.c`): a fixed SPSC ring of 256
+  records with a scene-side backlog when it is full, as the rings of decision 65; nothing is lost
+  but to out of memory. Three kinds of record:
+  - an `ax_world_event` (stable, `ax_world.h`): close, resize, scale, focus and occlusion of a
+    window whose root the world owns, with the window's and the root's handles and the time on
+    the world's clock. The type values are the platform's `ax_event_type`. The scene thread (the
+    platform's event consumer in the pipeline) forwards them with `ax_world_push_event`;
+  - `PRESENTED(seq, time)`: every applied transaction up to seq is on screen
+    (`ax_world_report_presented`, scene thread). Which roots must have shown it is the
+    pipeline's rule; core only carries the watermark. A newer one replaces one waiting at the end
+    of the backlog;
+  - `REJECTED(seq)`: bookkeeping only, queued by `ax_world_finish_txn` before any `PRESENTED`
+    that covers the seq. The app never receives it as an event; the rejection's details are read
+    once, from the failures ring as before.
+- **Reading** (app thread): `ax_world_poll_event` and `ax_world_wait_event`. The wait wakes for
+  an event or for a callback that became due, with the handshake of decisions 31 and 52 (a
+  counter bumped after each record, a sleeping flag, the mutex only to hand off). Without threads
+  it does not wait.
+- **`ax_txn_on_presented(world, seq, fn, user)`** (stable, `ax_txn.h`):
+  - registrations are kept sorted by sequence and called from poll, wait or destroy, **in
+    sequence order**: a rejected transaction behind one not yet on screen waits for it;
+  - a registration made after the outcome is known gets it on the next poll, never from inside
+    the registration. To know a past rejection exactly without growing memory, the app thread
+    keeps the last rejected seq per slot of a 1024-entry table indexed by seq modulo 1024. A seq
+    must therefore be one of the last 1024 committed (`AX_TXN_PRESENTED_WINDOW`), otherwise
+    `AX_ERR_INVALID_ARGUMENT`. Within the window a slot can only hold that seq or an older one,
+    so the lookup is exact;
+  - `ax_world_destroy` takes the records still queued, calls what they decided, then calls every
+    other registration with `WORLD_DESTROYED`.
+- **Clock.** The default world clock is base's monotonic clock, the one the platform's
+  `predicted_present_ns` uses (`CLOCK_MONOTONIC` on Linux, also the Wayland presentation clock
+  after `ax_wl_presentation_to_monotonic`). `ax_world_time_from_monotonic` returns the time
+  unchanged then. With an injected clock it keeps the distance from now:
+  `now_world + (t - now_monotonic)`, saturated at 0. Keeping a root's times from going backwards
+  is the caller's job (the pipeline clamps per root). `ax_host_frame` gets its target time on
+  the world's clock from the host, which injected that clock, so it needs no translation.
+- **IDL** (decision 71): `world_event` uses two constructs the draft did not have yet, `[sized]`
+  (a leading `struct_size` on an out struct) and a tagged `union ... by type`; `presented_fn` is
+  the first `callback`. Bindings turn `txn_on_presented` into a task or future completed with the
+  status.
+- **Tests** (`tests/unit/core/test_events.c`, label `core`, so under TSan too): the default clock
+  is the identity, an injected one keeps the distance and saturates; 1000 events in order across
+  the backlog; 20 000 events from a scene thread while the app thread waits (also pinned to one
+  CPU); callbacks once, in order, with their status (a rejection behind an unpresented
+  transaction waits; an older report is ignored; two registrations for one seq in call order);
+  registrations after the outcome; argument errors and the 1024 window; destruction reports
+  `REJECTED` for what was known and `WORLD_DESTROYED` for the rest; a waiting app thread wakes for
+  a callback without an event.
+
+The rules on which windows hold a transaction back (hidden, closed, visible again) belong to the
+pipeline and are tested with it.
+
+**Status.** Implementation, pending the owner's approval (part of the approved plan; the statuses,
+the window rules and keeping rejections in their own ring were the owner's adjustments).
