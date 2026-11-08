@@ -31,6 +31,20 @@ ctest --preset gcc-debug
 | Windows | `msvc-debug`, `msvc-release` (run from a shell with `vcvars64` loaded) |
 | Web     | `emscripten` (needs `EMSDK` set; builds the libraries only), `emscripten-tests` (runs the tests in Node) |
 
+### Web build
+
+The web presets need an activated emsdk (`EMSDK` set, for example by `source emsdk_env.sh`). CI
+uses the Emscripten version in [tools/ci/emsdk-version](tools/ci/emsdk-version), and local builds
+should use the same one: versions differ in ways the tests notice (Emscripten 5 passes Node's
+environment to programs and 4.0.10 does not; decision 86). `emscripten-tests` runs the tests of
+core, the Render IR, the runtime, the software renderer and the headless host in Node:
+
+```sh
+./emsdk install $(cat tools/ci/emsdk-version) && ./emsdk activate $(cat tools/ci/emsdk-version)
+cmake --preset emscripten-tests && cmake --build --preset emscripten-tests
+ctest --preset emscripten-tests
+```
+
 `*-asan` presets run with AddressSanitizer and UndefinedBehaviorSanitizer, `clang-tsan` with
 ThreadSanitizer. Build options:
 `AX_BUILD_TESTS` (on when AXION is the top-level project), `AX_SANITIZE`, and `AX_WEB_THREADS`

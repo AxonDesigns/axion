@@ -270,10 +270,16 @@ jobs:
       - name: CMake and Ninja
         uses: lukka/get-cmake@latest
 
+      # The version is pinned in one file, read here and named in the README (decision 86).
+      - name: Emscripten version
+        id: emsdk
+        shell: bash
+        run: echo "version=$(tr -d '[:space:]' < tools/ci/emsdk-version)" >> "$GITHUB_OUTPUT"
+
       - name: Emscripten SDK
         uses: mymindstorm/setup-emsdk@v14
         with:
-          version: 4.0.10
+          version: ${{ steps.emsdk.outputs.version }}
 
       # The preset locates the toolchain file through $EMSDK; derive it from emcc's location so
       # the build does not depend on which variables the setup action exports.
