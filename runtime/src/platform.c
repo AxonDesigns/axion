@@ -24,6 +24,7 @@
 #include <axion/platform/ax_event_notify.h>
 #include <axion/platform/ax_present.h>
 #include <axion/render/ax_render_frame.h>
+#include <axion/render/ax_render_soft_surface.h>
 #include <axion/runtime/ax_runtime_platform.h>
 #if defined(AX_RUNTIME_HAVE_WGPU)
 #    include <axion/render/ax_render_wgpu_surface.h>
@@ -61,6 +62,9 @@ struct plat {
     ax_renderer_desc rdesc;
     void *renderer;
     bool renderer_failed;
+    bool fallback_soft;       /* no renderer was pinned: fall back to ax_render_soft */
+    ax_atomic_ptr active_vt;  /* the renderer created, for any thread (ax_rt_renderer_vtbl) */
+    ax_render_soft_desc soft; /* chained for ax_render_soft: tiles on the runtime's jobs */
     uint64_t max_wait_ns;
     bool notify_set; /* scene thread */
     plat_surface s[AX_RUNTIME_MAX_SURFACES];
@@ -104,6 +108,23 @@ static void on_request(void *ctx, const ax_scene_request *q)
     ax_rt_request_frame(rt_of(ps->p), ps->index, &r);
 }
 
+/* Chains ax_render_soft's options (its tiles on the runtime's job system) unless the caller's
+ * renderer desc chains its own. */
+static void chain_soft(plat *p, ax_runtime rt)
+{
+    const ax_renderer_chain *c;
+    for (c = p->rdesc.next; c != NULL; c = c->next) {
+        if (c->type == AX_RENDERER_CHAIN_SOFT) {
+            return;
+        }
+    }
+    memset(&p->soft, 0, sizeof p->soft);
+    p->soft.chain.type = AX_RENDERER_CHAIN_SOFT;
+    p->soft.chain.next = p->rdesc.next;
+    p->soft.jobs = ax_rt_jobs(rt);
+    p->rdesc.next = &p->soft.chain;
+}
+
 static ax_result pl_attach(void *self, ax_runtime rt, uint32_t i, uint64_t native, uint64_t window)
 {
     plat *p = (plat *)self;
@@ -115,12 +136,23 @@ static ax_result pl_attach(void *self, ax_runtime rt, uint32_t i, uint64_t nativ
         return ax_set_error(AX_ERR_UNSUPPORTED, "ax_runtime: no renderer to present windows");
     }
     if (p->renderer == NULL) {
+        if (p->vt == ax_render_soft_vtbl()) {
+            chain_soft(p, rt);
+        }
         r = p->vt->create(&p->rdesc, &p->renderer);
+        if (r != AX_OK && p->fallback_soft && p->vt != ax_render_soft_vtbl()) {
+            /* The fallback chain's last resort: no usable GPU, draw on the CPU (decision 84). */
+            p->vt = ax_render_soft_vtbl();
+            p->rdesc.next = NULL;
+            chain_soft(p, rt);
+            r = p->vt->create(&p->rdesc, &p->renderer);
+        }
         if (r != AX_OK) {
             p->renderer_failed = true;
             p->renderer = NULL;
             return r;
         }
+        ax_atomic_store_ptr(&p->active_vt, (void *)(uintptr_t)p->vt, AX_MO_RELEASE);
     }
     ps->surface.h = native;
     ps->window.h = window;
@@ -414,11 +446,16 @@ ax_result ax_rt_create_for_app(const ax_runtime_desc *desc, const ax_rt_platform
     p->app = pd->app;
     ax_atomic_init_u64(&p->rt, 0);
     p->vt = pd->renderer;
+    p->fallback_soft = pd->renderer == NULL;
+    ax_atomic_init_ptr(&p->active_vt, NULL);
 #if defined(AX_RUNTIME_HAVE_WGPU)
     if (p->vt == NULL) {
         p->vt = ax_render_wgpu_vtbl();
     }
 #endif
+    if (p->vt == NULL) {
+        p->vt = ax_render_soft_vtbl();
+    }
     if (pd->renderer_desc != NULL) {
         p->rdesc = *pd->renderer_desc;
     } else {
@@ -554,6 +591,13 @@ ax_result ax_rt_get_window_counters(ax_runtime rt, ax_window window, ax_rt_windo
     out->shown_width = bits_float(ax_atomic_load_u32(&ps->shown_w, AX_MO_RELAXED));
     out->shown_height = bits_float(ax_atomic_load_u32(&ps->shown_h, AX_MO_RELAXED));
     return AX_OK;
+}
+
+const ax_renderer_vtbl *ax_rt_renderer_vtbl(ax_runtime rt)
+{
+    plat *p = plat_of(ax__rt_from_handle(rt));
+    return p != NULL ? (const ax_renderer_vtbl *)ax_atomic_load_ptr(&p->active_vt, AX_MO_ACQUIRE)
+                     : NULL;
 }
 
 void *ax_rt_renderer(ax_runtime rt)

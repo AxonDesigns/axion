@@ -12,6 +12,10 @@
  * words written and read relaxed, so a thief's read that races with the owner reusing the slot is
  * not a data race; such a read is discarded, because the thief's compare-exchange on top fails.
  *
+ * Priorities (decision 80): every worker has one deque per priority and there is one injection
+ * queue per priority. A thread looks for frame jobs first; it looks at background ones only when
+ * its context allows them (an idle worker, or a worker inside a background job).
+ *
  * Sleeping uses a Dekker handshake, as the event queue and the IR mailbox do (decisions 31 and
  * 52): a sleeper increments `sleepers` and then rechecks `epoch`; a notifier increments `epoch`
  * and then checks `sleepers`, taking the mutex only when someone sleeps. Both sides are seq_cst,
@@ -92,6 +96,7 @@ static void slot_load(const deque_slot *s, job_rec *r)
 
 typedef struct stat_block {
     ax_atomic_u64 jobs_run;
+    ax_atomic_u64 background_run;
     ax_atomic_u64 steals;
     ax_atomic_u64 injected;
     ax_atomic_u64 ran_when_full;
@@ -105,18 +110,35 @@ static void stat_inc(ax_atomic_u64 *counter)
 
 /* ---- The system ------------------------------------------------------------------------------ */
 
-typedef struct worker {
+#define PRIORITIES 2u
+
+typedef struct deque {
     /* Read and written by thieves. */
     AX_ALIGNAS(CACHE_LINE) ax_atomic_u64 top;
     /* Written by the owner only. */
     AX_ALIGNAS(CACHE_LINE) ax_atomic_u64 bottom;
     deque_slot *buf;
     uint64_t mask;
+} deque;
+
+typedef struct worker {
+    deque dq[PRIORITIES]; /* indexed by ax_job_priority */
     struct ax_job_system *js;
     uint32_t index;
     ax_thread thread;
     AX_ALIGNAS(CACHE_LINE) stat_block stats;
 } worker;
+
+/* Injection queue: a mutex-protected ring for threads that are not workers. count_hint lets idle
+ * threads skip the lock when it is empty. */
+typedef struct inject_queue {
+    ax_mutex lock;
+    job_rec *ring;
+    uint32_t mask;
+    uint32_t head;
+    uint32_t count;
+    ax_atomic_u32 count_hint;
+} inject_queue;
 
 struct ax_job_system {
     ax_allocator allocator;
@@ -125,14 +147,7 @@ struct ax_job_system {
     uint32_t deque_capacity;
     worker *workers;
 
-    /* Injection queue: a mutex-protected ring for threads that are not workers. count_hint lets
-     * idle threads skip the lock when it is empty. */
-    ax_mutex inject_lock;
-    job_rec *inject_ring;
-    uint32_t inject_mask;
-    uint32_t inject_head;
-    uint32_t inject_count;
-    ax_atomic_u32 inject_count_hint;
+    inject_queue inject[PRIORITIES]; /* indexed by ax_job_priority */
 
     /* Every submitted job that has not finished (ax_jobs_wait_idle, ax_jobs_destroy). */
     ax_job_counter outstanding;
@@ -150,6 +165,10 @@ struct ax_job_system {
 };
 
 static AX_THREAD_LOCAL worker *tl_worker;
+
+/* The innermost job the calling thread runs: its priority + 1, or 0 when it runs none. Any
+ * thread: a thread that is not a worker runs jobs too (while it waits, or in inline mode). */
+static AX_THREAD_LOCAL uint32_t tl_running;
 
 static worker *current_worker(const ax_job_system *js)
 {
@@ -182,11 +201,17 @@ static bool counter_done(ax_job_counter *counter)
     return before == 1;
 }
 
-static void run_job(ax_job_system *js, worker *self, const job_rec *r)
+static void run_job(ax_job_system *js, worker *self, const job_rec *r, uint32_t priority)
 {
     bool reached_zero = false;
+    const uint32_t outer = tl_running;
+    tl_running = priority + 1;
     r->fn(r->arg);
+    tl_running = outer;
     stat_inc(&stats_of(js, self)->jobs_run);
+    if (priority == AX_JOB_BACKGROUND) {
+        stat_inc(&stats_of(js, self)->background_run);
+    }
     /* outstanding first: once the job's own counter reaches zero its waiter may go on to
      * ax_jobs_destroy, which checks that nothing is outstanding. */
     if (counter_done(&js->outstanding)) {
@@ -203,7 +228,7 @@ static void run_job(ax_job_system *js, worker *self, const job_rec *r)
 /* ---- Deques ---------------------------------------------------------------------------------- */
 
 /* Owner only. False when full. */
-static bool deque_push(worker *w, const job_rec *r)
+static bool deque_push(deque *w, const job_rec *r)
 {
     uint64_t b = ax_atomic_load_u64(&w->bottom, AX_MO_RELAXED);
     uint64_t t = ax_atomic_load_u64(&w->top, AX_MO_ACQUIRE);
@@ -216,7 +241,7 @@ static bool deque_push(worker *w, const job_rec *r)
 }
 
 /* Owner only. */
-static bool deque_pop(worker *w, job_rec *out)
+static bool deque_pop(deque *w, job_rec *out)
 {
     uint64_t b = ax_atomic_load_u64(&w->bottom, AX_MO_RELAXED) - 1;
     uint64_t t;
@@ -242,7 +267,7 @@ static bool deque_pop(worker *w, job_rec *out)
 typedef enum steal_result { STEAL_EMPTY, STEAL_TAKEN, STEAL_LOST } steal_result;
 
 /* Any thread. */
-static steal_result deque_steal(worker *w, job_rec *out)
+static steal_result deque_steal(deque *w, job_rec *out)
 {
     uint64_t t = ax_atomic_load_u64(&w->top, AX_MO_SEQ_CST);
     uint64_t b = ax_atomic_load_u64(&w->bottom, AX_MO_SEQ_CST);
@@ -259,55 +284,56 @@ static steal_result deque_steal(worker *w, job_rec *out)
 /* ---- Injection queue ------------------------------------------------------------------------- */
 
 /* Queues up to count records; returns how many fit. */
-static uint32_t inject_push(ax_job_system *js, const job_rec *recs, uint32_t count)
+static uint32_t inject_push(inject_queue *q, const job_rec *recs, uint32_t count)
 {
     uint32_t n = 0;
-    ax_mutex_lock(&js->inject_lock);
-    while (n < count && js->inject_count <= js->inject_mask) {
-        js->inject_ring[(js->inject_head + js->inject_count) & js->inject_mask] = recs[n];
-        js->inject_count++;
+    ax_mutex_lock(&q->lock);
+    while (n < count && q->count <= q->mask) {
+        q->ring[(q->head + q->count) & q->mask] = recs[n];
+        q->count++;
         n++;
     }
-    ax_atomic_store_u32(&js->inject_count_hint, js->inject_count, AX_MO_RELAXED);
-    ax_mutex_unlock(&js->inject_lock);
+    ax_atomic_store_u32(&q->count_hint, q->count, AX_MO_RELAXED);
+    ax_mutex_unlock(&q->lock);
     return n;
 }
 
-static bool inject_pop(ax_job_system *js, job_rec *out)
+static bool inject_pop(inject_queue *q, job_rec *out)
 {
     bool got = false;
-    if (ax_atomic_load_u32(&js->inject_count_hint, AX_MO_RELAXED) == 0) {
+    if (ax_atomic_load_u32(&q->count_hint, AX_MO_RELAXED) == 0) {
         return false;
     }
-    ax_mutex_lock(&js->inject_lock);
-    if (js->inject_count != 0) {
-        *out = js->inject_ring[js->inject_head];
-        js->inject_head = (js->inject_head + 1) & js->inject_mask;
-        js->inject_count--;
+    ax_mutex_lock(&q->lock);
+    if (q->count != 0) {
+        *out = q->ring[q->head];
+        q->head = (q->head + 1) & q->mask;
+        q->count--;
         got = true;
     }
-    ax_atomic_store_u32(&js->inject_count_hint, js->inject_count, AX_MO_RELAXED);
-    ax_mutex_unlock(&js->inject_lock);
+    ax_atomic_store_u32(&q->count_hint, q->count, AX_MO_RELAXED);
+    ax_mutex_unlock(&q->lock);
     return got;
 }
 
 /* ---- Finding work ---------------------------------------------------------------------------- */
 
-/* Runs one pending job, if there is any: own deque, then the injection queue, then steals. */
-static bool try_run_one(ax_job_system *js, worker *self)
+/* Runs one pending job of `priority`, if there is any: own deque, then the injection queue, then
+ * steals. */
+static bool try_run_priority(ax_job_system *js, worker *self, uint32_t priority)
 {
     job_rec r;
     uint32_t n = js->worker_count;
     uint32_t start;
     uint32_t i;
 
-    if (self != NULL && deque_pop(self, &r)) {
-        run_job(js, self, &r);
+    if (self != NULL && deque_pop(&self->dq[priority], &r)) {
+        run_job(js, self, &r, priority);
         return true;
     }
-    if (inject_pop(js, &r)) {
+    if (inject_pop(&js->inject[priority], &r)) {
         stat_inc(&stats_of(js, self)->injected);
-        run_job(js, self, &r);
+        run_job(js, self, &r, priority);
         return true;
     }
     start = self != NULL ? self->index + 1
@@ -318,10 +344,10 @@ static bool try_run_one(ax_job_system *js, worker *self)
             continue;
         }
         for (;;) {
-            steal_result s = deque_steal(victim, &r);
+            steal_result s = deque_steal(&victim->dq[priority], &r);
             if (s == STEAL_TAKEN) {
                 stat_inc(&stats_of(js, self)->steals);
-                run_job(js, self, &r);
+                run_job(js, self, &r, priority);
                 return true;
             }
             if (s == STEAL_EMPTY) {
@@ -332,6 +358,30 @@ static bool try_run_one(ax_job_system *js, worker *self)
         }
     }
     return false;
+}
+
+/* Runs one pending job of priority up to `lowest` (AX_JOB_FRAME: frame jobs only), frame jobs
+ * first. */
+static bool try_run_one(ax_job_system *js, worker *self, uint32_t lowest)
+{
+    uint32_t p;
+    for (p = 0; p <= lowest; ++p) {
+        if (try_run_priority(js, self, p)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* The lowest priority this thread may run while it waits: inside a job, that job's priority
+ * (frame jobs only inside a frame job; both inside a background job); outside any job, both for
+ * a worker and frame jobs only for any other thread (the scene and render threads). */
+static uint32_t wait_lowest(const worker *self)
+{
+    if (tl_running != 0) {
+        return tl_running - 1;
+    }
+    return self != NULL ? AX_JOB_BACKGROUND : AX_JOB_FRAME;
 }
 
 /* ---- Workers --------------------------------------------------------------------------------- */
@@ -346,7 +396,7 @@ static int worker_main(void *arg)
     for (;;) {
         uint64_t seen_epoch;
 
-        if (try_run_one(js, self)) {
+        if (try_run_one(js, self, AX_JOB_BACKGROUND)) {
             idle = 0;
             continue;
         }
@@ -366,7 +416,7 @@ static int worker_main(void *arg)
         /* Sleep until notified. Anything submitted before seen_epoch was read is found by the
          * search below; anything after changes the epoch or finds this thread asleep. */
         seen_epoch = ax_atomic_load_u64(&js->epoch, AX_MO_SEQ_CST);
-        if (try_run_one(js, self)) {
+        if (try_run_one(js, self, AX_JOB_BACKGROUND)) {
             idle = 0;
             continue;
         }
@@ -415,17 +465,25 @@ static void free_system(ax_job_system *js)
 {
     uint32_t i;
     ax_allocator a = js->allocator;
+    uint32_t p;
     if (js->workers != NULL) {
         for (i = 0; i < js->worker_count; ++i) {
-            ax_mem_free(&a, js->workers[i].buf, sizeof(deque_slot) * js->deque_capacity);
+            for (p = 0; p < PRIORITIES; ++p) {
+                ax_mem_free(&a, js->workers[i].dq[p].buf, sizeof(deque_slot) * js->deque_capacity);
+            }
         }
         ax_mem_free(&a, js->workers, sizeof(worker) * js->worker_count);
     }
-    ax_mem_free(&a, js->inject_ring, sizeof(job_rec) * ((size_t)js->inject_mask + 1));
+    for (p = 0; p < PRIORITIES; ++p) {
+        inject_queue *q = &js->inject[p];
+        ax_mem_free(&a, q->ring, sizeof(job_rec) * ((size_t)q->mask + 1));
+        if (!js->inline_mode) {
+            ax_mutex_deinit(&q->lock);
+        }
+    }
     if (!js->inline_mode) {
         ax_cond_deinit(&js->sleep_cond);
         ax_mutex_deinit(&js->sleep_lock);
-        ax_mutex_deinit(&js->inject_lock);
     }
     ax_mem_free(&a, js, sizeof *js);
 }
@@ -447,6 +505,7 @@ ax_result ax_jobs_create(const ax_jobs_desc *desc, ax_job_system **out_js)
     ax_job_system *js;
     uint32_t inject_capacity;
     uint32_t i;
+    uint32_t p;
 
     AX_ASSERT(desc != NULL && out_js != NULL);
     *out_js = NULL;
@@ -464,7 +523,7 @@ ax_result ax_jobs_create(const ax_jobs_desc *desc, ax_job_system **out_js)
     ax_atomic_init_u32(&js->sleepers, 0);
     ax_atomic_init_u32(&js->shutdown, 0);
     ax_atomic_init_u32(&js->steal_start, 0);
-    ax_atomic_init_u32(&js->inject_count_hint, 0);
+    ax_atomic_init_u32(&js->outstanding.priority, AX_JOB_BACKGROUND);
 
     if (js->inline_mode) {
         *out_js = js;
@@ -482,16 +541,23 @@ ax_result ax_jobs_create(const ax_jobs_desc *desc, ax_job_system **out_js)
     }
     js->deque_capacity = round_up_pow2(desc->deque_capacity, AX_JOBS_DEFAULT_DEQUE_CAPACITY);
     inject_capacity = round_up_pow2(desc->inject_capacity, AX_JOBS_DEFAULT_INJECT_CAPACITY);
-    js->inject_mask = inject_capacity - 1;
 
-    ax_mutex_init(&js->inject_lock);
     ax_mutex_init(&js->sleep_lock);
     ax_cond_init(&js->sleep_cond);
 
-    js->inject_ring =
-        (job_rec *)ax_mem_alloc(a, sizeof(job_rec) * inject_capacity, AX_ALIGNOF(job_rec));
+    for (p = 0; p < PRIORITIES; ++p) {
+        inject_queue *q = &js->inject[p];
+        ax_mutex_init(&q->lock);
+        ax_atomic_init_u32(&q->count_hint, 0);
+        q->mask = inject_capacity - 1;
+        q->ring =
+            (job_rec *)ax_mem_alloc(a, sizeof(job_rec) * inject_capacity, AX_ALIGNOF(job_rec));
+        if (q->ring == NULL) {
+            q->mask = 0; /* free_system frees ring of mask + 1 records: none */
+        }
+    }
     js->workers = (worker *)ax_mem_alloc(a, sizeof(worker) * js->worker_count, CACHE_LINE);
-    if (js->inject_ring == NULL || js->workers == NULL) {
+    if (js->inject[0].ring == NULL || js->inject[1].ring == NULL || js->workers == NULL) {
         if (js->workers == NULL) {
             js->worker_count = 0;
         }
@@ -500,21 +566,24 @@ ax_result ax_jobs_create(const ax_jobs_desc *desc, ax_job_system **out_js)
     memset(js->workers, 0, sizeof(worker) * js->worker_count);
     for (i = 0; i < js->worker_count; ++i) {
         worker *w = &js->workers[i];
-        uint32_t s;
         w->js = js;
         w->index = i;
-        w->mask = js->deque_capacity - 1;
-        ax_atomic_init_u64(&w->top, 0);
-        ax_atomic_init_u64(&w->bottom, 0);
-        w->buf = (deque_slot *)ax_mem_alloc(a, sizeof(deque_slot) * js->deque_capacity,
-                                            AX_ALIGNOF(deque_slot));
-        if (w->buf == NULL) {
-            goto out_of_memory;
-        }
-        for (s = 0; s < js->deque_capacity; ++s) {
-            ax_atomic_init_u64(&w->buf[s].w[0], 0);
-            ax_atomic_init_u64(&w->buf[s].w[1], 0);
-            ax_atomic_init_u64(&w->buf[s].w[2], 0);
+        for (p = 0; p < PRIORITIES; ++p) {
+            deque *d = &w->dq[p];
+            uint32_t s;
+            d->mask = js->deque_capacity - 1;
+            ax_atomic_init_u64(&d->top, 0);
+            ax_atomic_init_u64(&d->bottom, 0);
+            d->buf = (deque_slot *)ax_mem_alloc(a, sizeof(deque_slot) * js->deque_capacity,
+                                                AX_ALIGNOF(deque_slot));
+            if (d->buf == NULL) {
+                goto out_of_memory;
+            }
+            for (s = 0; s < js->deque_capacity; ++s) {
+                ax_atomic_init_u64(&d->buf[s].w[0], 0);
+                ax_atomic_init_u64(&d->buf[s].w[1], 0);
+                ax_atomic_init_u64(&d->buf[s].w[2], 0);
+            }
         }
     }
 
@@ -574,7 +643,8 @@ static job_rec make_rec(const ax_job *job, ax_job_counter *counter)
     return r;
 }
 
-void ax_jobs_submit(ax_job_system *js, const ax_job *jobs, uint32_t count, ax_job_counter *counter)
+static void submit(ax_job_system *js, const ax_job *jobs, uint32_t count, ax_job_counter *counter,
+                   uint32_t priority)
 {
     worker *self;
     uint32_t i;
@@ -584,16 +654,24 @@ void ax_jobs_submit(ax_job_system *js, const ax_job *jobs, uint32_t count, ax_jo
     if (count == 0) {
         return;
     }
-    /* Count first, so no waiter can see zero while these jobs are queued. */
+    /* Count first, so no waiter can see zero while these jobs are queued. The counter remembers
+     * the priority of its jobs; one counter never mixes the two. */
     if (counter != NULL) {
-        ax_atomic_fetch_add_u32(&counter->pending, count, AX_MO_RELAXED);
+        if (ax_atomic_load_u32(&counter->pending, AX_MO_RELAXED) == 0) {
+            ax_atomic_store_u32(&counter->priority, priority, AX_MO_RELAXED);
+        } else {
+            AX_ASSERT_MSG(ax_atomic_load_u32(&counter->priority, AX_MO_RELAXED) == priority,
+                          "ax_jobs_submit: a counter holds jobs of one priority; this one still "
+                          "has jobs of the other pending");
+        }
+        ax_atomic_fetch_add_u32(&counter->pending, count, AX_MO_RELEASE);
     }
     ax_atomic_fetch_add_u32(&js->outstanding.pending, count, AX_MO_RELAXED);
 
     if (js->inline_mode) {
         for (i = 0; i < count; ++i) {
             job_rec r = make_rec(&jobs[i], counter);
-            run_job(js, NULL, &r);
+            run_job(js, NULL, &r, priority);
         }
         return;
     }
@@ -604,7 +682,7 @@ void ax_jobs_submit(ax_job_system *js, const ax_job *jobs, uint32_t count, ax_jo
         job_rec r;
         if (self != NULL) {
             r = make_rec(&jobs[i], counter);
-            if (deque_push(self, &r)) {
+            if (deque_push(&self->dq[priority], &r)) {
                 i++;
                 continue;
             }
@@ -617,7 +695,7 @@ void ax_jobs_submit(ax_job_system *js, const ax_job *jobs, uint32_t count, ax_jo
                 batch[n] = make_rec(&jobs[i + n], counter);
                 n++;
             }
-            pushed = inject_push(js, batch, n);
+            pushed = inject_push(&js->inject[priority], batch, n);
             i += pushed;
             if (pushed == n) {
                 continue;
@@ -630,18 +708,29 @@ void ax_jobs_submit(ax_job_system *js, const ax_job *jobs, uint32_t count, ax_jo
             notified = true;
         }
         stat_inc(&stats_of(js, self)->ran_when_full);
-        run_job(js, self, &r);
+        run_job(js, self, &r, priority);
         i++;
     }
     notify(js);
 }
 
-void ax_jobs_wait(ax_job_system *js, ax_job_counter *counter)
+void ax_jobs_submit(ax_job_system *js, const ax_job *jobs, uint32_t count, ax_job_counter *counter)
+{
+    submit(js, jobs, count, counter, AX_JOB_FRAME);
+}
+
+void ax_jobs_submit_background(ax_job_system *js, const ax_job *jobs, uint32_t count,
+                               ax_job_counter *counter)
+{
+    submit(js, jobs, count, counter, AX_JOB_BACKGROUND);
+}
+
+/* Runs jobs of priority up to `lowest` until the counter reaches zero. */
+static void wait_counter(ax_job_system *js, ax_job_counter *counter, uint32_t lowest)
 {
     worker *self;
     uint32_t idle = 0;
 
-    AX_ASSERT(js != NULL && counter != NULL);
     if (ax_atomic_load_u32(&counter->pending, AX_MO_ACQUIRE) == 0) {
         return;
     }
@@ -655,7 +744,7 @@ void ax_jobs_wait(ax_job_system *js, ax_job_counter *counter)
     while (ax_atomic_load_u32(&counter->pending, AX_MO_ACQUIRE) != 0) {
         uint64_t seen_epoch;
 
-        if (try_run_one(js, self)) {
+        if (try_run_one(js, self, lowest)) {
             idle = 0;
             continue;
         }
@@ -674,7 +763,7 @@ void ax_jobs_wait(ax_job_system *js, ax_job_counter *counter)
         if (ax_atomic_load_u32(&counter->pending, AX_MO_ACQUIRE) == 0) {
             break;
         }
-        if (try_run_one(js, self)) {
+        if (try_run_one(js, self, lowest)) {
             idle = 0;
             continue;
         }
@@ -692,14 +781,37 @@ void ax_jobs_wait(ax_job_system *js, ax_job_counter *counter)
     }
 }
 
+void ax_jobs_wait(ax_job_system *js, ax_job_counter *counter)
+{
+    uint32_t lowest;
+    bool frame_waits_for_background;
+    AX_ASSERT(js != NULL && counter != NULL);
+    lowest = wait_lowest(current_worker(js));
+    /* Checked before looking at the counter, so the mistake shows whatever the timing (and in
+     * inline mode, where the counter is always zero by now). */
+    frame_waits_for_background =
+        ax_atomic_load_u32(&counter->priority, AX_MO_RELAXED) == AX_JOB_BACKGROUND &&
+        lowest == AX_JOB_FRAME;
+    AX_ASSERT_MSG(!frame_waits_for_background,
+                  "ax_jobs_wait: frame work must not wait for background jobs (a thread that is "
+                  "not a worker, or a frame job, waits on a counter of background jobs); see "
+                  "decision 80");
+    if (frame_waits_for_background) {
+        lowest = AX_JOB_BACKGROUND; /* release builds: lose the frame rather than hang */
+    }
+    wait_counter(js, counter, lowest);
+}
+
 void ax_jobs_wait_idle(ax_job_system *js)
 {
-    ax_jobs_wait(js, &js->outstanding);
+    AX_ASSERT(js != NULL);
+    wait_counter(js, &js->outstanding, AX_JOB_BACKGROUND);
 }
 
 static void add_stats(ax_jobs_stats *out, const stat_block *b)
 {
     out->jobs_run += ax_atomic_load_u64(&b->jobs_run, AX_MO_RELAXED);
+    out->background_run += ax_atomic_load_u64(&b->background_run, AX_MO_RELAXED);
     out->steals += ax_atomic_load_u64(&b->steals, AX_MO_RELAXED);
     out->injected += ax_atomic_load_u64(&b->injected, AX_MO_RELAXED);
     out->ran_when_full += ax_atomic_load_u64(&b->ran_when_full, AX_MO_RELAXED);

@@ -93,6 +93,15 @@ new entry that points back to the old one.
 | 77  | The runtime, the frame's order and the single thread     | Approved       |
 | 78  | The scene and render threads; vsync on the render thread | Deviation      |
 | 79  | The cooperative mode's tests in Node                     | Approved       |
+| 80  | Job priorities: frame and background                     | Approved       |
+| 81  | `ax_render_soft`: the software renderer and determinism  | Approved       |
+| 82  | Golden images: PNG in the repository, updated on purpose | Approved       |
+| 83  | GPU renderers against the software reference             | Approved       |
+| 84  | CPU presentation; ax_render_soft in windows; fallback    | Approved       |
+| 85  | The headless host and its C testing API                  | Approved       |
+| 86  | Images byte-identical on every platform: the CI job      | Approved       |
+| 87  | Reference measurements: ax_render_soft on m1_nodes       | Approved       |
+| 88  | `AX_ERR_TIMEOUT` and `AX_ERR_IO`                         | Approved       |
 
 ---
 
@@ -1735,7 +1744,8 @@ tested against. It arrives in M1; M0's renderer needs a reference now.
   lavapipe differed by at most 1/255; the two lavapipe runs were identical.
 
 **Status.** Approved (part of the approved plan; the owner asked for the reference to be recorded
-as provisional).
+as provisional). Superseded by decision 83: the GPU renderer is now compared with ax_render_soft,
+and this reference tests the software renderer (decision 81).
 
 ## 57. Render-thread frame step: bounded size handshake
 
@@ -2037,7 +2047,7 @@ This must be resolved before the scene thread uses the job system, with one of:
 - **Waiters run only their own counter's jobs.** The waiter takes only jobs whose counter is the
   one it waits on (its children), and otherwise sleeps.
 
-Neither is implemented yet.
+Neither is implemented yet. (Resolved by decision 80: two priorities.)
 
 **Pending for the threaded web build** (`AX_WEB_THREADS`, not built in CI): creating the workers
 from the browser's main thread needs Emscripten's `PTHREAD_POOL_SIZE` (a pthread created there
@@ -3170,6 +3180,8 @@ stage functions run in order on one thread through a cooperative scheduler, for 
 
 ## 78. The scene and render threads; vsync on the render thread
 
+> Amended by decision 88: a removal the threads do not confirm in time returns `AX_ERR_TIMEOUT`.
+
 **Context.** The threaded mode runs decision 77's stages on a scene thread and presents every
 surface from one render thread. The owner asked for:
 - M0's render loop (wait_frame, acquire and render) moved from the example into the library,
@@ -3202,7 +3214,8 @@ surface from one render thread. The owner asked for:
   - Removing a surface waits, bounded by 1 s, for both threads to acknowledge it, so the
     window can then be destroyed. **If they do not confirm within 1 s** (a render thread stuck
     in the driver), `ax_rt_remove_surface` and `ax_runtime_remove_window` return
-    `AX_ERR_UNSUPPORTED`. The surface is then still in use, the render thread may still present
+    `AX_ERR_TIMEOUT` (`AX_ERR_UNSUPPORTED` until decision 88 added the code). The surface is then
+    still in use, the render thread may still present
     it, and its window must not be destroyed; the caller calls again until `AX_OK`. A retry
     queues nothing new and only waits again. Both headers say so (the owner's review). Test:
     `runtime.threads.a_removal_that_times_out_can_be_retried`, with a detach that stalls 1.5 s:
@@ -3322,3 +3335,519 @@ cooperative mode that runs there in CI, for example core's tests in Node.
   someone needs them on the web.
 
 **Status.** Approved by the owner.
+
+## 80. Job priorities: frame and background
+
+**Context.** Decision 60's known limitation: a waiter runs any pending job, so a scene or render
+thread waiting for its own frame work could steal a long background job (decoding an image,
+rasterizing glyphs) and miss its frame. It had to be resolved before a frame thread waits on the
+job system, which `ax_render_soft` does first (its tiles). The owner chose two priorities, and
+asked that a counter remember its jobs' priority and that frame work never wait for background
+work.
+
+**Decision.** `base/include/axion/base/ax_jobs.h`, `base/src/jobs.c`.
+- **Two priorities**, `AX_JOB_FRAME` (`ax_jobs_submit`, as before) and `AX_JOB_BACKGROUND`
+  (`ax_jobs_submit_background`). Each worker has one Chase-Lev deque per priority, and there is
+  one injection queue per priority, so taking a job never means looking inside a deque.
+- **Who runs what.** Every thread knows the priority of the job it runs (a thread-local value,
+  saved and restored around each job, so nested jobs work):
+  - an idle worker runs frame jobs first, then background ones;
+  - a **frame context** runs only frame jobs while it waits. Frame contexts are a thread that is
+    not a worker (the scene and render threads, tests) outside any job, and any thread inside a
+    frame job;
+  - inside a background job a thread runs both while it waits, frame jobs first. A thread that is
+    not a worker gets one only from `ax_jobs_wait_idle` (teardown and untracked jobs), which runs
+    both priorities.
+- **A counter remembers its jobs' priority** (`ax_job_counter.priority`, set by the submit that
+  finds it at zero). One counter never holds both: submitting jobs of the other priority while it
+  still has jobs pending asserts.
+- **Frame work never waits for background work.** `ax_jobs_wait` on a background counter from a
+  frame context asserts in debug builds: with every worker inside frame jobs, nobody would run the
+  background jobs, a deadlock. The check comes before the counter is read, so it fires whatever
+  the timing, and in inline mode too. Release builds let that waiter run background jobs as well:
+  it loses the frame instead of hanging.
+- **Why not "waiters run only their own counter's jobs"** (decision 60's other option): a
+  work-stealing deque cannot hand out a chosen job, and a job's children use other counters, so a
+  waiter could not help with its own grandchildren and would sit idle while its own work waits.
+- **Inline mode** runs both priorities at once, when submitted, so a background job submitted in
+  single-threaded mode costs its time on the spot.
+- **Statistics:** `ax_jobs_stats.background_run`.
+- **Tests** (`tests/unit/base/test_jobs.c`, label `base`, so under TSan in CI):
+  - a thread that is not a worker, with background jobs queued and the only worker busy, runs the
+    frame jobs it waits for and none of the background ones; the worker runs them afterwards;
+  - a frame job on a worker queues background jobs in its own deque and frame children, then
+    waits: it runs its children and never the background jobs beside it;
+  - an idle worker takes frame jobs before background jobs submitted earlier;
+  - a background job waits for frame jobs and for background jobs;
+  - inline mode runs background jobs at once;
+  - death tests: waiting on a background counter from a frame context, and mixing priorities on
+    one counter.
+
+  Writing the tests found a case the first version missed: `ax_jobs_wait_idle` on a thread that
+  is not a worker ran a background job whose nested wait was taken for a frame context. The
+  running priority is now tracked on every thread, not only on workers. Locally: 60 runs of the
+  priority tests and the stress test under TSan, 30 pinned to one CPU, 300 Release runs, all clean.
+
+**Status.** Implementation, pending the owner's approval.
+
+## 81. `ax_render_soft`: the software renderer and its determinism
+
+**Context.** The document's renderer table has a CPU rasterizer, "tiled, SIMD and
+multi-threaded", as the last-resort fallback, the reference for golden-image tests and the
+renderer of no-GPU CI and servers. The owner asked for the same semantics as `ax_render_wgpu`
+(exact coverage per pixel, sRGB-space blending by default with a linear option per layer,
+premultiplied alpha, never stretching the IR), the same bytes for the same IR on every platform
+and with any number of threads, a scalar reference path, and no transcendental function from libm
+anywhere on the path.
+
+**Decision.** `render/soft/` (library `ax_render_soft`, internal SDK
+`axion/render/ax_render_soft.h`). It needs no window and no GPU, so it builds everywhere, the web
+included; the window part comes with decision 83.
+- **API.** `ax_render_soft_create` (options: a job system, the scalar-only flag, and the
+  unsupported `AX_RENDER_SOFT_DIAG_LINEAR_BLEND` that mirrors ax_render_wgpu's diagnostic) and
+  `ax_render_soft_draw_ir` into an `ax_soft_target`: pixels, size, stride, `RGBA8` or `BGRA8`
+  (premultiplied, sRGB-encoded), the scale. The snapshot's background fills the whole target, and
+  the snapshot is drawn at the target's scale, anchored top-left, never stretched.
+- **Coverage: decision 55's mathematics, evaluated per pixel centre.** Each item becomes a shape
+  with its device-to-local transform; slabs, their product, and rounded corners treated as locally
+  straight, with the same per-slab constants the shader derives (the gradient's length and the
+  sorted components of the edge normal). Against the supersampled reference (decision 56's,
+  moved to `tests/unit/render_soft/`): 1/255 at edges (2/255 in the hairline fan), 1 to 12/255 near
+  corners, means 0.003 to 0.06/255; the GPU renderer measured the same.
+- **Blending.** The default space is the GPU renderer's (sRGB, decision 58), and it changes with it
+  when issue #4 is decided (M1's fifth prompt). A tile keeps four planes of floats (premultiplied,
+  sRGB-encoded) and rounds to 8 bits once, at the end; a GPU rounds after every blend into its
+  8-bit target, which differs by at most a rounding step per overlap. Layers with
+  `AX_IR_LAYER_LINEAR_BLEND` (inherited by their subtree) decode, blend in linear light and encode
+  again, which is what a GPU's sRGB view does.
+- **What it draws beyond ax_render_wgpu**, as the reference:
+  - **clips:** rect and rounded-rect clips, analytic, nested (each clip's coverage multiplies the
+    item's, innermost first, in its own layer's space). Path clips and unknown kinds skip the
+    layer, as the IR's rules say;
+  - **exact group opacity:** a layer with opacity below 1 and more than one item or a child is an
+    isolated group (a tile buffer per open group, composited at the group's end); with one item
+    and no child, multiplying the item's color is the same. `approximated` is always 0;
+  - other blend modes and effects draw as normal (`neutralized`), like the GPU renderer.
+- **Determinism.** Every pixel is a function of the snapshot alone, computed with IEEE single
+  precision in a fixed order:
+  - **No contraction anywhere in AXION.** `ax_target_defaults` builds every target with
+    `-ffp-contract=off` (GCC and Clang contract into fused multiply-adds by default on targets that
+    have them, arm64 for one) and MSVC with `/fp:precise`, its default, stated explicitly. MSVC does
+    not contract under `/fp:precise` since Visual Studio 2022 (contractions need `/fp:contract` or
+    `/fp:fast`, never used), and its x64 builds target SSE2, which has no FMA instruction. The
+    whole stack, not only the renderer: the IR's transforms come from base and core.
+  - **No transcendental function from libm.** The renderer uses `sqrtf` (which IEEE requires
+    correctly rounded) and nothing else from libm. base's `ax_affine2_rotate`,
+    `ax_srgb_to_linear` and `ax_linear_to_srgb` are now deterministic too: sine and cosine by a
+    three-part Cody-Waite reduction and Taylor polynomials (worst error 7.7e-8 over +-14.6 rad),
+    the transfer functions by their own log2 and exp2 (worst 2.3e-7 against the formulas in double
+    precision). `base.math.elementary_functions_give_the_same_bits_everywhere` pins a hash of
+    their bits, so CI checks them on every platform.
+  - **No denormals.** Coverage below 2^-16 is 0, accumulated channels below 2^-24 are 0, color
+    components below 2^-20 are 0, and transforms whose linear part or inverse has an entry beyond
+    1e6 make their items invalid, which bounds every gradient. So flush-to-zero and
+    denormals-are-zero modes cannot change a result; the default rounding mode is assumed.
+- **Tiles over the job system.** With `ax_render_soft_desc.jobs`, tiles run as frame jobs
+  (decision 80): `4 x (workers + 1)` jobs, each taking every n-th tile so uneven tiles balance, and
+  the caller helps while it waits. Each job claims a tile context (its float planes) from a pool of
+  `workers + 4` through a bitmask; the extra contexts are for frame threads that may run a tile
+  while they wait on their own frame jobs. Tiles are independent and write only their own pixels,
+  so any number of threads gives the same bytes. Without a job system, or in inline mode, the
+  caller draws every tile in order.
+- **SIMD, the same bits as the scalar path.** `raster_simd.c` evaluates an item's coverage and its
+  source-over blend four pixels of a row at a time, on SSE2 (every x86-64), NEON (64-bit ARM; 32-bit
+  NEON has no division or square root) and WebAssembly SIMD128 (`AX_WASM_SIMD`, on by default:
+  `-msimd128` for this library). Each lane performs the scalar path's operations in the same order;
+  branches become selections with the same priority; min, max and abs are written as compare and
+  select, as the scalar path's ternaries are, because the instructions treat signed zeros
+  differently between ISAs. Only IEEE-exact operations are used (add, subtract, multiply, divide,
+  square root, comparisons, truncating conversion). Linear-light blending, groups and the final
+  store stay scalar. **No tolerance is needed: the SIMD path gives the scalar path's bits**, so
+  goldens are exact. `AX_RENDER_SOFT_SCALAR` forces the scalar path.
+  - `render_soft.simd` compares both paths through the internals, before any rounding to 8 bits:
+    coverage at 3.65 million points of 40 random scenes (items and clips), and every tile's float
+    planes. Comparing 8-bit output alone is too weak: a deliberate one-ulp change in the SIMD path
+    changed no byte of 120 random scenes, while these two checks reported 5297 points and 205 tiles.
+    Locally: SSE2 (x86-64) and SIMD128 (Node 24), 0 differences.
+  - `render_soft.determinism` draws every shared scene and 120 random ones (transforms, nested
+    clips, groups, linear layers, scales 1, 1.325 and 2) with the scalar path, the SIMD path, an
+    inline job system and 1, 2 and 4 workers: identical bytes. Under TSan too (label `render_soft`).
+- **Counts** follow the IR's rules as the GPU renderer's do (`unknown_items`, `skipped_items`,
+  `skipped_layers`, `neutralized`, `invalid_items`, `instances`).
+- **Tests** (`tests/unit/render_soft/`, label `render_soft`, also in the Emscripten job): the
+  reference comparison on the coverage scenes and the hairline fan; sRGB-space and linear blending
+  (128 and 188 for 50% white over black) and the diagnostic; the IR's rules; invalid items; clips at
+  fractional edges and nested; group opacity (the overlap of two items in a 50% group shows only
+  the top one); never stretching; both formats, padded strides and the background without a
+  snapshot; argument errors.
+- The scenes are shared (`tests/scenes/axt_scenes.c`, library `ax_test_scenes`) by these tests,
+  the GPU renderer's comparison and the goldens, and use only deterministic math.
+
+**Status.** Implementation, pending the owner's approval.
+
+## 82. Golden images: PNG in the repository, updated only on purpose
+
+> Amended by decision 88: file errors are `AX_ERR_IO`.
+
+**Context.** The owner asked for golden PNGs in the repository, updated only with an explicit
+command and never in CI, with a failure uploading the difference image as an artifact; and for
+AXION's own PNG codec, whose deflate really compresses and whose inflate is tested against
+corrupt input under ASan.
+
+**Decision.**
+- **Codec** (`headless/include/axion/headless/ax_png.h`, `headless/src/png.c`, in the headless
+  module, which needs it for snapshots):
+  - the encoder writes 8-bit RGB when every pixel is opaque, RGBA otherwise, non-interlaced, with
+    an `sRGB` chunk; per row the filter with the smallest sum of absolute values; one deflate block
+    with fixed Huffman codes over greedy LZ77 matches (hash chains of 64 links, 32 KiB window).
+    The output depends only on the pixels: the same image is the same file on every platform
+    (`headless.png.encoding_is_pinned_byte_for_byte` pins a hash of it). A 256 x 256 gradient
+    takes 1.7 KB; the goldens of this step take 172 KB together;
+  - the decoder reads 8-bit grey, grey and alpha, RGB and RGBA, every filter and any zlib stream
+    (stored, fixed and dynamic Huffman blocks; inflate after zlib's reference decoder, puff), and
+    checks every chunk CRC, the zlib header and Adler-32 and the exact length of the image data.
+    Palette, 16-bit and interlaced images are `AX_ERR_UNSUPPORTED`; corrupt files
+    `AX_ERR_INVALID_ARGUMENT`; a file that cannot be opened, read or written `AX_ERR_IO`, with the
+    path and the system's reason (decision 88; the first version used `AX_ERR_INVALID_ARGUMENT`);
+  - PNG stores straight alpha. Renderers' premultiplied pixels are divided by alpha with integer
+    rounding (`AX_PNG_PREMULTIPLIED`, `ax_rgba_unpremultiply`), lossless for opaque pixels.
+  - Tests (`tests/unit/headless/test_png.c`, label `headless`): round trips; files written by
+    Python's zlib (`gen_png_samples.py`; stored, fixed and dynamic blocks, every filter, grey,
+    grey and alpha, RGB, RGBA) decode to their pixels; the unsupported kinds; premultiplied input;
+    real compression; **corrupt input**: every truncation of four files, 6000 files with one to
+    three flipped bits whose chunk CRCs are repaired so the flips reach the parser and inflate, and
+    500 random ones, each decoded from a buffer of exactly its size so ASan sees any read past it:
+    an error or a valid image, never a crash. Under ASan and UBSan with GCC and Clang. Python's
+    zlib also reads AXION's files back (checked while writing it).
+- **Goldens** (`tests/harness/axt_golden.h`, library `ax_test_golden`):
+  - `tests/goldens/<suite>/<name>.png`, compared after the same conversion to straight alpha the
+    golden went through, so it holds exactly what the comparison saw;
+  - **exact** for the software renderer, which is deterministic (decision 81); a per-channel
+    tolerance argument exists for goldens of other renderers;
+  - **updated only on purpose:** `tools/update_goldens.sh [preset]` builds and runs the
+    `update_goldens` target, which runs the tests labelled `golden` with `AX_UPDATE_GOLDENS=1`. A
+    test refuses to update when the `CI` variable is set (GitHub sets it), and fails. New PNGs are
+    reviewed before they are committed;
+  - **on a mismatch** the test writes `<suite>__<name>.actual.png`, `.expected.png` and `.diff.png`
+    (grey where both agree, red where they differ, brighter for bigger differences) to
+    `AX_TEST_FAILURE_DIR` (default `golden-failures/` in the test's directory). CI sets it in every
+    job and uploads it when a job fails (`golden-failures-<job>`);
+  - with `AX_TEST_IMAGE_DIR` set, every image checked is written there too, for the cross-platform
+    comparison (decision 86's CI job).
+- **The goldens of this step** (`tests/unit/render_soft/test_goldens.c`): the seven coverage
+  scenes, the rotating hairline fan (four frames, 1.7 degrees apart), the zone plate, the zone
+  plate behind three nested rounded clips (the middle one turned 9 degrees), group opacity and
+  linear layers. Locally Clang Debug and GCC Release on x86-64 and the Emscripten build in Node
+  (SIMD128) produce byte-identical PNGs.
+- The web tests link with `-sNODERAWFS=1` (they read goldens and write artifacts on the host's
+  file system) and `-sALLOW_MEMORY_GROWTH=1`.
+
+**Status.** Implementation, pending the owner's approval.
+
+## 83. GPU renderers against the software reference: a perceptual tolerance
+
+**Context.** "Antialiasing and image quality" (Verification): golden-image tests compare each GPU
+renderer to the software reference within a perceptual tolerance, on antialiasing torture scenes.
+Until now ax_render_wgpu's coverage tests compared with decision 56's supersampled reference. The
+owner asked for a percentile (for example 99.9% of the pixels within dE 0.02) plus the mean,
+not a per-pixel maximum, calibrated with Dawn, wgpu-native and Metal.
+
+**Decision.** `tests/unit/render_wgpu/test_coverage.c` draws each shared scene (tests/scenes) with
+ax_render_wgpu into an RGBA8 texture and with ax_render_soft, and compares the two.
+- **The measure:** per pixel, both 8-bit sRGB values decoded to linear light (the exact formula,
+  in double precision: test code) and converted to OKLab; dE is the Euclidean distance. OKLab is
+  close to perceptually uniform, and dE 0.02 is about one just noticeable difference.
+- **The tolerance:** the 99.9th percentile of the pixels' dE at most **0.02**, and the mean at most
+  **0.002**. A percentile, as the owner asked: both renderers compute the same coverage, but the GPU
+  rounds into its 8-bit target after every blend and the software renderer once, so a few pixels
+  may differ more than the rest; near black, one step of 8 bits is a large dE (the `rotated`
+  scene's worst pixel is 1/255 and dE 0.067).
+- **Scenes:** the seven coverage scenes, the rotating hairlines (four frames), the zone plate, the
+  derivative path's scene, and the linear-blend diagnostic against the software renderer's
+  (`AX_RENDER_SOFT_DIAG_LINEAR_BLEND`). Not compared, because ax_render_wgpu does not draw them
+  yet: the zone plate behind nested rounded clips (it skips clipped layers), group opacity (it
+  approximates) and linear layers. Each joins when the GPU renderer draws it (below); the software
+  renderer's goldens cover them meanwhile. The fallback scene checks its counts only.
+- **Measured** (Debug builds; dE at the 99.9th percentile, mean dE, worst channel difference):
+
+  | Implementation and adapter | p99.9 (worst scene) | mean (worst scene) | channel |
+  | --- | --- | --- | --- |
+  | Dawn, NVIDIA 615.78 (GTX 1650) | 0.0062 (zone plate) | 0.00076 (zone plate) | 2/255 |
+  | Dawn, lavapipe (Mesa, LLVM 23) | 0.0051 (zone plate) | 0.00094 (zone plate) | 2/255 |
+  | wgpu-native, NVIDIA | 0.0062 | 0.00076 | 2/255 |
+  | wgpu-native, lavapipe | 0.0051 | 0.00094 | 2/255 |
+  | Dawn, Metal (GitHub's macOS runner, CI artifact) | 0.0044 (thin) | 0.00041 (zone plate) | 1/255 |
+
+  Each implementation matches the other on the same adapter, scene by scene. The limits leave a
+  factor of three on the percentile and two on the mean. CI writes every coverage job's measures to
+  `measures.txt` beside its images (the `coverage-*` artifacts), so a drift shows before it fails.
+- **CI:** the coverage jobs (Dawn on lavapipe, wgpu-native on lavapipe, Dawn on Metal) run these
+  tests, and `compare-coverage` still compares their images with each other within 3/255.
+- decision 56's supersampled reference stays as a test of the software renderer itself.
+
+- **Who closes ax_render_wgpu's gaps against the reference** (proposed by the owner, to be
+  confirmed in the prompts document):
+  - **rect and rounded-rect clips:** M1's fourth prompt (flex), whose demos need them. Then the
+    clipped zone plate joins this comparison;
+  - **exact group opacity** (offscreen layers, with the render graph) and **linear layers** (the
+    sRGB view or an FP16 target per layer): M2 items. Until then the GPU renderer counts them
+    (`approximated`, and linear layers blend in sRGB space), and the comparison skips the scenes
+    that use them.
+
+**Status.** Implementation, pending the owner's approval.
+
+## 84. CPU presentation in platform; ax_render_soft in windows; the fallback
+
+> Amended by decision 88: every buffer busy is `AX_ERR_TIMEOUT`.
+
+**Context.** The owner asked that in a window, as the last resort, the software renderer present
+through a CPU presentation interface in platform (wl_shm on Wayland) that the renderer uses
+without knowing about Wayland. The document's fallback chain: WebGPU first, then GL (when linked),
+then software, unless the app pins one.
+
+**Decision.**
+- **`axion/platform/ax_present_cpu.h`** (internal SDK, presenter thread): `ax_surface_cpu_acquire`
+  gives a free buffer of the frame's pixel size (premultiplied, 8 bits per channel,
+  `AX_CPU_FORMAT_BGRA8`), `ax_surface_cpu_present` prepares the commit (`ax_surface_prepare_commit`:
+  the configure's acknowledgement, scale, frame callback, feedback) and commits the buffer, wholly
+  damaged; `ax_surface_cpu_release` frees the surface's buffers. Three optional operations of the
+  backend table; a backend without them reports `AX_ERR_UNSUPPORTED`.
+  - When every buffer is still held by the compositor, acquire returns `AX_ERR_TIMEOUT` (decision
+    88): it does not wait, so none was free in the zero time allowed. The frame is skipped and
+    retried at the next one; nothing is lost. `AX_ERR_OUT_OF_MEMORY` stays for memory, and the
+    first version's use of it for busy buffers read as a real failure.
+- **Wayland** (`platform/src/wayland/wl_shm_present.c`): up to four buffers per window, each a
+  memfd mapped once, its own `wl_shm_pool` and an ARGB8888 `wl_buffer` (B, G, R, A in memory on
+  little-endian hosts, premultiplied as Wayland requires). They are created through a `wl_shm`
+  proxy wrapper bound to the window's private queue, so `wl_buffer.release` arrives when the
+  presenter dispatches it, as frame callbacks do. A buffer is busy from its commit to its release;
+  a new size replaces a free buffer of another size. Window destruction frees them. `platform/`
+  used wl_shm only for cursors until now; `examples/m0_window`'s shm path stays an example.
+- **`ax_render_soft_vtbl()`** (`axion/render/ax_render_soft_surface.h`, built with the platform
+  module): the renderer interface over those buffers, with the interface's rules: nothing until
+  configured; `ONLY_IF_REQUIRED`; a configure is acknowledged only with a snapshot of its logical
+  size (`AX_FRAME_CONTENT_MISMATCH` otherwise) unless `ACCEPT_ANY_SIZE`; a frame without a snapshot
+  is the background (`AX_FRAME_CLEARED`); `wait_frame` and `wait_frames` are the platform's, paced
+  by frame callbacks. Statistics per surface: frames, time to the first frame, mismatches, sizes
+  accepted, frames skipped because every buffer was busy. Decision 48's drain does not apply:
+  shm commits do not queue in the compositor like a FIFO swapchain's.
+- **The runtime's fallback** (`runtime/src/platform.c`): with no renderer pinned
+  (`ax_rt_platform_desc.renderer` NULL) the platform presenter uses ax_render_wgpu when the gpu
+  module is built, and **ax_render_soft when it is not, or when ax_render_wgpu cannot be created**
+  (no usable GPU). The software renderer's tiles run on the runtime's job system (frame priority,
+  decision 80). `ax_render_soft_vtbl()` pins it. `ax_rt_renderer_vtbl(rt)` (any thread) tells which
+  renderer presents. `m1_nodes --renderer=soft` pins it, and `--stats` prints which one draws.
+- **Measured** (`m1_nodes`, 800 x 500 at scale 1, headless weston 15 with pixman, Release):
+  ax_render_soft presents 60 frames a second with 0 missed; Debug reaches about 21. Without a
+  Vulkan driver (`VK_DRIVER_FILES` pointing nowhere) the default chain falls back to the software
+  renderer and presents the same; with lavapipe it presents with ax_render_wgpu.
+- **Tests** (`tests/integration/wayland/test_soft_pipeline.c`, label `wayland`, headless weston,
+  no GPU): the tree presented with the software renderer and `on_presented` reporting it; a maximize
+  answered with a snapshot of the new size, without a forced acknowledgement; the fallback (the test
+  runs without a Vulkan driver); argument errors of the CPU interface. Under ASan with the rest of
+  the Wayland suites.
+
+**Status.** Implementation, pending the owner's approval.
+
+## 85. The headless host and its C testing API
+
+> Amended by decision 88: not settling (and the other timeouts) is `AX_ERR_TIMEOUT`.
+
+**Context.** "Headless host, automation and MCP": a host that runs any app without a window or a
+GPU, with virtual surfaces of any size, scale, theme and reduce-motion, deterministic by default
+(a manual clock, the cooperative single-thread scheduler, a bundled font set), real threads
+opt-in, many instances in one process, the software renderer by default or WebGPU offscreen. The
+owner asked to build it on the runtime's single-thread mode (decision 77, `ax_host_frame`) behind
+`ax_rt_presenter_vtbl`, starting from the runtime tests' fakes, without depending on platform; a C
+testing API (frames, time, `Settle()` until no transaction is pending, PNG snapshots, the IR dump,
+mirror reads); `ax_world_last_committed_seq` on the app thread; and `AX_MAX_WORLDS` public as a
+guaranteed minimum. The testing API for other languages (M2), queries by role and name (prompt 6)
+and automation and MCP (M2, M3) are out of scope.
+
+**Decision.** `headless/` (library `ax_headless`, internal SDK
+`axion/headless/ax_headless.h` for now; the bindings' testing APIs build on it in M2).
+- **An instance** owns a world, a runtime and a presenter. `ax_headless_create`:
+  - **default, deterministic:** the world's clock is a manual one (decision 67's injectable clock),
+    the runtime is single-threaded (its job system inline), and the software renderer draws
+    (`AX_HEADLESS_RENDER_SOFT`);
+  - `AX_HEADLESS_THREADS`: the runtime's scene and render threads, the real clock and a threaded
+    job system (the software renderer's tiles run on it);
+  - `AX_HEADLESS_RENDER_WGPU`: ax_render_wgpu offscreen, read back into memory; `AX_ERR_UNSUPPORTED`
+    in a build without the gpu module or on a machine without an adapter;
+  - **the font hook:** `ax_headless_desc.fonts` (NULL: the bundled set) and the reserved flag
+    `AX_HEADLESS_SYSTEM_FONTS`; nothing reads them until text arrives.
+  - The code uses no platform module and builds everywhere, the web included (tests in Node).
+- **Virtual surfaces:** `ax_headless_add_surface` creates a root node in a transaction of its own and
+  attaches it (at most `AX_RUNTIME_MAX_SURFACES`) with a logical size, a scale (fractional allowed),
+  a theme and reduce-motion. Theme and reduce-motion are kept and read back
+  (`ax_headless_get_surface_info`); styles and animations consume them when they exist.
+  `ax_headless_resize` is a window resize.
+- **The presenter** (`ax_rt_presenter_vtbl`, after the runtime tests' fakes): at each frame it
+  draws the newest snapshot, when new, into the surface's pixels at its pixel size, never stretched;
+  swaps them under a lock with the pixels the app thread reads; keeps the snapshot serialized
+  (`ax_ir_serialize`) for dumps; and reports it shown (`ax_rt_snapshot_presented`, so
+  `ax_txn_on_presented` works). Surface settings reach it through the surface's "native" handle,
+  which crosses the runtime's command ring, so the render thread never races the app thread for
+  them. With threads it paces each surface like a display (the threaded runtime tests' fake),
+  requesting each next frame.
+- **Time** (manual clock): the virtual display presents at fixed vsyncs, `refresh_ns` apart (default
+  1/60 s) from `start_time_ns` (default 1 s). `ax_headless_step(n)` runs n frames on every surface
+  (`ax_host_frame` at the next vsync, the clock moving to it); a frame applies what was committed up
+  to one refresh before it (decision 77's latch point). `ax_headless_advance_time(ns)` runs a frame
+  at each vsync the interval reaches and keeps the phase. With threads, step waits for frames and
+  advance sleeps.
+- **`ax_headless_settle(max_frames)`** runs frames until `ax_world_last_applied_seq` reaches
+  `ax_world_last_committed_seq` (new in `ax_txn.h`, stable, thread: app, and in the IDL) and every
+  surface drew the newest snapshot recorded for it; 0 frames when nothing is pending;
+  `AX_ERR_TIMEOUT` when it does not settle within max_frames (decision 88). With threads,
+  `ax_headless_step` also returns `AX_ERR_TIMEOUT` when the frames do not come, and the GPU
+  renderer when its pipeline or a read-back does not complete in 30 s. Animations join the condition
+  when they exist.
+- **Snapshots:** `ax_headless_capture` (a copy, premultiplied RGBA8), `ax_headless_write_png`
+  (decision 82's codec), `ax_headless_dump_ir` (the text dump) and `ax_headless_save_ir` (the
+  binary form). Mirror reads are the world's own (`ax_world_mirror_sync`, `ax_mirror_*`) on
+  `ax_headless_world`.
+- **Many instances:** `AX_MAX_WORLDS` is now public in `ax_world.h` (and `max_worlds` in the IDL)
+  as a guaranteed minimum, "at least 256", not a fixed value. The runtime's handle table, which held
+  64, now holds as many as worlds (one runtime per world).
+- **Tests** (`tests/unit/headless/test_headless.c`, label `headless`, also in Node):
+  - a card UI (rounded rect, header, a turned badge, a translucent layer, a hairline) drawn after
+    settle (one or two frames) matches its golden exactly (`tests/goldens/headless/cards.png`);
+  - the manual clock: a commit shows at the next frame; the mirror shows the frame's layout and
+    values; advancing time runs a frame per vsync reached and keeps the phase;
+  - settle reports when it cannot (max 0 frames with the root's transaction pending);
+  - resizing redraws at the new size, and the IR dump and binary form follow;
+  - surface settings and argument errors;
+  - `AX_MAX_WORLDS` instances at once;
+  - eight instances on eight threads draw byte-identical pixels, equal to the golden;
+  - the threaded mode draws the same pixels as the deterministic mode;
+  - the GPU renderer offscreen, where there is one: locally (Dawn, NVIDIA) the worst channel
+    difference from the software renderer is 1/255. Its leaks are the GPU drivers' (decision 44):
+    the test keeps them loaded and uses the gpu tests' LeakSanitizer suppressions.
+  - Under ASan, TSan (3 runs) and in Node: clean. `core.txn` gains the committed sequence (aborted and
+    failed transactions take none) and `AX_MAX_WORLDS` worlds at once.
+
+**Status.** Implementation, pending the owner's approval.
+
+## 86. Images byte-identical on every platform: the CI job
+
+**Context.** The owner asked that the same headless test give byte-identical images on Linux,
+macOS, Windows and Emscripten, checked by a job that compares the artifacts as compare-coverage
+does, with core, render/soft and headless building on Windows and in the single-threaded
+Emscripten build.
+
+**Decision.**
+- **What makes it hold** (decision 81): no contraction in any AXION target, no libm transcendental
+  function (base's rotation and sRGB conversions are deterministic, so the IR built by core and the
+  tests is too), no denormals, a SIMD path with the scalar path's bits, tiles independent of the
+  thread count; and decision 82's PNG encoder, whose output depends only on the pixels, so equal
+  files mean equal pixels.
+- **The job** (`compare-determinism`, `tools/ci/compare_images.py`): the release jobs of Linux
+  (Clang, x86-64, SSE2), macOS (Clang, arm64, NEON) and Windows (MSVC, x64, SSE2), and the web job
+  (Node, SIMD128), run the tests with `AX_TEST_IMAGE_DIR`, so every image a golden test checks is
+  also written there (decision 82), and upload them (`images-<platform>`). The job requires every
+  platform's set to be the same files with the same bytes, and reports the first differing pixel
+  of a file that differs. It covers every software-renderer golden (the coverage and torture
+  scenes, group opacity, linear layers) and the headless host's card UI, which goes through
+  core's transactions, the runtime and the presenter: 16 images.
+- **Platforms:** core, render/soft and headless build on Windows (MSVC, Debug and Release) and in the
+  single-threaded Emscripten build, whose test job now includes the `render_soft` and `headless`
+  labels (tests that need threads or a GPU skip there).
+- **The web tests and the environment.** Emscripten 4.0.10 (CI's version) gives a program in Node
+  only its default environment, so the tests did not see `AX_TEST_IMAGE_DIR` and the web job
+  uploaded nothing; Emscripten 5 mirrors Node's environment (`NODE_HOST_ENV`), which is why it
+  worked on a machine with 5.0.2. `tests/harness/node_env.js`, a `--pre-js` of every web test,
+  copies `process.env` into the program's environment before `main` (only in programs that read
+  it). The web tests also link `-sNODERAWFS=1` (the host's files: goldens, artifacts) and
+  `-sALLOW_MEMORY_GROWTH=1`.
+- **One Emscripten version.** CI's is pinned in `tools/ci/emsdk-version` (4.0.10), which the
+  workflow reads and the README's web section names, so local builds can match it (the owner's
+  review: a machine with 5.0.2 hid the difference above).
+- **Measured:** CI's Linux, macOS and Windows images were identical byte for byte (16 of 16), and
+  equal to a local x86-64 build's and to the Emscripten build's in Node with both 4.0.10 and 5.0.2.
+- **TSan** now also runs the `render_soft` and `headless` labels (tiles on the job system, eight
+  instances on threads, the threaded host).
+- **Fixed in the same step:** `runtime.threads.a_blocked_app_thread_does_not_stop_frames` (decision
+  78) failed twice on the macOS ASan runner with 30 frames blocked against 33 not blocked: timed
+  waits wake late there, so the unblocked window (many 10 ms waits) lasted longer than 500 ms and
+  held more frames. The check now scales the reference to the two windows' measured lengths; the
+  slack of two frames stays.
+
+**Status.** Implementation, pending the owner's approval.
+
+## 87. Reference measurements: ax_render_soft on m1_nodes' scene
+
+**Context.** The owner asked for a reference measurement of ax_render_soft's frame time with
+m1_nodes' scene at scales 1 and 2, with one thread and with N.
+
+**Decision.** `tests/bench/bench_soft.c` (built with the tests, never a CI gate, like
+`bench_core`): m1_nodes' tree and scene driver moved to `examples/m1_nodes/m1_scene.{h,c}`, shared
+by the example and the benchmark. The benchmark records 60 frames of the animation headless
+(decision 85; 800 x 500 logical units, server decorations), then draws each snapshot 5 times with
+`ax_render_soft_draw_ir` into a BGRA8 buffer: scalar and SIMD, on the calling thread and on a job
+system of N workers with the caller helping. It reports the median and the 95th percentile per
+frame. `bench_soft [workers]`.
+
+**Measured** (Clang Release, AMD Ryzen 5 3400G, 4 cores and 8 threads, Linux; SSE2):
+
+| Path | 800 x 500 (scale 1) median / p95 | 1600 x 1000 (scale 2) median / p95 |
+| --- | --- | --- |
+| scalar, 1 thread | 8.33 / 10.60 ms | 32.05 / 35.44 ms |
+| SIMD, 1 thread | 3.10 / 3.49 ms | 12.08 / 12.99 ms |
+| scalar, 4 workers + caller | 2.67 / 3.10 ms | 10.35 / 11.14 ms |
+| SIMD, 4 workers + caller | 1.07 / 1.40 ms | 4.02 / 4.67 ms |
+| scalar, 7 workers + caller | 2.25 / 2.69 ms | 8.01 / 9.21 ms |
+| SIMD, 7 workers + caller | 0.93 / 1.10 ms | 3.38 / 4.03 ms |
+
+- The SIMD path is 2.7 times the scalar one; four workers add about 3 times more (the scene's
+  64 x 64 tiles are uneven: much of the window is background). Seven workers gain little over four
+  on a 4-core CPU with SMT.
+- In a window (decision 84), m1_nodes presents 60 frames a second with 0 missed with the software
+  renderer at 800 x 500 (Release); a 1600 x 1000 window at scale 2 fits a 60 Hz frame on this
+  machine with threads (4 ms), and on one thread only without SIMD to spare (12 ms).
+- Not optimized yet, and noted for when it matters: every frame redraws every tile (the IR's damage
+  is always full), and each item is tested against every tile (no binning).
+
+**Status.** Implementation, pending the owner's approval.
+
+## 88. `AX_ERR_TIMEOUT` and `AX_ERR_IO`
+
+> Amends decisions 78, 82, 84 and 85.
+
+**Context.** Reviewing PR #9, the owner asked for two codes in the stable ABI, as decision 61 added
+`AX_ERR_INVALID_ARGUMENT`, and for their use where M1's code reported a timeout or a file error
+with another code: `AX_ERR_UNSUPPORTED` reads as "this build cannot do it",
+`AX_ERR_INVALID_ARGUMENT` as "this input is wrong", and `AX_ERR_OUT_OF_MEMORY` as a real failure.
+
+**Decision.**
+- **Appended to `ax_result`** (values are fixed forever, so they take the next numbers), with their
+  names in `ax_result_name`:
+  - `AX_ERR_TIMEOUT = 8`: what was waited for did not happen in time, or a resource is not free
+    now; trying again may succeed;
+  - `AX_ERR_IO = 9`: a file or stream could not be opened, read or written; `ax_last_error()` names
+    it and gives the system's reason.
+- **The IDL:** `bindings/idl/base.axidl` (new) describes base's `result` enum, which `core.axidl`
+  already imports; the rest of base's stable ABI (str, allocator, handle, the version) joins it
+  when the generator needs it.
+- **Where they are used now:**
+  - `ax_rt_remove_surface` and `ax_runtime_remove_window`: the threads did not confirm within 1 s
+    (`AX_ERR_TIMEOUT`, was `AX_ERR_UNSUPPORTED`; decision 78);
+  - `ax_headless_settle`: not settled within max_frames; with threads, `ax_headless_step` when the
+    frames do not come; the headless GPU renderer when its pipeline or a read-back does not
+    complete in 30 s (`AX_ERR_TIMEOUT`; decision 85);
+  - `ax_png_read_file` and `ax_png_write_file`: the file cannot be opened, read or written
+    (`AX_ERR_IO`, was `AX_ERR_INVALID_ARGUMENT`; decision 82);
+  - `ax_surface_cpu_acquire` with every buffer still held by the compositor (`AX_ERR_TIMEOUT`, was
+    `AX_ERR_OUT_OF_MEMORY`; decision 84). The owner offered a dedicated "skip this frame" status
+    instead; a code that says "not free now, try again" says exactly that without a second
+    channel, and the call simply does not wait (a zero timeout), so the renderer skips the frame.
+- **Unchanged:** `ax_world_wait_event` still returns `AX_OK` with no event when its timeout passes
+  (waiting without an event is its normal outcome, not a failure); `AX_ERR_UNSUPPORTED` stays where
+  a build or machine cannot do something (no threads, no GPU, no CPU presentation in a backend).
+- **Tests:** `base.types` pins both values and names; the removal that times out, settle with no
+  frames allowed, and reading or writing a PNG in a directory that does not exist expect the new
+  codes.
+
+**Status.** Implementation, pending the owner's approval (the owner asked for the codes and their
+uses).
+

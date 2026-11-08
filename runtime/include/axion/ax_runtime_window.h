@@ -44,7 +44,7 @@ AX_API ax_result ax_runtime_add_window(ax_runtime runtime, ax_window window, ax_
  * threads have let the window go, at most 1 s. The root node stays.
  * Errors:
  *   - AX_ERR_INVALID_HANDLE: invalid runtime; AX_ERR_INVALID_ARGUMENT: the window was not added;
- *   - AX_ERR_UNSUPPORTED: the threads did not confirm within 1 s. The window is then still in
+ *   - AX_ERR_TIMEOUT: the threads did not confirm within 1 s. The window is then still in
  *     use (the render thread may still present it) and must not be destroyed. Call again until
  *     AX_OK; a retry queues nothing new, it only waits again.
  * thread: app

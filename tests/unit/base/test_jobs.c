@@ -623,3 +623,318 @@ AX_TEST(stress_several_submitters)
     }
     ax_jobs_destroy(js);
 }
+
+/* ---- Priorities (decision 80) ---------------------------------------------------------------- */
+
+/* A frame job that keeps one worker busy until `open` is set. */
+typedef struct gate {
+    ax_atomic_u32 open;
+    ax_atomic_u32 entered;
+} gate;
+
+static void gate_job(void *arg)
+{
+    gate *g = (gate *)arg;
+    ax_atomic_store_u32(&g->entered, 1, AX_MO_RELEASE);
+    while (ax_atomic_load_u32(&g->open, AX_MO_ACQUIRE) == 0) {
+        ax_thread_yield();
+    }
+}
+
+static void close_worker_with(ax_job_system *js, gate *g, ax_job_counter *done)
+{
+    ax_job job;
+    ax_atomic_init_u32(&g->open, 0);
+    ax_atomic_init_u32(&g->entered, 0);
+    job.fn = gate_job;
+    job.arg = g;
+    ax_jobs_submit(js, &job, 1, done);
+    while (ax_atomic_load_u32(&g->entered, AX_MO_ACQUIRE) == 0) {
+        ax_thread_yield();
+    }
+}
+
+/* Records the order jobs ran in, and whether a thread that is not a worker ran them. */
+typedef struct prio_log {
+    ax_job_system *js;
+    ax_atomic_u32 next;
+    ax_atomic_u32 frame_run, background_run;
+    ax_atomic_u32 background_on_non_worker;
+    uint32_t order[64]; /* order[job index] = position */
+} prio_log;
+
+typedef struct prio_arg {
+    prio_log *log;
+    uint32_t index;
+    bool background;
+} prio_arg;
+
+static void prio_job(void *arg)
+{
+    prio_arg *a = (prio_arg *)arg;
+    a->log->order[a->index] = ax_atomic_fetch_add_u32(&a->log->next, 1, AX_MO_RELAXED);
+    if (a->background) {
+        ax_atomic_fetch_add_u32(&a->log->background_run, 1, AX_MO_RELAXED);
+        if (ax_jobs_current_worker(a->log->js) == UINT32_MAX) {
+            ax_atomic_fetch_add_u32(&a->log->background_on_non_worker, 1, AX_MO_RELAXED);
+        }
+    } else {
+        ax_atomic_fetch_add_u32(&a->log->frame_run, 1, AX_MO_RELAXED);
+    }
+}
+
+static void prio_log_init(prio_log *log, ax_job_system *js)
+{
+    memset(log, 0, sizeof *log);
+    log->js = js;
+    ax_atomic_init_u32(&log->next, 0);
+    ax_atomic_init_u32(&log->frame_run, 0);
+    ax_atomic_init_u32(&log->background_run, 0);
+    ax_atomic_init_u32(&log->background_on_non_worker, 0);
+}
+
+static void make_prio_jobs(prio_log *log, prio_arg *args, ax_job *jobs, uint32_t first,
+                           uint32_t count, bool background)
+{
+    uint32_t i;
+    for (i = 0; i < count; ++i) {
+        args[i].log = log;
+        args[i].index = first + i;
+        args[i].background = background;
+        jobs[i].fn = prio_job;
+        jobs[i].arg = &args[i];
+    }
+}
+
+AX_TEST(a_thread_that_is_not_a_worker_runs_only_frame_jobs_while_waiting)
+{
+    ax_job_system *js;
+    gate g;
+    ax_job_counter gate_done = AX_JOB_COUNTER_INIT;
+    ax_job_counter frame_done = AX_JOB_COUNTER_INIT;
+    ax_job_counter background_done = AX_JOB_COUNTER_INIT;
+    prio_log log;
+    prio_arg bg_args[8], frame_args[16];
+    ax_job bg_jobs[8], frame_jobs[16];
+    ax_jobs_stats stats;
+    REQUIRE_THREADS();
+    js = make_system(AX_JOBS_THREADED, 1);
+    AX_REQUIRE(js != NULL);
+    prio_log_init(&log, js);
+
+    /* The only worker is busy, so this thread finds both kinds of job queued while it waits. */
+    close_worker_with(js, &g, &gate_done);
+    make_prio_jobs(&log, bg_args, bg_jobs, 0, 8, true);
+    make_prio_jobs(&log, frame_args, frame_jobs, 8, 16, false);
+    ax_jobs_submit_background(js, bg_jobs, 8, &background_done);
+    ax_jobs_submit(js, frame_jobs, 16, &frame_done);
+    ax_jobs_wait(js, &frame_done);
+
+    AX_CHECK_EQ_U(ax_atomic_load_u32(&log.frame_run, AX_MO_RELAXED), 16);
+    AX_CHECK_EQ_U(ax_atomic_load_u32(&log.background_run, AX_MO_RELAXED), 0);
+
+    /* The worker runs them once it is free. */
+    ax_atomic_store_u32(&g.open, 1, AX_MO_RELEASE);
+    ax_jobs_wait(js, &gate_done);
+    while (ax_atomic_load_u32(&background_done.pending, AX_MO_ACQUIRE) != 0) {
+        ax_thread_yield();
+    }
+    AX_CHECK_EQ_U(ax_atomic_load_u32(&log.background_run, AX_MO_RELAXED), 8);
+    AX_CHECK_EQ_U(ax_atomic_load_u32(&log.background_on_non_worker, AX_MO_RELAXED), 0);
+    ax_jobs_get_stats(js, &stats);
+    AX_CHECK_EQ_U(stats.background_run, 8);
+    ax_jobs_destroy(js);
+}
+
+/* A frame job on a worker queues background jobs in its own deque, then frame children, and
+ * waits: it must run its children and never the background jobs beside them. */
+typedef struct frame_parent {
+    ax_job_system *js;
+    prio_log log;
+    prio_arg bg_args[8], child_args[16];
+    ax_job bg_jobs[8], child_jobs[16];
+    ax_job_counter background_done;
+    uint32_t background_seen; /* background jobs run when the wait returned */
+    bool on_worker;
+    gate *other_worker;
+} frame_parent;
+
+static void frame_parent_job(void *arg)
+{
+    frame_parent *f = (frame_parent *)arg;
+    ax_job_counter children = AX_JOB_COUNTER_INIT;
+    f->on_worker = ax_jobs_current_worker(f->js) != UINT32_MAX;
+    ax_jobs_submit_background(f->js, f->bg_jobs, 8, &f->background_done);
+    ax_jobs_submit(f->js, f->child_jobs, 16, &children);
+    ax_jobs_wait(f->js, &children);
+    f->background_seen = ax_atomic_load_u32(&f->log.background_run, AX_MO_RELAXED);
+    ax_atomic_store_u32(&f->other_worker->open, 1, AX_MO_RELEASE);
+}
+
+AX_TEST(a_frame_job_waits_without_running_background_jobs)
+{
+    ax_job_system *js;
+    gate g;
+    ax_job_counter gate_done = AX_JOB_COUNTER_INIT;
+    ax_job_counter parent_done = AX_JOB_COUNTER_INIT;
+    static frame_parent f;
+    ax_job job;
+    REQUIRE_THREADS();
+    js = make_system(AX_JOBS_THREADED, 2);
+    AX_REQUIRE(js != NULL);
+    memset(&f, 0, sizeof f);
+    f.js = js;
+    prio_log_init(&f.log, js);
+    ax_atomic_init_u32(&f.background_done.pending, 0);
+    ax_atomic_init_u32(&f.background_done.priority, 0);
+    make_prio_jobs(&f.log, f.bg_args, f.bg_jobs, 0, 8, true);
+    make_prio_jobs(&f.log, f.child_args, f.child_jobs, 8, 16, false);
+    f.other_worker = &g;
+
+    close_worker_with(js, &g, &gate_done); /* the other worker cannot take anything */
+    job.fn = frame_parent_job;
+    job.arg = &f;
+    ax_jobs_submit(js, &job, 1, &parent_done);
+    /* Poll, so the parent runs on the free worker (this thread could take it from the injection
+     * queue otherwise) and only that worker can run what the parent queues. */
+    while (ax_atomic_load_u32(&parent_done.pending, AX_MO_ACQUIRE) != 0) {
+        ax_thread_yield();
+    }
+    ax_jobs_wait(js, &gate_done);
+    AX_CHECK(f.on_worker);
+    AX_CHECK_EQ_U(f.background_seen, 0);
+    AX_CHECK_EQ_U(ax_atomic_load_u32(&f.log.frame_run, AX_MO_RELAXED), 16);
+    while (ax_atomic_load_u32(&f.background_done.pending, AX_MO_ACQUIRE) != 0) {
+        ax_thread_yield();
+    }
+    AX_CHECK_EQ_U(ax_atomic_load_u32(&f.log.background_run, AX_MO_RELAXED), 8);
+    AX_CHECK_EQ_U(ax_atomic_load_u32(&f.log.background_on_non_worker, AX_MO_RELAXED), 0);
+    ax_jobs_destroy(js);
+}
+
+AX_TEST(idle_workers_run_frame_jobs_before_background_jobs)
+{
+    ax_job_system *js;
+    gate g;
+    ax_job_counter gate_done = AX_JOB_COUNTER_INIT;
+    ax_job_counter frame_done = AX_JOB_COUNTER_INIT;
+    ax_job_counter background_done = AX_JOB_COUNTER_INIT;
+    prio_log log;
+    prio_arg bg_args[6], frame_args[6];
+    ax_job bg_jobs[6], frame_jobs[6];
+    uint32_t i, j;
+    REQUIRE_THREADS();
+    js = make_system(AX_JOBS_THREADED, 1);
+    AX_REQUIRE(js != NULL);
+    prio_log_init(&log, js);
+    close_worker_with(js, &g, &gate_done);
+    /* Background first in submission order; the worker must still take the frame jobs first. */
+    make_prio_jobs(&log, bg_args, bg_jobs, 0, 6, true);
+    make_prio_jobs(&log, frame_args, frame_jobs, 6, 6, false);
+    ax_jobs_submit_background(js, bg_jobs, 6, &background_done);
+    ax_jobs_submit(js, frame_jobs, 6, &frame_done);
+    ax_atomic_store_u32(&g.open, 1, AX_MO_RELEASE);
+    /* Poll instead of waiting, so this thread runs nothing itself. */
+    while (ax_atomic_load_u32(&frame_done.pending, AX_MO_ACQUIRE) != 0 ||
+           ax_atomic_load_u32(&background_done.pending, AX_MO_ACQUIRE) != 0 ||
+           ax_atomic_load_u32(&gate_done.pending, AX_MO_ACQUIRE) != 0) {
+        ax_thread_yield();
+    }
+    for (i = 6; i < 12; ++i) {
+        for (j = 0; j < 6; ++j) {
+            AX_CHECK(log.order[i] < log.order[j]);
+        }
+    }
+    ax_jobs_destroy(js);
+}
+
+/* A background job may wait for frame jobs, and for background jobs. */
+typedef struct background_parent {
+    ax_job_system *js;
+    prio_log log;
+    prio_arg args[24];
+    ax_job jobs[24];
+} background_parent;
+
+static void background_parent_job(void *arg)
+{
+    background_parent *b = (background_parent *)arg;
+    ax_job_counter frame_children = AX_JOB_COUNTER_INIT;
+    ax_job_counter background_children = AX_JOB_COUNTER_INIT;
+    ax_jobs_submit(b->js, b->jobs, 12, &frame_children);
+    ax_jobs_submit_background(b->js, b->jobs + 12, 12, &background_children);
+    ax_jobs_wait(b->js, &frame_children);
+    ax_jobs_wait(b->js, &background_children);
+}
+
+AX_TEST(a_background_job_waits_for_frame_and_background_jobs)
+{
+    ax_job_system *js;
+    static background_parent b;
+    ax_job job;
+    ax_job_counter done = AX_JOB_COUNTER_INIT;
+    REQUIRE_THREADS();
+    js = make_system(AX_JOBS_THREADED, 2);
+    AX_REQUIRE(js != NULL);
+    memset(&b, 0, sizeof b);
+    b.js = js;
+    prio_log_init(&b.log, js);
+    make_prio_jobs(&b.log, b.args, b.jobs, 0, 12, false);
+    make_prio_jobs(&b.log, b.args + 12, b.jobs + 12, 12, 12, true);
+    job.fn = background_parent_job;
+    job.arg = &b;
+    ax_jobs_submit_background(js, &job, 1, &done);
+    ax_jobs_wait_idle(js); /* not a frame context: it may run background jobs */
+    AX_CHECK_EQ_U(ax_atomic_load_u32(&b.log.frame_run, AX_MO_RELAXED), 12);
+    AX_CHECK_EQ_U(ax_atomic_load_u32(&b.log.background_run, AX_MO_RELAXED), 12);
+    ax_jobs_destroy(js);
+}
+
+AX_TEST(inline_mode_runs_background_jobs_at_once)
+{
+    ax_job_system *js = make_system(AX_JOBS_INLINE, 0);
+    prio_log log;
+    prio_arg args[4];
+    ax_job jobs[4];
+    ax_job_counter done = AX_JOB_COUNTER_INIT;
+    ax_jobs_stats stats;
+    AX_REQUIRE(js != NULL);
+    prio_log_init(&log, js);
+    make_prio_jobs(&log, args, jobs, 0, 4, true);
+    ax_jobs_submit_background(js, jobs, 4, &done);
+    AX_CHECK_EQ_U(ax_atomic_load_u32(&log.background_run, AX_MO_RELAXED), 4);
+    AX_CHECK_EQ_U(ax_atomic_load_u32(&done.pending, AX_MO_RELAXED), 0);
+    ax_jobs_get_stats(js, &stats);
+    AX_CHECK_EQ_U(stats.background_run, 4);
+    ax_jobs_destroy(js);
+}
+
+/* Frame work never waits for background work: with every worker inside frame jobs, nothing
+ * would run it. The check happens whatever the timing, inline mode included. */
+AX_DEATH_TEST(waiting_on_a_background_counter_from_a_frame_context_asserts)
+{
+    ax_job_system *js = make_system(AX_JOBS_INLINE, 0);
+    prio_log log;
+    prio_arg arg;
+    ax_job job;
+    ax_job_counter done = AX_JOB_COUNTER_INIT;
+    prio_log_init(&log, js);
+    make_prio_jobs(&log, &arg, &job, 0, 1, true);
+    ax_jobs_submit_background(js, &job, 1, &done);
+    ax_jobs_wait(js, &done); /* this thread is not a worker: a frame context */
+}
+
+AX_DEATH_TEST(a_counter_holds_jobs_of_one_priority)
+{
+    ax_job_system *js = make_system(AX_JOBS_INLINE, 0);
+    prio_log log;
+    prio_arg arg;
+    ax_job job;
+    ax_job_counter c = AX_JOB_COUNTER_INIT;
+    prio_log_init(&log, js);
+    make_prio_jobs(&log, &arg, &job, 0, 1, false);
+    /* Background jobs still pending on the counter (as if queued). */
+    ax_atomic_store_u32(&c.priority, AX_JOB_BACKGROUND, AX_MO_RELAXED);
+    ax_atomic_store_u32(&c.pending, 1, AX_MO_RELAXED);
+    ax_jobs_submit(js, &job, 1, &c);
+}

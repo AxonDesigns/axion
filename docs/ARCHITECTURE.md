@@ -2,6 +2,8 @@
 
 Nov 6, 2026 · @Brayan
 
+> **Untested platforms: macOS, iOS and Windows.** There is no hardware available to test on these three targets. Their backends (AppKit, UIKit, Win32), their GPU paths (Metal, D3D12) and every feature that depends on them, HMR over USB to iPhones included, are designed from platform documentation and are not verified on real devices. Treat anything this document says about them as untested until hardware is available; development and measurements happen on Linux.
+
 ## Goals, non-goals and principles
 
 AXION (`ax_` prefix in C, `Axion` namespace in managed languages) is a C11 UI runtime built around a stable C ABI; every renderer, platform backend and language binding is a module on top of that ABI, so any of them can be swapped without touching the core.
@@ -533,7 +535,7 @@ import { Ring } from "./ring.axgl";
 5. Emit reflection (properties, types, defaults, ranges, units, variants) for the bindings, devtools and the MCP server.
 6. Emit a source map, so every error and warning, including those from Tint, points at the original `.axgl` line.
 
-In dev builds `axglc` runs inside the app for HMR. Release builds ship precompiled WGSL, GLSL and reflection, with no compiler inside, unless the app opts into runtime compilation.
+In dev builds `axglc` runs inside the app for HMR on desktop and phones; on the web the dev server compiles and pushes WGSL instead (see Hot module replacement). Release builds ship precompiled WGSL, GLSL and reflection, with no compiler inside, unless the app opts into runtime compilation.
 
 **Tooling.** A language server gives completion, hover docs, go-to-definition and live diagnostics, with a VS Code extension and syntax highlighting for other editors. Devtools show each shader's properties as live sliders, and MCP agents can read the reflection to set or animate them.
 
@@ -1159,6 +1161,26 @@ HMR is a first-class subsystem: `axion dev` runs a dev server that watches sourc
 
 **Devices.** `axion dev --target android|ios|web` installs a dev build and connects it; several devices can be connected at once and all receive each update. Embedded hosts enable the HMR client explicitly in their host configuration.
 
+**Transport per target.** Every connection carries a per-session token that `axion dev` prints and passes to the dev builds it installs, because a dev build accepts code over that socket.
+
+| Target | Primary link | Fallback |
+| --- | --- | --- |
+| Desktop | Loopback WebSocket | None needed |
+| Android | `adb reverse` maps the dev server's port onto the device, so the client dials `localhost` | Local network, found through mDNS |
+| iOS device | USB through usbmuxd: `axion dev` opens the tunnel itself (as `iproxy` does), so the client dials `localhost` | Local network: the dev server advertises `_axion-dev._tcp` over Bonjour; dev builds only carry `NSLocalNetworkUsageDescription` and `NSBonjourServices` in their Info.plist. Last resort: a QR code with host, port and token |
+| iOS simulator | The host's loopback | None needed |
+| Web | Same origin as the page the dev server serves | None needed |
+
+**Lifecycle on phones.** The client closes its socket when the app goes to the background and reconnects when it returns. On reconnect it sends the last update id it applied per module, and the dev server replays only what it missed, or sends a full resync if its history no longer reaches that far. If the OS killed the app, a dev build cold-starts from the dev server's current sources, not the ones bundled at install, so it never boots into stale code.
+
+**When a restart can't be avoided.** Some changes need more than a transaction: the AXION core, a native plugin on mobile or the web, a C# edit the runtime rejects, or a crash in the new code. Before restarting, the client serializes a state snapshot with the same identity rules as above: signal state by component type, position and key, plus router stacks, scroll anchors, focus and text fields. It sends the snapshot to the dev server, which holds it in memory and hands it back to the restarted app, which restores it before its first frame. This works the same on every target, so a full page reload on the web lands on the same screen with the same state. Snapshots are capped in size, and a snapshot from an incompatible build id is discarded with a notice in the overlay.
+
+**Web specifics.**
+
+- Restarting the app thread has no meaning under the cooperative single-thread scheduler (no COOP/COEP). There, a rejected update falls back to a page reload with the snapshot above. With threads, the app thread's worker is torn down at a frame boundary and recreated.
+- `axglc` does not ship in the web dev bundle. The dev server compiles AXGL with the host's `axglc` and pushes WGSL plus reflection, so the page's WASM stays the size of a release build. Desktop and phones keep the in-app compiler.
+- The error overlay draws in the canvas like on every other target and also logs to the browser console, with source maps so the DevTools location matches the original file.
+
 **Release builds.** The HMR client is compiled out (`AX_ENABLE_HMR=0`), so no socket and no code-loading path ship in production.
 
 ## Plugins
@@ -1321,7 +1343,7 @@ The server also exposes MCP resources: the API reference generated from the IDL 
 
 ## Build and export targets
 
-CMake is the one canonical build for the C core and native dependencies, wrapped by an `axion` command-line tool that creates, runs, hot-reloads and exports apps for each target without users touching CMake, Gradle or Xcode.
+CMake is the one canonical build for the C core and native dependencies, wrapped by an `axion` command-line tool that creates, runs, hot-reloads and exports apps for each target without users touching CMake, Gradle or Xcode. The Windows, macOS and iOS rows are untested: there is no hardware to run them on (see the note at the top).
 
 | Target | Windowing backend | GPU via WebGPU | Toolchain | Package |
 | --- | --- | --- | --- | --- |
@@ -1378,8 +1400,8 @@ axion/
 2. **M1, the thread split**: node store, transactions, the app/scene/render pipeline, flex layout, implicit animations, Latin text (shaping plus atlas), the software renderer for golden tests, the headless host, and the accessibility tree, with AccessKit's iOS and web coverage confirmed. Exit: an app thread blocked for 500 ms does not drop animation frames. Carried over from M0: the job system; resizing at 260 Hz within 1 missed vblank a second (issue #2); the blend-space decision, taken with text (issue #4); and re-measuring the resize handshake's bound with real layout and text. Progress: the node store and transactions (PR #6, decisions 60–71) and the thread split (PR #8, decisions 74–79) are done. Pending before M2: zero frames at rest, so a window presents only while the scene has new content or something animates (decision 78).
 3. **M2, interaction**: pointer and keyboard input, gesture arena, the scroll engine (wheel smoothing, physics presets, overscroll) and virtualized lists, grid layout (the CSS Grid subset of the layout engine, as a second protocol beside M1's flex), the first headless components, the C# binding, HMR for C# and stylesheets, the automation protocol with the C# testing API, and the accessibility bridge on the first platform. Exit: a styled settings screen built entirely in C# and edited live without restarting, and fully usable with a screen reader and keyboard.
 4. **M3, depth**: full text (bidi, fallback, emoji, IME, TextField), AXGL with fill and backdrop shaders, AXGL scroll physics, SVG, the full windowing API (custom chrome, hit-test regions, system backdrops, multi-window, and layer surfaces with the Wayland pieces they depend on: `wl_output` tracking to choose an output, and `xdg_popup` for menus from a layer surface through `zwlr_layer_surface_v1.get_popup`), accessibility bridges on all desktop platforms, the plugin system with the first-party platform-services plugin, native drag and drop within and between windows and apps (this milestone builds the transient overlay window that M4's cross-window heroes reuse), and the MCP server. Exit: a chat app with mixed-script text and frosted panels.
-5. **M4, motion and reach**: layout animations, navigator with deep links and URL schemes, heroes, view transitions, Lottie playback; Android and iOS ports, each shipping with its accessibility bridge. Exit: the gallery-to-detail hero demo running on phones with an interactive back gesture.
-6. **M5, breadth**: 3D PBR, user compute, the web target with the WebGL2 renderer, TS/TSX, Lua and Python bindings with HMR, devtools, and the export tool for all six targets.
+5. **M4, motion and reach**: layout animations, navigator with deep links and URL schemes, heroes, view transitions, Lottie playback; Android and iOS ports, each shipping with its accessibility bridge. Exit: the gallery-to-detail hero demo running on phones with an interactive back gesture, and the C# settings screen from M2 edited live on an Android and an iOS device over USB, keeping its screen and state, including across a backgrounding and a forced restart.
+6. **M5, breadth**: 3D PBR, user compute, the web target with the WebGL2 renderer, TS/TSX, Lua and Python bindings with HMR, devtools, and the export tool for all six targets. Exit includes HMR on the web for TS/TSX, styles, shaders and assets, with a full page reload restoring the same screen and state.
 
 Implementation decisions and their measurements are logged in `docs/decisions.md` in the AxonDesigns/axion repository; this document records the architecture they implement.
 

@@ -146,6 +146,11 @@ AX_API bool ax_world_poll_txn_error(ax_world world, ax_txn_error *out, uint32_t 
  * app */
 AX_API uint64_t ax_world_last_applied_seq(ax_world world);
 
+/* Sequence number of the newest transaction committed (0: none). Every transaction up to it has
+ * been applied or rejected once ax_world_last_applied_seq reaches it (the headless host's
+ * settle). thread: app */
+AX_API uint64_t ax_world_last_committed_seq(ax_world world);
+
 /* ---- When a change is on screen -------------------------------------------------------------- */
 
 typedef enum ax_presented_status {

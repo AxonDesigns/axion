@@ -2,10 +2,11 @@
  * Copyright 2026 Axon Works
  * SPDX-License-Identifier: Apache-2.0
  *
- * A CPU reference for the coverage tests: draws a Render IR snapshot's rects and rounded rects by
+ * A supersampled CPU reference: draws a Render IR snapshot's rects and rounded rects by
  * supersampling each pixel's exact area coverage, and composites them in sRGB space with
- * premultiplied alpha, as the renderers must. Provisional, until ax_render_soft (M1) becomes the
- * reference every GPU renderer is tested against (decision 56).
+ * premultiplied alpha. It was the GPU renderer's provisional reference (decision 56); since
+ * ax_render_soft became the reference (decision 81) it tests the software renderer itself.
+ * Clipped layers are skipped and layer opacity multiplies each item, as in M0's renderer.
  */
 #ifndef AXT_COVERAGE_REFERENCE_H
 #define AXT_COVERAGE_REFERENCE_H

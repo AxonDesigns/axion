@@ -359,6 +359,7 @@ AX_TEST(a_blocked_app_thread_does_not_stop_frames)
     uint32_t s;
     uint64_t frames0, shown0, late0, frames, shown, late;
     uint64_t ref_frames, ref_shown, ref_late;
+    uint64_t t0, ref_ns, blocked_ns, expected_frames, expected_shown;
     REQUIRE_THREADS();
     display_init(&d, 16666667u, 16666667u);
     AX_REQUIRE(ax_world_create(NULL, &w) == AX_OK);
@@ -378,7 +379,9 @@ AX_TEST(a_blocked_app_thread_does_not_stop_frames)
     ref_frames = ax_atomic_load_u64(&d.frames[s], AX_MO_RELAXED);
     ref_shown = ax_atomic_load_u64(&d.shown[s], AX_MO_RELAXED);
     ref_late = ax_atomic_load_u64(&d.late[s], AX_MO_RELAXED);
+    t0 = ax_time_monotonic_ns();
     idle_for(w, 500 * MS);
+    ref_ns = ax_time_monotonic_ns() - t0;
     ref_frames = ax_atomic_load_u64(&d.frames[s], AX_MO_RELAXED) - ref_frames;
     ref_shown = ax_atomic_load_u64(&d.shown[s], AX_MO_RELAXED) - ref_shown;
     ref_late = ax_atomic_load_u64(&d.late[s], AX_MO_RELAXED) - ref_late;
@@ -387,22 +390,28 @@ AX_TEST(a_blocked_app_thread_does_not_stop_frames)
     frames0 = ax_atomic_load_u64(&d.frames[s], AX_MO_RELAXED);
     shown0 = ax_atomic_load_u64(&d.shown[s], AX_MO_RELAXED);
     late0 = ax_atomic_load_u64(&d.late[s], AX_MO_RELAXED);
+    t0 = ax_time_monotonic_ns();
     sleep_for(500 * MS);
+    blocked_ns = ax_time_monotonic_ns() - t0;
     frames = ax_atomic_load_u64(&d.frames[s], AX_MO_RELAXED) - frames0;
     shown = ax_atomic_load_u64(&d.shown[s], AX_MO_RELAXED) - shown0;
     late = ax_atomic_load_u64(&d.late[s], AX_MO_RELAXED) - late0;
-    printf("500 ms: blocked: %llu frames, %llu new snapshots, %llu late; not blocked: %llu, %llu, "
-           "%llu\n",
-           (unsigned long long)frames, (unsigned long long)shown, (unsigned long long)late,
-           (unsigned long long)ref_frames, (unsigned long long)ref_shown,
-           (unsigned long long)ref_late);
-    /* Every frame the unblocked window had, each with a new snapshot from the scene. Relative,
-     * with two frames of slack at the windows' edges (a late frame is followed by one that
-     * catches up, which may fall in either window); a block that held the pipeline back would lose
-     * the whole window, about 30 frames. */
+    printf("blocked %.1f ms: %llu frames, %llu new snapshots, %llu late; not blocked %.1f ms: "
+           "%llu, %llu, %llu\n",
+           (double)blocked_ns / 1e6, (unsigned long long)frames, (unsigned long long)shown,
+           (unsigned long long)late, (double)ref_ns / 1e6, (unsigned long long)ref_frames,
+           (unsigned long long)ref_shown, (unsigned long long)ref_late);
+    /* Every frame the unblocked window had, each with a new snapshot from the scene, scaled to
+     * the windows' measured lengths: timed waits wake late on macOS runners, so the unblocked
+     * window (many 10 ms waits) can last 10% longer than the blocked one (one wait) and hold
+     * proportionally more frames. Two frames of slack at the windows' edges (a late frame is
+     * followed by one that catches up, which may fall in either window); a block that held the
+     * pipeline back would lose the whole window, about 30 frames. */
+    expected_frames = ref_frames * blocked_ns / ref_ns;
+    expected_shown = ref_shown * blocked_ns / ref_ns;
     AX_CHECK(ref_frames >= 15);
-    AX_CHECK(frames + 2u >= ref_frames);
-    AX_CHECK(shown + 2u >= ref_shown);
+    AX_CHECK(frames + 2u >= expected_frames);
+    AX_CHECK(shown + 2u >= expected_shown);
     AX_CHECK(late <= ref_late + 1u);
     AX_CHECK_RESULT(ax_runtime_destroy(rt), AX_OK);
     AX_CHECK_RESULT(ax_world_destroy(w), AX_OK);
@@ -479,7 +488,7 @@ AX_TEST(a_removal_that_times_out_can_be_retried)
 
     ax_atomic_store_u64(&d.detach_stall_ns, 1500 * MS, AX_MO_RELEASE);
     first = ax_rt_remove_surface(rt, s);
-    AX_CHECK_RESULT(first, AX_ERR_UNSUPPORTED);
+    AX_CHECK_RESULT(first, AX_ERR_TIMEOUT);
     AX_CHECK_EQ_U(ax_rt_surface_of_root(rt, root), s); /* still attached */
     AX_CHECK_RESULT(ax_rt_remove_surface(rt, s), AX_OK);
     AX_CHECK_EQ_U(ax_rt_surface_of_root(rt, root), UINT32_MAX);

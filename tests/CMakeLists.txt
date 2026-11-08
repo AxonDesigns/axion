@@ -83,6 +83,15 @@ int main(int argc, char **argv)
     add_executable(${_exe} "${_src}" "${_main}")
     target_link_libraries(${_exe} PRIVATE ax_test_harness ax_base)
     ax_target_defaults(${_exe})
+    if(EMSCRIPTEN)
+        # Tests in Node: a heap that grows past Emscripten's default 16 MB, and the host's file
+        # system (goldens, artifacts) instead of an in-memory one, with the host's environment
+        # (harness/node_env.js).
+        target_link_options(${_exe} PRIVATE "-sALLOW_MEMORY_GROWTH=1" "-sNODERAWFS=1"
+            "--pre-js=${PROJECT_SOURCE_DIR}/tests/harness/node_env.js")
+        set_property(TARGET ${_exe} APPEND PROPERTY LINK_DEPENDS
+            "${PROJECT_SOURCE_DIR}/tests/harness/node_env.js")
+    endif()
 
     foreach(_case IN LISTS _cases)
         if(_case IN_LIST _death_cases)
@@ -102,9 +111,34 @@ int main(int argc, char **argv)
     endforeach()
 endfunction()
 
+# Render IR scenes shared by the renderers' tests and the goldens (deterministic math only).
+add_library(ax_test_scenes STATIC scenes/axt_scenes.c)
+target_include_directories(ax_test_scenes PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/scenes")
+target_link_libraries(ax_test_scenes PUBLIC ax_render_ir)
+ax_target_defaults(ax_test_scenes)
+
+# Golden images (decision 82): tests/goldens/<suite>/<name>.png, compared by axt_golden.h.
+add_library(ax_test_golden STATIC harness/axt_golden.c)
+target_include_directories(ax_test_golden PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/harness")
+target_link_libraries(ax_test_golden PUBLIC ax_test_harness ax_headless)
+target_compile_definitions(ax_test_golden PRIVATE
+    "AX_TEST_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/goldens\"")
+ax_target_defaults(ax_test_golden)
+
+# Rewrites every golden from what the tests draw now. On purpose only (tools/update_goldens.sh
+# runs it); the tests refuse when the CI variable is set.
+add_custom_target(update_goldens
+    COMMAND "${CMAKE_COMMAND}" -E env AX_UPDATE_GOLDENS=1
+            "${CMAKE_CTEST_COMMAND}" -L golden --output-on-failure
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+    COMMENT "Updating the golden images in tests/goldens"
+    USES_TERMINAL)
+
 add_subdirectory(unit/harness)
 add_subdirectory(unit/base)
 add_subdirectory(unit/render_ir)
+add_subdirectory(unit/render_soft)
+add_subdirectory(unit/headless)
 add_subdirectory(unit/core)
 add_subdirectory(unit/runtime)
 add_subdirectory(bench)
@@ -122,7 +156,7 @@ endif()
 
 # Every header must compile on its own (includes what it uses). One generated translation unit
 # per header, built with the same strict settings; failure breaks the build.
-set(_ax_header_modules base core)
+set(_ax_header_modules base core headless)
 if(AX_BUILD_PLATFORM)
     list(APPEND _ax_header_modules platform)
 endif()
@@ -139,6 +173,9 @@ endforeach()
 file(GLOB _ir_headers RELATIVE "${PROJECT_SOURCE_DIR}/render/ir/include"
      CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/render/ir/include/axion/render/*.h")
 list(APPEND _ax_headers ${_ir_headers})
+file(GLOB _rs_headers RELATIVE "${PROJECT_SOURCE_DIR}/render/soft/include"
+     CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/render/soft/include/axion/render/*.h")
+list(APPEND _ax_headers ${_rs_headers})
 if(AX_BUILD_PLATFORM)
     file(GLOB _rf_headers RELATIVE "${PROJECT_SOURCE_DIR}/render/frame/include"
          CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/render/frame/include/axion/render/*.h")
@@ -152,7 +189,7 @@ endif()
 if(NOT AX_BUILD_PLATFORM)
     # These need the platform module's SDK.
     list(REMOVE_ITEM _ax_headers "axion/gpu/ax_gpu_surface.h" "axion/render/ax_renderer.h"
-         "axion/render/ax_render_wgpu_surface.h")
+         "axion/render/ax_render_wgpu_surface.h" "axion/render/ax_render_soft_surface.h")
 endif()
 set(_ax_header_tus "")
 foreach(_h IN LISTS _ax_headers)
@@ -162,7 +199,7 @@ foreach(_h IN LISTS _ax_headers)
     list(APPEND _ax_header_tus "${_tu}")
 endforeach()
 add_library(ax_header_check OBJECT ${_ax_header_tus})
-target_link_libraries(ax_header_check PRIVATE ax_base ax_core ax_render_ir)
+target_link_libraries(ax_header_check PRIVATE ax_base ax_core ax_render_ir ax_render_soft ax_headless)
 if(AX_BUILD_PLATFORM)
     target_link_libraries(ax_header_check PRIVATE ax_platform ax_render_frame)
 endif()

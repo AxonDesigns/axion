@@ -37,6 +37,8 @@ AX_TEST(result_values_are_stable)
     AX_CHECK_EQ_I(AX_ERR_UNSUPPORTED, 5);
     AX_CHECK_EQ_I(AX_ERR_ABI_MISMATCH, 6);
     AX_CHECK_EQ_I(AX_ERR_INVALID_ARGUMENT, 7);
+    AX_CHECK_EQ_I(AX_ERR_TIMEOUT, 8);
+    AX_CHECK_EQ_I(AX_ERR_IO, 9);
 }
 
 AX_TEST(result_names)
@@ -45,5 +47,7 @@ AX_TEST(result_names)
     AX_CHECK(strcmp(ax_result_name(AX_ERR_INVALID_HANDLE), "AX_ERR_INVALID_HANDLE") == 0);
     AX_CHECK(strcmp(ax_result_name(AX_ERR_ABI_MISMATCH), "AX_ERR_ABI_MISMATCH") == 0);
     AX_CHECK(strcmp(ax_result_name(AX_ERR_INVALID_ARGUMENT), "AX_ERR_INVALID_ARGUMENT") == 0);
+    AX_CHECK(strcmp(ax_result_name(AX_ERR_TIMEOUT), "AX_ERR_TIMEOUT") == 0);
+    AX_CHECK(strcmp(ax_result_name(AX_ERR_IO), "AX_ERR_IO") == 0);
     AX_CHECK(strcmp(ax_result_name((ax_result)1000), "AX_ERR_<unknown>") == 0);
 }

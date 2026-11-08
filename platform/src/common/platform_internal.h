@@ -110,6 +110,8 @@ typedef struct ax_command {
     char message[AX_ERROR_MESSAGE_CAPACITY];
 } ax_command;
 
+struct ax_cpu_buffer;
+
 /* Backend interface. Everything runs on the main thread unless noted. */
 typedef struct ax_backend_ops {
     ax_backend kind;
@@ -140,6 +142,14 @@ typedef struct ax_backend_ops {
     /* Commits made whose fate the compositor has not reported yet (presentation feedback
      * outstanding). Without presentation feedback, an outstanding frame callback counts. */
     uint32_t (*surface_commits_in_flight)(ax_window_impl *w);
+    /* CPU presentation (ax_present_cpu.h, decision 84); NULL when the backend has none.
+     * Presenter thread. acquire: a free buffer of width x height pixels; present: attach the
+     * buffer in `slot`, damage it all and commit (after ax_surface_prepare_commit); release:
+     * free the buffers. */
+    ax_result (*cpu_acquire)(ax_window_impl *w, uint32_t width, uint32_t height,
+                             struct ax_cpu_buffer *out);
+    void (*cpu_present)(ax_window_impl *w, uint32_t slot);
+    void (*cpu_release)(ax_window_impl *w);
 } ax_backend_ops;
 
 struct ax_app_impl {

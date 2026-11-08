@@ -29,8 +29,12 @@ typedef enum ax_result {
     AX_ERR_DEVICE_LOST = 4,
     AX_ERR_UNSUPPORTED = 5,
     AX_ERR_ABI_MISMATCH = 6,
-    AX_ERR_INVALID_ARGUMENT = 7 /* malformed input: a bad value, a command or structure that breaks
-                                   the API's rules; ax_last_error() says which */
+    AX_ERR_INVALID_ARGUMENT = 7, /* malformed input: a bad value, a command or structure that
+                                    breaks the API's rules; ax_last_error() says which */
+    AX_ERR_TIMEOUT = 8, /* what was waited for did not happen in time, or a resource is not free
+                           now; trying again may succeed */
+    AX_ERR_IO = 9       /* a file or stream could not be opened, read or written; ax_last_error()
+                           names it and says why */
 } ax_result;
 
 /* Stable, NUL-terminated name of a result code ("AX_ERR_OUT_OF_MEMORY"), or "AX_ERR_<unknown>". */
