@@ -89,6 +89,7 @@ new entry that points back to the old one.
 | 73  | Extension chains: the `next` header                      | Approved       |
 | 74  | Platform pieces for one render thread and the scene      | Implementation |
 | 75  | Events to the app thread, `on_presented`, the clock      | Implementation |
+| 76  | Positioning, the layer rule and incremental recording    | Implementation |
 
 ---
 
@@ -2991,3 +2992,84 @@ pipeline and are tested with it.
 
 **Status.** Implementation, pending the owner's approval (part of the approved plan; the statuses,
 the window rules and keeping rejections in their own ring were the owner's adjustments).
+
+## 76. Positioning, the layer rule and incremental recording
+
+**Context.** The scene thread records the Render IR from the node store. Flex arrives in the
+fourth prompt of M1, so this step needs a stand-in positioning. The owner asked for:
+- layers for nodes with a transform, opacity or clip;
+- incremental recording driven by the dirty flags, where a COMPOSITE-only change records no
+  items, checked with counters;
+- the local transform applied about the frame's center (decision 63);
+- core reading only `ax_render_ir.h` and the mailbox, never `ax_renderer.h`, with a test.
+
+**Decision.** The internal SDK header is `core/include/axion/core/ax_frame.h` and the code is in
+`core/src/frame.c`. Every function takes only the world, so a stage never knows which thread or
+scheduler runs it.
+- **Window roots.** `ax_world_set_root_viewport(root, w, h)` attaches a parentless node to a
+  surface's logical size. The root's frame is `(0, 0, w, h)` whatever its own layout properties,
+  as the CSS viewport is. A size change marks it for layout (`ax_scene_mark_layout`, new in
+  `ax_scene.h`). `ax_world_remove_root` detaches it.
+- **Positioning (`ax_world_position`), until flex:**
+  - a node's frame is `(LEFT, TOP, WIDTH, HEIGHT)` in points, relative to its parent's top-left,
+    with AUTO as 0;
+  - it walks only the layout roots of decision 64 and skips those no longer live (decision 68's
+    stale roots). It descends only through nodes marked LAYOUT or LAYOUT_CHILD. With
+    `roots_overflowed` it walks every tree;
+  - changed frames go to the store's layout column and to the mirror through decision 69's
+    channel.
+
+  The fourth prompt replaces this stage.
+- **The layer rule.** A layer is recorded for:
+  - a window root;
+  - every node that has ever had a TRANSFORM other than the identity or an OPACITY other than 1.
+
+  The layer's transform is `translate(origin in the parent layer) · translate(c) · TRANSFORM ·
+  translate(−c)`, with c the frame's center, and its opacity is the node's. Clip, blend and
+  effects join the rule when their properties exist.
+  - **Promotion is sticky** until the node is destroyed, so animating a transform or an opacity
+    never records items again. Only the frame that promotes a node records its subtree's items
+    again, in the new space; `layers_promoted` counts it.
+  - **To do in the fourth prompt (the owner's note):** implicit animations would promote almost
+    every node, so promotion needs demotion with hysteresis there. For example, a layer without
+    composite changes for about 1 s goes back to its parent's space, at the cost of one
+    re-recording.
+- **Incremental recording.**
+  - Each node's items (for now its background: a rect, or a rounded rect when a corner has a
+    radius) are kept encoded, by slot, in the space of their layer. The cache stores the
+    generation, the layer, the origin in it and the frame's size.
+  - `ax_world_record_collect` reads the flags before `ax_scene_clear_dirty`. PAINT marks the
+    node's items stale. Any flag marks the window root above the node as changed, with the
+    newest applied transaction (for `on_presented`).
+  - `ax_world_record_root` walks the root's tree with an explicit stack, without recursion. It
+    records a node's items again only when they are stale, or when its layer, its origin in the
+    layer or its frame's size changed; otherwise it copies them (`ax_ir_item`). A LAYOUT mark
+    therefore records only when the frame really changed. A parent marked for a new child
+    records nothing, and a layer that moves only changes its layer record.
+  - Collecting is O(rows) and the walk O(the root's nodes), with copying for unchanged nodes.
+    That is acceptable for M1, like the mirror's scan (decision 70). Damage stays full.
+  - Counters (`ax_world_get_frame_counters`): frames changed, nodes and items recorded, items
+    reused, layers, layers promoted, snapshots.
+- **Dependencies.** core now links `ax_render_ir` (base only). The test
+  `core.includes.only_the_render_ir` scans core's sources and headers and fails on any
+  `axion/render/`, `axion/platform/` or `axion/gpu/` include other than `ax_render_ir.h` and
+  `ax_ir_mailbox.h`. A deliberate violation was checked to fail.
+  - **To move later (the owner's note):** `ax_renderer.h` lives in `render/ir` but includes
+    `axion/platform/ax_present.h`, so the IR's directory drags the platform module into anything
+    that includes it. It should move out of `render/ir`, for example to a `render/api` module of
+    its own. It is not moved in this PR.
+- **Tests** (`tests/unit/core/test_frame.c`):
+  - frames from the four properties and the viewport, which overrides the root's own size;
+  - nothing is repositioned without changes, and one moved node changes one frame;
+  - a destroyed layout root is skipped, and an overflow walks everything;
+  - the IR of a small tree against a golden text dump (`ax_ir_dump`). The rotated layer's matrix
+    `(0 1 -1 0 230 90)` was checked by hand;
+  - counters for each case: no change (all items copied), composite only (none recorded, still
+    a layer), paint (one), a move with a child in the same layer (two), a layer moving (none), a
+    resize (one), the first opacity promoting a node (its two items), a later opacity (none);
+  - a slot reused by a new node is recorded fresh and does not inherit the old node's
+    promotion;
+  - argument errors for window roots.
+
+**Status.** Implementation, pending the owner's approval (part of the approved plan; sticky
+promotion, its demotion note and the include test were the owner's adjustments).

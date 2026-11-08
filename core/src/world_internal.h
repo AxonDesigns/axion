@@ -104,6 +104,8 @@ typedef struct presented_reg {
     bool rejected;
 } presented_reg;
 
+typedef struct frame_state frame_state; /* frame.c */
+
 typedef struct world_impl {
     ax_allocator allocator;
     uint32_t slot;
@@ -177,6 +179,7 @@ typedef struct world_impl {
     ax_node *removed; /* subtrees removed by the transaction being applied */
     uint32_t removed_capacity;
     bool scene_ready;
+    frame_state *frame; /* frame.c: window roots, the recording cache (scene thread) */
 } world_impl;
 
 world_impl *ax__world_from_handle(ax_world world);
@@ -230,6 +233,9 @@ void ax__events_free(world_impl *w);
 
 /* Scene thread: queues a rejection record (ax_world_finish_txn). */
 void ax__events_rejected(world_impl *w, uint64_t seq);
+
+/* Frees frame.c's state. */
+void ax__frame_free(world_impl *w);
 
 /* Mirror setup and teardown. */
 void ax__mirror_init(world_impl *w);

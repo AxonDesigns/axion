@@ -430,6 +430,13 @@ uint32_t ax_scene_dirty_flags(const ax_scene *scene, ax_node node)
     return row == AX_NODE_NONE ? 0u : scene->store.dirty[row];
 }
 
+void ax_scene_mark_layout(ax_scene *scene, ax_node node)
+{
+    if (ax_node_store_is_live(&scene->store, node)) {
+        layout_changed(scene, ax_handle_slot(node.h));
+    }
+}
+
 void ax_scene_clear_dirty(ax_scene *scene)
 {
     if (scene->store.row_count > 0) {
