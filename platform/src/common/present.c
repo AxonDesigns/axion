@@ -267,7 +267,7 @@ static ax_wake_reason check_surface(ax_window_impl *w, uint64_t now, uint64_t ti
 ax_result ax_surface_wait_frames(const ax_surface *surfaces, uint32_t count, uint64_t timeout_ns,
                                  ax_wake_reason *out_reasons)
 {
-    ax_window_impl *ws[AX_SURFACE_WAIT_MAX];
+    ax_window_impl *ws[AX_SURFACE_WAIT_MAX] = {NULL};
     ax_app_impl *app;
     uint64_t deadline;
     uint32_t i;

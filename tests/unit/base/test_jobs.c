@@ -360,12 +360,24 @@ typedef struct unbalanced_ctx {
     ax_job_system *js;
     uint32_t root_worker;
     ax_atomic_u32 ran_on[AX_JOBS_MAX_WORKERS + 1]; /* last entry: not a worker */
+    ax_atomic_u32 stolen;                          /* a leaf ran on another worker */
 } unbalanced_ctx;
 
 static void leaf_job(void *arg)
 {
     unbalanced_ctx *ctx = (unbalanced_ctx *)arg;
     uint32_t w = ax_jobs_current_worker(ctx->js);
+    if (w == ctx->root_worker) {
+        /* Hold the root's worker until another one has stolen a leaf (at most 2 s): otherwise a
+         * fast worker can run all 2000 leaves before the others wake (seen on macOS Release). */
+        uint64_t until = ax_time_monotonic_ns() + 2000000000ull;
+        while (ax_atomic_load_u32(&ctx->stolen, AX_MO_ACQUIRE) == 0 &&
+               ax_time_monotonic_ns() < until) {
+            ax_thread_yield();
+        }
+    } else {
+        ax_atomic_store_u32(&ctx->stolen, 1, AX_MO_RELEASE);
+    }
     busy_work(2000);
     ax_atomic_fetch_add_u32(&ctx->ran_on[w == UINT32_MAX ? AX_JOBS_MAX_WORKERS : w], 1,
                             AX_MO_RELAXED);
@@ -408,6 +420,8 @@ AX_TEST(idle_workers_steal_from_an_unbalanced_deque)
     for (i = 0; i <= AX_JOBS_MAX_WORKERS; ++i) {
         ax_atomic_init_u32(&ctx.ran_on[i], 0);
     }
+    ax_atomic_init_u32(&ctx.stolen, 0);
+    ctx.root_worker = UINT32_MAX - 1u; /* set by the root job before it submits the leaves */
     root.fn = root_job;
     root.arg = &ctx;
     ax_jobs_submit(js, &root, 1, &done);
