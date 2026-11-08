@@ -186,14 +186,15 @@ typedef struct world_impl {
 
 world_impl *ax__world_from_handle(ax_world world);
 
+/* Both roles are refused inside a layout measure function (decision 90). */
 static inline bool ax__world_on_app_thread(const world_impl *w)
 {
-    return w->app_thread == ax_thread_current_id();
+    return w->app_thread == ax_thread_current_id() && !ax_node_store_in_measure();
 }
 
 static inline bool ax__world_on_scene_thread(const world_impl *w)
 {
-    return w->scene_thread == ax_thread_current_id();
+    return w->scene_thread == ax_thread_current_id() && !ax_node_store_in_measure();
 }
 
 static inline uint64_t ax__world_now(const world_impl *w)

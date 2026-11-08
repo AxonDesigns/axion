@@ -138,7 +138,9 @@ static void measure_leaf_fn(ax_layout_ctx *ctx, uint32_t row, ax_layout_measure_
     {
         float mw = 0.0f, mh = 0.0f;
         ax_node n = ax_node_store_handle(ctx->s, ctx->s->slot_of_row[row]);
+        ax_node_store_enter_measure(); /* the contract's check (ax_layout.h) */
         fn(user, n, inner_w, wm, inner_h, hm, &mw, &mh);
+        ax_node_store_leave_measure();
         ctx->counters.measure_calls++;
         b->measured_w =
             axl_bound(st, AX_FLEX_DIRECTION_ROW, wm == AX_LAYOUT_EXACT ? aw : mw + pbr, ow, ow);
@@ -713,7 +715,7 @@ uint32_t ax_layout_run(ax_scene *scene, const ax_layout_pass_desc *desc)
     pending_root *roots = NULL;
     uint32_t root_count = 0, root_cap = 0;
     uint32_t min_nodes =
-        desc != NULL && desc->parallel_min_nodes != 0 ? desc->parallel_min_nodes : 64u;
+        desc != NULL && desc->parallel_min_nodes != 0 ? desc->parallel_min_nodes : 100u;
     uint32_t i;
     uint32_t changed;
 

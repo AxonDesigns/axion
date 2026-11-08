@@ -514,3 +514,44 @@ AX_TEST(independent_boundaries_run_in_parallel_with_the_same_results)
     AX_CHECK_EQ_U(fixture_deinit(&fp), 0);
     ax_jobs_destroy(js);
 }
+
+/* ---- The measure functions' contract (decision 90) --------------------------------------------
+ */
+
+static void measure_reading_the_store(void *user, ax_node n, float width, ax_layout_mode wm,
+                                      float height, ax_layout_mode hm, float *out_w, float *out_h)
+{
+    ax_scene *scene = (ax_scene *)user;
+    (void)width;
+    (void)wm;
+    (void)height;
+    (void)hm;
+    *out_w = ax_node_store_is_live(&scene->store, n) ? 10.0f : 0.0f; /* breaks the contract */
+    *out_h = 10.0f;
+}
+
+/* Even on the scene thread, which owns the store, a measure function may not touch it. */
+AX_DEATH_TEST(a_measure_function_that_touches_the_store_aborts)
+{
+    fixture f;
+    ax_node root, leaf;
+    fixture_init(&f);
+    root = node(&f, (ax_node)AX_HANDLE_NULL_INIT);
+    pts(&f, root, AX_PROP_WIDTH, 100);
+    leaf = node(&f, root);
+    set_u32(&f, root, AX_PROP_ALIGN_ITEMS, AX_ALIGN_FLEX_START);
+    (void)ax_layout_set_measure(&f.scene, leaf, measure_reading_the_store, &f.scene);
+    ax_layout_tree(&f.scene, root, NAN, NAN, 1.0f);
+}
+
+AX_TEST(the_measure_guard_is_counted_and_per_thread)
+{
+    AX_CHECK(!ax_node_store_in_measure());
+    ax_node_store_enter_measure();
+    ax_node_store_enter_measure();
+    AX_CHECK(ax_node_store_in_measure());
+    ax_node_store_leave_measure();
+    AX_CHECK(ax_node_store_in_measure());
+    ax_node_store_leave_measure();
+    AX_CHECK(!ax_node_store_in_measure());
+}

@@ -80,9 +80,20 @@ typedef struct ax_layout_protocol {
     void (*layout)(ax_layout_ctx *ctx, uint32_t row, const ax_layout_request *req);
 } ax_layout_protocol;
 
-/* A leaf's intrinsic size, given its content box's available size (NaN when undefined) and modes.
- * Called from the scene thread or from a worker during a parallel pass: it must be thread-safe and
- * must not touch the scene. */
+/*
+ * A leaf's intrinsic size, given its content box's available size (NaN when undefined) and modes.
+ * The contract (decision 90), which text (M1's fifth prompt) is the first real user of:
+ *   - it may run on the scene thread or on a worker during a parallel pass, at the same time as
+ *     other measure functions: it must be thread-safe;
+ *   - it gets only its node's handle, its own user data and the constraints: it must not touch the
+ *     node store, the scene or the world (not even to read), nor any other node's data. What it
+ *     needs (text, a font, an image's size) is copied into its user data before layout;
+ *   - it must be a pure function of its user data and the constraints: the engine caches its
+ *     answers by constraint and may call it any number of times, or not at all;
+ *   - it must not block on the scene's frame (no ax_measure_sync, no waiting on frame jobs).
+ * Debug builds check the second rule on every thread: while it runs, every node store function
+ * asserts and the world's thread-role checks fail (ax_node_store_enter_measure).
+ */
 typedef void (*ax_layout_measure_fn)(void *user, ax_node node, float width,
                                      ax_layout_mode width_mode, float height,
                                      ax_layout_mode height_mode, float *out_width,
@@ -147,8 +158,9 @@ typedef bool (*ax_layout_viewport_fn)(void *user, ax_node root, float *width, fl
 
 typedef struct ax_layout_pass_desc {
     struct ax_job_system *jobs; /* NULL: one thread */
-    /* Independent boundaries go to frame jobs when at least two of them have at least this many
-     * nodes laid out last time (0: a default of 64). */
+    /* Independent boundaries go to frame jobs when at least two of them took at least this many
+     * nodes the last time they were laid out, or never were roots (0: a default of 100, where
+     * decision 92 measured jobs starting to pay off). */
     uint32_t parallel_min_nodes;
     ax_layout_viewport_fn viewport; /* NULL: no window roots */
     void *viewport_user;

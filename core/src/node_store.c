@@ -13,10 +13,33 @@
 #include <axion/base/ax_thread.h>
 #include <axion/core/ax_node_store.h>
 
-#define CHECK_THREAD(s)                                                                       \
-    AX_ASSERT_MSG((s)->owner_thread == ax_thread_current_id(),                                \
-                  "ax_node_store used from a thread that does not own it (the scene thread; " \
-                  "see ax_node_store_bind_thread)")
+#define CHECK_THREAD(s)                                                                        \
+    do {                                                                                       \
+        AX_ASSERT_MSG(!ax_node_store_in_measure(),                                             \
+                      "a layout measure function touched the node store; it may only use its " \
+                      "node's data and the constraints (decision 90)");                        \
+        AX_ASSERT_MSG((s)->owner_thread == ax_thread_current_id(),                             \
+                      "ax_node_store used from a thread that does not own it (the scene "      \
+                      "thread; see ax_node_store_bind_thread)");                               \
+    } while (0)
+
+static AX_THREAD_LOCAL uint32_t tl_measure_depth;
+
+void ax_node_store_enter_measure(void)
+{
+    tl_measure_depth++;
+}
+
+void ax_node_store_leave_measure(void)
+{
+    AX_ASSERT(tl_measure_depth > 0);
+    tl_measure_depth--;
+}
+
+bool ax_node_store_in_measure(void)
+{
+    return tl_measure_depth != 0;
+}
 
 #define MIN_ROWS          64u
 #define MIN_SLOTS         64u

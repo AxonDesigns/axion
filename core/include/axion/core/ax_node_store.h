@@ -252,6 +252,14 @@ AX_API void ax_node_store_bind_thread(ax_node_store *s);
 
 AX_API bool ax_node_store_on_owner_thread(const ax_node_store *s);
 
+/* The calling thread is running a layout measure function (decision 90's contract): while it
+ * runs, every store function asserts in debug builds, and the world's role checks fail, so a
+ * measure function that touches the store or the world is caught on any thread. Counted, so the
+ * calls nest. Cheap (a thread-local counter); used by the layout engine around each call. */
+AX_API void ax_node_store_enter_measure(void);
+AX_API void ax_node_store_leave_measure(void);
+AX_API bool ax_node_store_in_measure(void);
+
 /* ---- Nodes ----------------------------------------------------------------------------------- */
 
 /* Internal slots mode: creates a node with default values, without parent. *out is null on

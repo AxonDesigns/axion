@@ -2656,6 +2656,8 @@ within 15%):
 
 ## 71. The IDL: `.axidl`, and the line between ABI and SDK
 
+> Amended by decision 92: `runtime.axidl`, and the `[blocking]` and `[requires(module)]` attributes.
+
 **Context.** "One interface description" generates the C headers, the API docs and the four
 bindings from a small `.axidl` file or annotated JSON, and every function is tagged with its
 thread. The owner asked, before fixing the transaction API, how it will be described in the IDL
@@ -3904,7 +3906,7 @@ style (decision 69's note: each entry is copied three times).
   never reshapes the column. Layout's state and results are the `ax_node_layout` column
   (decision 90).
 - **The mirror** (approved, amending 69): an entry of its own with the handle, parent, kind, the
-  computed frame and the paint and composite values, about 88 bytes against 120 before. Layout's
+  computed frame and the paint and composite values: 104 bytes, against 132 before. Layout's
   inputs are not mirrored: `ax_mirror_get_dimension` (and every getter) on a layout property
   returns `AX_ERR_UNSUPPORTED` with a message that points to `ax_mirror_get_frame`. The app wrote
   those values; what it reads back is the frame computed from them. `ax_mirror_get_dimension`
@@ -3942,7 +3944,21 @@ protocols, flex first, so grid, stack and custom layouts enter later without tou
     (0.20 ms against 0.11) and an edit without boundaries measures 100 more nodes; Yoga's own
     fixtures fill all 8. **8 entries** (about 160 bytes a node);
   - **measure functions** (`ax_layout_set_measure`), a side component: text (prompt 5) and the
-    conformance tests. They may run on a worker during a parallel pass.
+    conformance tests. **Their contract** (the owner's review, written before text is the first
+    real one; `ax_layout.h`):
+    - one may run on the scene thread or on a worker during a parallel pass, at the same time as
+      others: it must be thread-safe;
+    - it gets only its node's handle, its own user data and the constraints, and must not touch the
+      node store, the scene or the world, even to read, nor another node's data: what it needs is
+      copied into its user data before layout;
+    - it must be a pure function of its user data and the constraints (the engine caches its
+      answers and may call it any number of times, or not at all), and must not block on the
+      scene's frame (no `ax_measure_sync`);
+    - **checked in debug builds on every thread:** while one runs, a thread-local counter
+      (`ax_node_store_enter_measure`) makes every node store function assert and the world's
+      thread-role checks fail, so it is caught even on the scene thread, which owns the store.
+      Release builds keep the role checks (a transaction begun inside one fails with
+      `AX_ERR_WRONG_THREAD`). Test: `core.layout.a_measure_function_that_touches_the_store_aborts`.
 - **A protocol** (`ax_layout_protocol`) is one entry, `layout(ctx, row, request)`, that measures
   or also lays out the node's children: as in Yoga, a protocol shares nearly all of its work
   between the two, so a separate measure and arrange would duplicate it. The node's `DISPLAY`
@@ -3986,6 +4002,10 @@ protocols, flex first, so grid, stack and custom layouts enter later without tou
     measured sizes it caches by key live in its side component.
 - **Counters** (`ax_layout_get_counters`): passes, roots, parallel roots, nodes laid out and
   measured, cache answers, measure calls, changed frames.
+- **Hot bytes per node** (x86-64, a reference for M2's virtualization): 666 = style 208, layout
+  352 (of which the measurement cache, the cached layout and the last request take 200), paint 32,
+  composite 28, links 20, kind, dirty flags, component mask and row-to-slot 14, and the slot
+  table's 12. The mirror adds 104 bytes in each of its three copies.
 - **Changes elsewhere:** scenes placed by insets (tests, the headless golden scene, `m1_nodes`) set
   `POSITION` absolute, which gives the frames decision 76 gave; the headless golden changed only
   where frames now land on whole pixels (a 0.5-point hairline), updated on purpose (decision 82).
@@ -4048,8 +4068,10 @@ scene thread, and reference measurements for 10 000 flex nodes.
 **Decision.**
 - **Waves.** The pass sorts its roots by depth. The roots of one depth are independent (none is an
   ancestor of another, so they write disjoint subtrees) and run as frame jobs (decision 80) when at
-  least two are worth it: their last layout as a root took at least `parallel_min_nodes` nodes (64
-  by default), or they never were a root. A deeper root runs after its ancestors and is skipped
+  least two are worth it: their last layout as a root took at least `parallel_min_nodes` nodes (100
+  by default, the size where the measurement below starts to pay: a submit that wakes workers
+  costs a few microseconds, decision 70, and a hundred nodes take about 15 to 20 microseconds),
+  or they never were a root. A deeper root runs after its ancestors and is skipped
   when one of them reached it in the same pass. A job allocates nothing; its counters and its list
   of changed frames are merged on the scene thread. Results are the same bits with any number of
   threads.
@@ -4058,7 +4080,7 @@ scene thread, and reference measurements for 10 000 flex nodes.
 - **The world's job system.** `ax_world_set_jobs` (internal SDK) gives the scene's stages frame
   jobs; the runtime sets its own on the scene thread (inline in single-threaded mode) and clears it
   when it is destroyed.
-- **`ax_measure_sync(runtime, node, &frame)`** (stable, `ax_runtime.h`; the runtime has no IDL yet):
+- **`ax_measure_sync(runtime, node, &frame)`** (stable, `ax_runtime.h`):
   - the app thread asks for everything committed so far and waits, a second at most
     (`AX_ERR_TIMEOUT`), for the scene to apply it all, lay out and publish the mirror, off the
     frame's cadence; the mirror is then latched at that publication and the node's frame returned.
@@ -4068,6 +4090,12 @@ scene thread, and reference measurements for 10 000 flex nodes.
     rule: it would wait for itself);
   - **flagged in profiles:** every call is counted with the time it blocked
     (`ax_rt_counters.measure_syncs`, `measure_sync_ns`, and the scene's `measure_ticks`).
+- **The runtime's IDL** (the owner's review): `bindings/idl/runtime.axidl` describes the runtime's
+  stable ABI (`ax_runtime_create`, `_destroy`, `ax_host_frame`, `ax_measure_sync`, and the
+  platform builds' `ax_runtime_create_for_app`, `_add_window`, `_remove_window`). It adds two
+  attributes to decision 71's format: `[blocking]` (bindings name the call as blocking and never
+  hide it behind an async wrapper) and `[requires(module)]` (the function exists only in builds
+  with that module; `platform.axidl` comes with the C# binding in M2).
 - **Tests:**
   - editing an item of a fixed-size list (a boundary) makes the list the only root: 2 nodes laid
     out (the list and the item), 1 measured (Yoga measures a stretched item before laying it out),
