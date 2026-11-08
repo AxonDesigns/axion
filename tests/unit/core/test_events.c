@@ -86,12 +86,22 @@ AX_TEST(an_injected_clock_keeps_the_distance_from_now)
     uint64_t ahead, behind;
     AX_REQUIRE(!AX_HANDLE_IS_NULL(w));
     AX_CHECK(!ax_world_clock_is_monotonic(w));
-    /* 16 ms ahead on the monotonic clock is about 16 ms ahead of the manual clock's now (the two
-     * reads of the monotonic clock are microseconds apart). */
-    ahead = ax_world_time_from_monotonic(w, ax_time_monotonic_ns() + 16000000u);
-    AX_CHECK(ahead > clock.now + 15000000u && ahead <= clock.now + 16000000u);
-    behind = ax_world_time_from_monotonic(w, ax_time_monotonic_ns() - 4000000u);
-    AX_CHECK(behind <= clock.now - 4000000u && behind > clock.now - 5000000u);
+    /* 16 ms ahead on the monotonic clock is 16 ms ahead of the manual clock's now, less the time
+     * between the two reads of the monotonic clock (bounded by reads before and after the call,
+     * so the check holds however late the thread is scheduled). */
+    {
+        uint64_t before = ax_time_monotonic_ns();
+        uint64_t after;
+        ahead = ax_world_time_from_monotonic(w, before + 16000000u);
+        after = ax_time_monotonic_ns();
+        AX_CHECK(ahead <= clock.now + 16000000u);
+        AX_CHECK(ahead >= clock.now + 16000000u - (after - before));
+        before = ax_time_monotonic_ns();
+        behind = ax_world_time_from_monotonic(w, before - 4000000u);
+        after = ax_time_monotonic_ns();
+        AX_CHECK(behind <= clock.now - 4000000u);
+        AX_CHECK(behind >= clock.now - 4000000u - (after - before));
+    }
     /* Far in the past: saturates at 0. */
     clock.now = 1000u;
     AX_CHECK_EQ_U(ax_world_time_from_monotonic(w, 1u), 0);

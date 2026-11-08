@@ -39,8 +39,6 @@ typedef struct fake_display {
     bool live[MAX_S];
     uint64_t next_due[MAX_S];
     uint64_t last_seq[MAX_S];
-    ax_mutex sleep_lock;
-    ax_cond sleep_cond;
     /* read by the test */
     ax_atomic_u64 frames[MAX_S];
     ax_atomic_u64 shown[MAX_S]; /* new snapshots shown */
@@ -93,10 +91,10 @@ static ax_result fd_wait(void *self, const uint32_t *surfaces, uint32_t count, u
             until = d->next_due[surfaces[i]];
         }
     }
-    if (until > now) {
-        ax_mutex_lock(&d->sleep_lock);
-        ax_cond_wait_timeout(&d->sleep_cond, &d->sleep_lock, until - now); /* the vsync */
-        ax_mutex_unlock(&d->sleep_lock);
+    /* The vsync. Yielding until it is due, not a timed wait: timed waits wake up to 10 ms late
+     * on macOS runners, which would make the display itself miss refreshes. */
+    while (ax_time_monotonic_ns() < until) {
+        ax_thread_yield();
     }
     now = ax_time_monotonic_ns();
     for (i = 0; i < count; ++i) {
@@ -140,8 +138,6 @@ static void display_init(fake_display *d, uint64_t refresh0, uint64_t refresh1)
     d->refresh[1] = refresh1;
     d->refresh[2] = refresh0;
     d->refresh[3] = refresh0;
-    ax_mutex_init(&d->sleep_lock);
-    ax_cond_init(&d->sleep_cond);
     for (i = 0; i < MAX_S; ++i) {
         ax_atomic_init_u64(&d->frames[i], 0);
         ax_atomic_init_u64(&d->shown[i], 0);
@@ -152,8 +148,7 @@ static void display_init(fake_display *d, uint64_t refresh0, uint64_t refresh1)
 
 static void display_deinit(fake_display *d)
 {
-    ax_cond_deinit(&d->sleep_cond);
-    ax_mutex_deinit(&d->sleep_lock);
+    (void)d;
 }
 
 /* ---- Helpers --------------------------------------------------------------------------------- */

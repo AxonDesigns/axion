@@ -363,6 +363,10 @@ ax_result ax_rt_remove_surface(ax_runtime rt, uint32_t surface)
                                 "ax_rt_remove_surface: the runtime's threads did not answer");
         }
     }
+    /* Neither side uses the mailbox any more: start the slot's next surface without the old
+     * snapshots. */
+    ax_ir_mailbox_deinit(&s->mailbox);
+    ax_ir_mailbox_init(&s->mailbox, &r->allocator);
     s->app_used = false;
     s->root.h = 0;
     return AX_OK;
