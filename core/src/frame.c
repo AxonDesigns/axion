@@ -536,7 +536,11 @@ static bool record_run(world_impl *w, rec_entry *e, ax_text_system *ts, const ax
     const ax_text_glyph *first = &l->glyphs[g0];
     float extra = 1.0f;
     const float pixel_size = first->size * scale;
-    const ax_font_instance instance = ax_text_font_instance(ts, first->font, pixel_size, &extra);
+    /* Light hinting only at whole device scales, as Qt does: hinting snaps stems to a pixel grid
+     * that a fractional scale does not have (measured against KDE's text, decision 101). */
+    const bool whole = fabsf(scale - (float)(int32_t)(scale + 0.5f)) < 0.001f;
+    const ax_font_instance instance = ax_text_font_instance(
+        ts, first->font, pixel_size, whole ? 0u : AX_TEXT_INSTANCE_NO_HINTING, &extra);
     const float rs = scale / extra; /* raster pixels per layer unit for this run */
     const bool subpixel = pixel_size <= AX_TEXT_SUBPIXEL_MAX_SIZE;
     const uint32_t n = g1 - g0;

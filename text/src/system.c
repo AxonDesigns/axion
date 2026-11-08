@@ -433,8 +433,9 @@ const char *ax_text_font_family(ax_text_system *ts, ax_font_id font)
 /* ---- Raster instances ------------------------------------------------------------------------ */
 
 ax_font_instance ax_text_font_instance(ax_text_system *ts, ax_font_id font, float pixel_size,
-                                       float *out_scale)
+                                       uint32_t flags, float *out_scale)
 {
+    bool hinted;
     float size = pixel_size;
     uint32_t size64, h, n, i;
     instance_hash *hash = ihash(ts);
@@ -452,10 +453,11 @@ ax_font_instance ax_text_font_instance(ax_text_system *ts, ax_font_id font, floa
         size = AX_TEXT_RASTER_MAX_SIZE;
     }
     size64 = (uint32_t)(size * 64.0f + 0.5f);
+    hinted = size <= AX_TEXT_SUBPIXEL_MAX_SIZE && (flags & AX_TEXT_INSTANCE_NO_HINTING) == 0;
     if (size64 == 0) {
         size64 = 1;
     }
-    h = (font * 2654435761u) ^ (size64 * 40503u);
+    h = (font * 2654435761u) ^ (size64 * 40503u) ^ (hinted ? 0x9E3779B9u : 0u);
     ax_mutex_lock(&ts->fonts_mutex);
     for (i = 0; i < INSTANCE_HASH; ++i) {
         uint32_t slot = (h + i) & (INSTANCE_HASH - 1u);
@@ -467,13 +469,14 @@ ax_font_instance ax_text_font_instance(ax_text_system *ts, ax_font_id font, floa
             }
             ts->instances[n].font = font;
             ts->instances[n].size64 = size64;
-            ts->instances[n].hinted = size <= AX_TEXT_SUBPIXEL_MAX_SIZE;
+            ts->instances[n].hinted = hinted;
             hash->slots[slot] = n + 1u;
             ax_atomic_store_u32(&ts->instance_count, n + 1u, AX_MO_RELEASE);
             found = n + 1u;
             break;
         }
-        if (ts->instances[id - 1u].font == font && ts->instances[id - 1u].size64 == size64) {
+        if (ts->instances[id - 1u].font == font && ts->instances[id - 1u].size64 == size64 &&
+            ts->instances[id - 1u].hinted == hinted) {
             found = id;
             break;
         }

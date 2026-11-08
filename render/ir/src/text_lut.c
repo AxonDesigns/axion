@@ -40,9 +40,11 @@ ax_ir_text_lut_params ax_ir_text_lut_default(void)
     if (g_overridden) {
         return g_override;
     }
-    /* Provisional until tuned against the desktop's text (decision 101). */
-    p.contrast = 0.1f;
-    p.gamma = 1.8f;
+    /* Tuned against KDE's text on both of the owner's monitors and in both polarities
+     * (tools/diag/kde_text_capture.py and text_weight; decision 101): KDE blends glyph coverage
+     * in sRGB space with almost no correction. */
+    p.contrast = 0.0f;
+    p.gamma = 2.3f;
     return p;
 }
 

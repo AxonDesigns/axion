@@ -39,8 +39,8 @@
  * (decision 90's contract for measure functions).
  *
  * Glyphs (decision 100). Glyphs are rasterized as 8-bit coverage at the exact device size, by
- * FreeType with light hinting (vertical only, as KDE's "slight") up to 48 device pixels and none
- * above, with 4 horizontal subpixel positions up to 48 pixels and whole pixels above. A font at a
+ * FreeType with light hinting (vertical only, as KDE's "slight") up to 48 device pixels at whole
+ * device scales and none above or at fractional scales (as Qt does), with 4 horizontal subpixel positions up to 48 pixels and whole pixels above. A font at a
  * raster size is a font instance. Rasterization runs on workers; the glyph cache keeps the
  * bitmaps, which renderers read (copying them into their atlases) through the Render IR's glyph
  * source. A glyph used by a snapshot that may still be drawn is never evicted: each use is
@@ -235,11 +235,15 @@ AX_API void ax_text_layout_release(const ax_text_layout *l);
 /* A font at a raster size (device pixels per em, to 1/64). 0 is none. */
 typedef uint32_t ax_font_instance;
 
+/* ax_text_font_instance flags. */
+#define AX_TEXT_INSTANCE_NO_HINTING 0x1u /* never hint (a fractional device scale, as Qt does) */
+
 /* The instance of `font` at `pixel_size` (clamped to AX_TEXT_RASTER_MAX_SIZE; *out_scale, may be
- * NULL, gets the factor the caller must scale it by: 1 unless clamped). 0 when out of memory or
+ * NULL, gets the factor the caller must scale it by: 1 unless clamped). Light hinting applies up to
+ * AX_TEXT_SUBPIXEL_MAX_SIZE unless `flags` has AX_TEXT_INSTANCE_NO_HINTING. 0 when out of memory or
  * when the instance table is full (4096 instances). */
 AX_API ax_font_instance ax_text_font_instance(ax_text_system *ts, ax_font_id font,
-                                              float pixel_size, float *out_scale);
+                                              float pixel_size, uint32_t flags, float *out_scale);
 
 /* Pixel size of an instance (0 for none). */
 AX_API float ax_text_instance_size(ax_text_system *ts, ax_font_instance instance);

@@ -43,8 +43,8 @@ AX_TEST(glyphs_rasterize_at_the_exact_size_with_four_subpixel_positions)
     ax_glyph_bitmap b[4], big, space;
     uint32_t i;
     AX_REQUIRE(ts != NULL);
-    in16 = ax_text_font_instance(ts, tt_font(ts, 400.0f), 16.0f, NULL);
-    in64 = ax_text_font_instance(ts, tt_font(ts, 400.0f), 64.0f, NULL);
+    in16 = ax_text_font_instance(ts, tt_font(ts, 400.0f), 16.0f, 0, NULL);
+    in64 = ax_text_font_instance(ts, tt_font(ts, 400.0f), 64.0f, 0, NULL);
     k.instance = in16;
     k.glyph = glyph_of(ts, "H");
     for (i = 0; i < 4; ++i) {
@@ -108,7 +108,7 @@ AX_TEST(glyphs_past_the_budget_rasterize_in_the_background)
     ax_atomic_init_u32(&flag.calls, 0);
     ax_text_set_glyphs_ready_callback(ts, on_ready, &flag);
     for (i = 0; i < 40; ++i) {
-        keys[i].instance = ax_text_font_instance(ts, tt_font(ts, 400.0f), 20.0f, NULL);
+        keys[i].instance = ax_text_font_instance(ts, tt_font(ts, 400.0f), 20.0f, 0, NULL);
         keys[i].glyph = 30u + i;
         keys[i].bin = 0;
     }
@@ -139,7 +139,7 @@ AX_TEST(a_tiny_cache_keeps_the_glyphs_of_live_snapshots)
     d.glyph_cache_bytes = 1;
     AX_REQUIRE(ax_text_system_create(&d, &ts) == AX_OK);
     for (i = 0; i < 50; ++i) {
-        keys[i].instance = ax_text_font_instance(ts, tt_font(ts, 400.0f), 18.0f, NULL);
+        keys[i].instance = ax_text_font_instance(ts, tt_font(ts, 400.0f), 18.0f, 0, NULL);
         keys[i].glyph = 40u + i;
         keys[i].bin = i % 4u;
     }

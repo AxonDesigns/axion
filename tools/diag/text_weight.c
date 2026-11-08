@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  *
  * Compares the apparent weight of a KDE application's text (a capture by
- * tools/diag/kde_text_capture.sh) with AXION's rendering of the same text, for a range of text
+ * tools/diag/kde_text_capture.py) with AXION's rendering of the same text, for a range of text
  * coverage corrections (decision 101), to tune ax_ir_text_lut's parameters.
  *
  *   text_weight --capture kde.png --crop X,Y,W,H [--scale 1.325] [--size 13.333]
@@ -200,8 +200,8 @@ int main(int argc, char **argv)
     region r;
     uint8_t bg[4], fg[4];
     double kde;
-    static const float gammas[] = {1.0f, 1.2f, 1.4f, 1.6f, 1.8f, 2.0f, 2.2f};
-    static const float contrasts[] = {0.0f, 0.1f, 0.2f, 0.3f, 0.5f};
+    static const float gammas[] = {1.8f, 2.0f, 2.2f, 2.3f, 2.4f, 2.6f};
+    static const float contrasts[] = {0.0f, 0.05f, 0.1f, 0.2f, 0.3f};
     ax_ir_text_lut_params best = {0.0f, 2.2f};
     double best_err = 1e9;
     int i;
@@ -243,7 +243,7 @@ int main(int argc, char **argv)
            fg[0], fg[1], fg[2], kde);
     printf("AXION ink / KDE ink, by gamma (rows) and contrast (columns):\n       ");
     for (ci = 0; ci < sizeof contrasts / sizeof contrasts[0]; ++ci) {
-        printf("  c=%.1f", (double)contrasts[ci]);
+        printf(" c=%.2f", (double)contrasts[ci]);
     }
     printf("\n");
     for (gi = 0; gi < sizeof gammas / sizeof gammas[0]; ++gi) {

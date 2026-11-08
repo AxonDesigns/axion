@@ -189,18 +189,18 @@ AX_TEST(raster_instances_are_shared_and_large_sizes_are_scaled)
     float scale = 0.0f;
     AX_REQUIRE(ts != NULL);
     AX_CHECK_RESULT(ax_text_match_font(ts, &q, &font), AX_OK);
-    a = ax_text_font_instance(ts, font, 14.0f, NULL);
-    b = ax_text_font_instance(ts, font, 14.0f, &scale);
-    c = ax_text_font_instance(ts, font, 14.0f * 1.325f, NULL);
+    a = ax_text_font_instance(ts, font, 14.0f, 0, NULL);
+    b = ax_text_font_instance(ts, font, 14.0f, 0, &scale);
+    c = ax_text_font_instance(ts, font, 14.0f * 1.325f, 0, NULL);
     AX_CHECK(a != 0);
     AX_CHECK_EQ_U(a, b);
     AX_CHECK_NEAR_F(scale, 1.0f, 0.0f);
     AX_CHECK(c != a);
     AX_CHECK_NEAR_F(ax_text_instance_size(ts, c), 18.546875f, 0.0f); /* 18.55 to 1/64 */
-    big = ax_text_font_instance(ts, font, 512.0f, &scale);
+    big = ax_text_font_instance(ts, font, 512.0f, 0, &scale);
     AX_CHECK_NEAR_F(ax_text_instance_size(ts, big), 256.0f, 0.0f);
     AX_CHECK_NEAR_F(scale, 2.0f, 0.0f);
-    AX_CHECK_EQ_U(ax_text_font_instance(ts, 999u, 12.0f, NULL), 0u);
+    AX_CHECK_EQ_U(ax_text_font_instance(ts, 999u, 12.0f, 0, NULL), 0u);
     ax_text_system_destroy(ts);
 }
 
