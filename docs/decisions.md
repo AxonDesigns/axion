@@ -102,6 +102,11 @@ new entry that points back to the old one.
 | 86  | Images byte-identical on every platform: the CI job      | Approved       |
 | 87  | Reference measurements: ax_render_soft on m1_nodes       | Approved       |
 | 88  | `AX_ERR_TIMEOUT` and `AX_ERR_IO`                         | Approved       |
+| 89  | Layout's style storage, properties and the mirror        | Implementation |
+| 90  | The layout engine: protocols, cache, boundaries          | Implementation |
+| 91  | Flex conformance against Yoga                            | Implementation |
+| 92  | Parallel boundaries, `ax_measure_sync`, benchmark        | Implementation |
+| 93  | Clips: overflow hidden, and in `ax_render_wgpu`          | Implementation |
 
 ---
 
@@ -2181,6 +2186,8 @@ scene-thread tag and the skipped generations were the owner's adjustments).
 
 ## 63. Property system: ids, types, registry and validation
 
+> Amended by decision 89: percentages are accepted, and layout gains its properties.
+
 **Context.** "Property system" gives every property an id, a value type, an inherited flag, an
 animatable flag and an effect class. The owner asked for an extensible registry with ids stable
 for the ABI (plugins and the IDL will add properties), for the properties a rect needs now (size,
@@ -2254,6 +2261,8 @@ corners.
 **Status.** Approved by the owner.
 
 ## 64. Dirty propagation and relayout boundaries
+
+> Amended by decision 90: a static node is never a relayout boundary.
 
 **Context.** "Dirty propagation" marks layout dirty up to the nearest relayout boundary (a node
 whose size does not depend on its children, such as a fixed-size box or a scroll viewport). The
@@ -2523,6 +2532,8 @@ SDK, on the scene thread.
 **Status.** Approved by the owner.
 
 ## 69. The app thread's mirror
+
+> Amended by decision 89: the mirror reflects the frame, paint and composite values, not layout's inputs.
 
 **Context.** "The app thread keeps a cheap mirror of handles and last-published layout results, so
 it can read sizes and positions from the most recent frame without a round trip." The owner asked
@@ -3007,6 +3018,8 @@ pipeline and are tested with it.
 **Status.** Approved by the owner.
 
 ## 76. Positioning, the layer rule and incremental recording
+
+> Amended by decisions 90 (the layout engine replaces the positioning) and 93 (clip layers).
 
 **Context.** The scene thread records the Render IR from the node store. Flex arrives in the
 fourth prompt of M1, so this step needs a stand-in positioning. The owner asked for:
@@ -3546,6 +3559,8 @@ corrupt input under ASan.
 
 ## 83. GPU renderers against the software reference: a perceptual tolerance
 
+> Amended by decision 93: ax_render_wgpu draws clips; the clipped zone plate is compared.
+
 **Context.** "Antialiasing and image quality" (Verification): golden-image tests compare each GPU
 renderer to the software reference within a perceptual tolerance, on antialiasing torture scenes.
 Until now ax_render_wgpu's coverage tests compared with decision 56's supersampled reference. The
@@ -3851,3 +3866,277 @@ with another code: `AX_ERR_UNSUPPORTED` reads as "this build cannot do it",
 **Status.** Implementation, pending the owner's approval (the owner asked for the codes and their
 uses).
 
+
+## 89. Layout's style storage, its properties and what the mirror reflects
+
+> Amends decisions 63 (percentages) and 69 (what the mirror reflects).
+
+**Context.** The flex step of M1 adds layout's inputs to `ax_node_style`. The owner asked that the
+storage admit grid's fields (M2) without being reshaped, that Yoga's defaults be used, that border
+widths be layout properties now, and, before adding the fields, that the mirror stop copying the
+style (decision 69's note: each entry is copied three times).
+
+**Decision.**
+- **Properties** (`ax_prop.h`, ids fixed forever):
+  - box model, `0x0105-0x010F`: `RIGHT`, `BOTTOM`, `MIN_/MAX_WIDTH/HEIGHT`, `POSITION`
+    (relative, absolute, static), `DISPLAY` (flex, none; it names the protocol that lays out the
+    node's children), `OVERFLOW` (visible, hidden), `ASPECT_RATIO` (0: none), `BOX_SIZING`;
+  - flex, `0x0110-0x011B`: direction, wrap, grow, shrink, basis, justify-content, align-items,
+    align-self, align-content, column gap, row gap and the `GAP` shorthand. `0x011C-0x011F` are
+    kept for grid's justify-items and justify-self;
+  - margins, paddings and border widths, `0x0120-0x0134`, each group with a shorthand
+    (`MARGIN`, `PADDING`, `BORDER_WIDTH`). Border widths are laid out now and drawn later;
+  - grid starts at `0x0140`.
+- **Values.** Enumerations are `AX_VALUE_U32`, checked against their values (the registry's range
+  now applies to U32 too). Percentages are accepted (decision 63 refused them until layout): of
+  the containing block's width for widths, x insets, margins and paddings (all four, as CSS), of
+  its height otherwise. AUTO means "not set" except for margins, where it is an auto margin; a
+  margin's default is 0 points. Paddings, gaps and border widths are never negative.
+- **Yoga's defaults** (approved): column, `flex-shrink: 0`, `align-content: flex-start`,
+  `align-items: stretch`. A per-world option, or the style layer, may switch to CSS's defaults
+  later, as Yoga's `UseWebDefaults` does (the owner's note).
+- **Storage.** The hot `ax_node_style` column holds the box model every protocol shares (sizes,
+  insets, margins, paddings, borders, box alignment and gaps, which grid reuses) and flex's item and
+  container fields; enumerations take one byte (`ax_prop_desc.stored_u8`), about 200 bytes a row.
+  A protocol's own data (grid's tracks and areas, an item's grid placement) will go in a side
+  component the scene registers at init, reached by registry rows that name the component and the
+  field's offset (`AX_PROP_IN_COMPONENT`, as run-time properties already are), so adding grid
+  never reshapes the column. Layout's state and results are the `ax_node_layout` column
+  (decision 90).
+- **The mirror** (approved, amending 69): an entry of its own with the handle, parent, kind, the
+  computed frame and the paint and composite values, about 88 bytes against 120 before. Layout's
+  inputs are not mirrored: `ax_mirror_get_dimension` (and every getter) on a layout property
+  returns `AX_ERR_UNSUPPORTED` with a message that points to `ax_mirror_get_frame`. The app wrote
+  those values; what it reads back is the frame computed from them. `ax_mirror_get_dimension`
+  stays for kit and plugin properties once they are mirrored (decision 63's `ax_prop_info`).
+- **The IDL** lists the new properties and enumerations.
+- **Tests:** the documented table of every built-in property; defaults read back as the registry
+  states them; one-byte enumerations and their range (a value that would alias another in a byte is
+  refused); the shorthands; the mirror's refusal and its message; the atomicity test of decision 69
+  now reads a corner radius as its marker.
+
+**Status.** Implementation, pending the owner's approval (Yoga's defaults, borders as layout
+properties and the mirror's change were approved in the plan).
+
+## 90. The layout engine: protocols, the cache, boundaries and rounding
+
+> Replaces decision 76's minimal positioning; amends decision 64 (a static node is not a relayout
+> boundary).
+
+**Context.** "Layout engine": constraints down, sizes up, parent positions; one pass over dirty
+subtrees; intrinsic sizes cached per constraint; an engine written in C because layout animation,
+relayout boundaries and virtualization need hooks inside the pass. The owner asked for a design by
+protocols, flex first, so grid, stack and custom layouts enter later without touching the core.
+
+**Decision.** `core/src/layout/` (internal SDK `axion/core/ax_layout.h`).
+- **The core is protocol-neutral** (`layout.c`):
+  - `ax_layout_node(ctx, row, request)` is every node's entry. A request is Yoga's: an available
+    width and height including the node's margins (NaN when undefined), a mode for each (`EXACT`,
+    `AT_MOST`, `UNDEFINED`), the containing block's size, and whether to lay the children out or
+    only measure. It checks dirtiness once per pass (a node is dirty with `LAYOUT` or
+    `LAYOUT_CHILD`), answers from the cache, handles the leaves (a measure function, or no
+    children) and the "no work needed" measure, then calls the node's protocol;
+  - **the cache by constraint:** the last layout and 8 measurements per node, with Yoga's rules
+    for reusing a measure function's results. The owner asked for 4 or 8 and the benchmark to
+    decide: with 4, the benchmark's full relayout with boundaries takes about twice as long
+    (0.20 ms against 0.11) and an edit without boundaries measures 100 more nodes; Yoga's own
+    fixtures fill all 8. **8 entries** (about 160 bytes a node);
+  - **measure functions** (`ax_layout_set_measure`), a side component: text (prompt 5) and the
+    conformance tests. They may run on a worker during a parallel pass.
+- **A protocol** (`ax_layout_protocol`) is one entry, `layout(ctx, row, request)`, that measures
+  or also lays out the node's children: as in Yoga, a protocol shares nearly all of its work
+  between the two, so a separate measure and arrange would duplicate it. The node's `DISPLAY`
+  selects the protocol from a table (`FLEX`; `NONE` zeroes the subtree). Helpers for style
+  resolution (sizes with box sizing, min/max bounds, margins, paddings, gaps, insets) are shared.
+- **Flex** (`layout_flex.c`) has Yoga's semantics, quirks included, so the conformance suite
+  (decision 91) measures it against the same expectations: flex basis, lines, the two passes of
+  flexible lengths, justification and auto margins, cross alignment and stretch, align-content,
+  wrap-reverse, the reverse directions, aspect ratio, box sizing, and relative, absolute and static
+  positioning with the nearest non-static ancestor as containing block. Children are walked
+  through the store's sibling links and a line is a run of siblings, so the protocol allocates
+  nothing. Left to right only: **RTL is pending for M3**, with bidi (the owner's note). Baseline
+  alignment is laid out as flex-start until text gives nodes a baseline.
+- **The pass** (`ax_layout_run`, the frame's `ax_world_position`, decision 76's stage):
+  - it takes decision 64's layout roots: a parentless root is laid out as a tree (a window root at
+    its viewport, ignoring its own size, margins and insets, as decision 76 had it; any other
+    against an undefined containing block); a relayout boundary is laid out again with the request
+    and containing block it last had, its own frame unchanged; a boundary whose parent is dirty is
+    skipped, because a dirty ancestor reaches it;
+  - **a static node is never a boundary**: it is not a containing block, so its absolute
+    descendants belong to an ancestor's layout (amends 64's rule);
+  - an overflowed root list lays every tree out with every node treated as dirty;
+  - independent boundaries run in parallel (decision 92).
+- **Rounding to the pixel grid** (approved): Yoga's rounding of positions and edges, with the
+  root's pixel scale (`ax_world_set_root_viewport` gains the surface's scale; 1 for other trees),
+  using `floor`, which is exact everywhere, so frames are the same bits on every platform. The
+  unrounded results stay in `ax_node_layout`; rounding descends only into nodes laid out in this
+  pass or whose absolute position moved. Intermediate frames of layout animations (M1's next PR)
+  are not rounded.
+- **Output.** The rounded frame goes to the store's layout column; changed frames are reported
+  once the pass ends (the frame stage touches the mirror, decision 69's channel), listed through
+  the layout column so frame jobs allocate nothing.
+- **Hooks registered for later work** (the owner asked that the design not prevent them):
+  - *complete layout animations:* a pass writes the `ax_node_layout` array its context names; the
+    `resize` preset will lay a subtree out each frame into a presentation array of its own, with
+    the same protocols and a cache of its own, leaving the target layout (what the mirror shows)
+    untouched. Per-channel curves and the per-node C callback act on that presentation array
+    after the target pass;
+  - *virtualization:* a virtual layout is a protocol that answers for the children it has built
+    and estimates the rest; `ax_layout_node` lets it lay out only the built range, and the
+    measured sizes it caches by key live in its side component.
+- **Counters** (`ax_layout_get_counters`): passes, roots, parallel roots, nodes laid out and
+  measured, cache answers, measure calls, changed frames.
+- **Changes elsewhere:** scenes placed by insets (tests, the headless golden scene, `m1_nodes`) set
+  `POSITION` absolute, which gives the frames decision 76 gave; the headless golden changed only
+  where frames now land on whole pixels (a 0.5-point hairline), updated on purpose (decision 82).
+- **Tests** (`tests/unit/core/test_layout.c`): a growing row, a column with padding and gap,
+  centring, absolute insets, percentages, display none, rounding at scale 2 (33.33 points become
+  33.5, 33 and 33.5), a measure function wrapping and cached, the pass reporting only changed
+  frames, and the boundary and parallel tests of decision 92.
+
+**Status.** Implementation, pending the owner's approval.
+
+## 91. Flex conformance against Yoga
+
+**Context.** The owner asked for a conformance suite against Yoga's behaviour, with fixtures
+generated or ported from its tests (MIT), reporting how many pass and which differences are
+accepted.
+
+**Decision.**
+- **The port.** `tools/yoga/port_fixtures.py` reads Yoga's generated tests (`tests/generated`,
+  release **v3.2.2**) and writes `tests/unit/core/yoga_fixtures.inc`: per test, the nodes, their
+  style as AXION properties, the tree, the containing block and the frames Yoga expects for the
+  left-to-right layout. Yoga's start, end, horizontal, vertical and all edges are resolved left to
+  right with Yoga's precedence. The output is committed; the script runs again only to move to
+  another Yoga release (it needs Yoga's source tree, not a network). NOTICE carries Yoga's MIT
+  license, for the fixtures and the semantics of the flex protocol.
+- **The runner** (`tests/unit/core/test_layout_yoga.c`) lays each fixture out with
+  `ax_layout_tree` at pixel scale 1 and compares every node's frame (within 1e-3, relative);
+  Yoga's `IntrinsicSizeMeasure` is ported for the measure-function fixtures. It prints a report by
+  file. A fixture is skipped upstream (`GTEST_SKIP` in Yoga), unsupported (it uses baseline
+  alignment, `display: contents` or `overflow: scroll`: reported, not required), an accepted
+  difference (listed with its reason, and required to keep differing, so the list never goes
+  stale) or required to pass.
+- **Result:**
+
+  | Fixtures | Count |
+  | --- | --- |
+  | Ported | 548 |
+  | Skipped upstream | 17 |
+  | Unsupported features (16 baseline, 9 display contents, 1 overflow scroll; some overlap) | 23 (1 passes anyway) |
+  | Required | 508 |
+  | **Pass** | **508** |
+  | Accepted differences | **0** |
+
+  Every file passes all its required fixtures: absolute position 34/34, align-content 64/64,
+  align-items 16/16 required (12 use baseline), box sizing 46/46, flex direction 53/53, flex wrap
+  24/24, gap 32/32, intrinsic size 11/11, justify-content 28/28, margin 34/34, min/max 24/24,
+  percentages 24/24, rounding 13/13, static position 62/62, and the rest.
+- **Not ported:** the right-to-left half of every fixture (RTL is pending for M3).
+- **Checked:** a deliberate change to centring (a factor of 2.01 instead of 2) makes two fixtures
+  fail; the suite runs under ASan and UBSan too.
+
+**Status.** Implementation, pending the owner's approval.
+
+## 92. Relayout boundaries in parallel, `ax_measure_sync`, and the layout benchmark
+
+**Context.** The owner asked for real relayout boundaries (editing a child lays out nothing outside
+its boundary), independent boundaries laid out in parallel on the job system from decision 64's
+root list, `ax_measure_sync` as the only blocking call, flagged in profiles and refused on the
+scene thread, and reference measurements for 10 000 flex nodes.
+
+**Decision.**
+- **Waves.** The pass sorts its roots by depth. The roots of one depth are independent (none is an
+  ancestor of another, so they write disjoint subtrees) and run as frame jobs (decision 80) when at
+  least two are worth it: their last layout as a root took at least `parallel_min_nodes` nodes (64
+  by default), or they never were a root. A deeper root runs after its ancestors and is skipped
+  when one of them reached it in the same pass. A job allocates nothing; its counters and its list
+  of changed frames are merged on the scene thread. Results are the same bits with any number of
+  threads.
+- **Frame jobs read the store** through `ax_node_store_peek_component`, which has no owner-thread
+  check, while the scene thread waits for them; nothing modifies the store meanwhile.
+- **The world's job system.** `ax_world_set_jobs` (internal SDK) gives the scene's stages frame
+  jobs; the runtime sets its own on the scene thread (inline in single-threaded mode) and clears it
+  when it is destroyed.
+- **`ax_measure_sync(runtime, node, &frame)`** (stable, `ax_runtime.h`; the runtime has no IDL yet):
+  - the app thread asks for everything committed so far and waits, a second at most
+    (`AX_ERR_TIMEOUT`), for the scene to apply it all, lay out and publish the mirror, off the
+    frame's cadence; the mirror is then latched at that publication and the node's frame returned.
+    Recording waits for the next frame: the dirty flags stay for it. Single-threaded mode runs it
+    at once;
+  - `AX_ERR_WRONG_THREAD` from the scene thread, a frame job, or inside a scene step (the owner's
+    rule: it would wait for itself);
+  - **flagged in profiles:** every call is counted with the time it blocked
+    (`ax_rt_counters.measure_syncs`, `measure_sync_ns`, and the scene's `measure_ticks`).
+- **Tests:**
+  - editing an item of a fixed-size list (a boundary) makes the list the only root: 2 nodes laid
+    out (the list and the item), 1 measured (Yoga measures a stretched item before laying it out),
+    59 answered by the cache, 50 frames changed, and the window, the other column and the sidebar
+    not visited; without the boundary the edit climbs to the window, and the sidebar is still not
+    visited;
+  - two boundaries edited for 20 frames give the same frames, bit for bit, in one thread and on 4
+    workers, with 40 parallel roots;
+  - `ax_measure_sync` lays out a commit without a frame in both modes and is refused from the
+    driver (single-threaded) and from the scene thread;
+  - TSan: 8 runs of the layout and runtime tests, and 2 pinned to one CPU, clean.
+- **Measured** (`tests/bench/bench_layout.c`, `gcc-release`, AMD Ryzen 5 3400G, 4 cores, 8
+  threads; two runs agree within 10%):
+
+  | 10 001 flex nodes: a wrapping row of 100 cards of 99 items | Median (min) |
+  | --- | --- |
+  | Full layout of a new tree, cards of a fixed size (boundaries) | 2.7-2.9 ms (2.4) |
+  | Full layout of a new tree, cards of an automatic size | 2.6-2.7 ms (2.5) |
+  | The root's width changed, with boundaries | 0.11-0.12 ms (0.08) |
+  | The root's width changed, without boundaries | 2.4 ms (2.2) |
+  | One item changed inside its card's boundary (5 laid out, 4 measured) | 0.014 ms |
+  | One item changed, no boundary (990 laid out: the line's cards stretch again) | 0.57-0.61 ms |
+  | 8 cards of ~100 nodes relaid out together, one thread | 0.14 ms |
+  | The same on 4 workers | 0.10-0.11 ms (0.07) |
+
+  A boundary turns an edit into a few microseconds; without one, an edit that changes a flex
+  line's height relays out the whole line, as flexbox requires. Parallel boundaries pay off from a
+  hundred nodes each. No gate.
+
+**Status.** Implementation, pending the owner's approval.
+
+## 93. Clips: overflow hidden in the recording, and in `ax_render_wgpu`
+
+> Amends decision 83: the clipped zone plate joins the comparison; amends decision 76's layer rule.
+
+**Context.** Decision 83 left rect and rounded-rect clips in `ax_render_wgpu` to this step, whose
+flex demos need content clipped inside cards. The owner asked for analytic, nested clips with
+`ax_render_soft`'s semantics (decision 81: each clip's coverage multiplies the item's, in its own
+layer's space), no more skipped clipped layers, the counts showing it, a limit on a chain's
+length, axis-aligned rect clips intersected on the CPU, and chains past the limit counted and
+approximated.
+
+**Decision.**
+- **Recording** (`frame.c`): a node with `OVERFLOW` hidden and children records a clip layer
+  around its children: its frame `(0, 0, width, height)`, a rounded rect when it has corner radii,
+  in its own space. The node's own items stay outside the clip, so its edges are not covered twice
+  (a clip of the same shape would square their coverage). Nodes with `DISPLAY` none record
+  nothing. Counter: `clips`. This extends decision 76's layer rule (clip layers are not sticky
+  promotions: they exist while the overflow is hidden).
+- **`ax_render_wgpu`:**
+  - each clip becomes a record in a storage buffer next to the instances: its device-to-local
+    transform, rect, clamped radii, flags and parent record. An instance names the innermost record
+    of its chain; the fragment shader evaluates each clip at the pixel centre in the clip's own
+    space with the same coverage function as items, and multiplies, innermost first;
+  - **plain rect clips aligned with the device's axes are intersected on the CPU** into one record
+    in device space (exact: the intersection of the rects, rather than the product of their
+    coverages where their edges meet);
+  - **the chain's limit:** 4 other clips (`RW_MAX_CLIP_CHAIN`) plus the device rect; a clip beyond
+    it is drawn as its bounding box in device pixels, intersected into the device rect, and counted
+    in `ax_render_counts.clips_approximated` (new, appended);
+  - a degenerate clip or a non-invertible layer hides its subtree; path clips and unknown kinds
+    still skip the layer and count as `skipped_layers`, which no longer counts rect or rounded
+    clips.
+- **Against the software reference** (decision 83's tolerance: dE p99.9 at most 0.02, mean at most
+  0.002): the zone plate behind three nested rounded clips, the middle one turned, now joins the
+  comparison: p99.9 **0.0082** and mean 0.00069 on Dawn and wgpu-native with NVIDIA 615.78 (GTX
+  1650), p99.9 0.0081 on Dawn with lavapipe; worst channel 3/255. A new scene with three translated
+  rect clips and two rounded ones (one turned) checks the intersection: p99.9 0.0039. CI adds
+  wgpu-native on lavapipe and Dawn on Metal. Six turned rounded clips give 2 approximated.
+- **Still in M2** (decision 83): exact group opacity and linear layers.
+
+**Status.** Implementation, pending the owner's approval.
