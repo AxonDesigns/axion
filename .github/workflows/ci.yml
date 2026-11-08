@@ -29,13 +29,13 @@ jobs:
       matrix:
         include:
           - { name: "Windows / MSVC / Debug",        os: windows-latest, preset: msvc-debug }
-          - { name: "Windows / MSVC / Release",      os: windows-latest, preset: msvc-release }
+          - { name: "Windows / MSVC / Release",      os: windows-latest, preset: msvc-release, images: windows }
           - { name: "macOS / Clang / ASan+UBSan",    os: macos-latest,   preset: clang-asan }
-          - { name: "macOS / Clang / Release",       os: macos-latest,   preset: clang-release, coverage: dawn-metal }
+          - { name: "macOS / Clang / Release",       os: macos-latest,   preset: clang-release, coverage: dawn-metal, images: macos }
           - { name: "Linux / GCC / ASan+UBSan",      os: ubuntu-latest,  preset: gcc-asan }
           - { name: "Linux / GCC / Release",         os: ubuntu-latest,  preset: gcc-release }
           - { name: "Linux / Clang / ASan+UBSan",    os: ubuntu-latest,  preset: clang-asan }
-          - { name: "Linux / Clang / Release",       os: ubuntu-latest,  preset: clang-release, coverage: dawn-lavapipe }
+          - { name: "Linux / Clang / Release",       os: ubuntu-latest,  preset: clang-release, coverage: dawn-lavapipe, images: linux }
           # The alternative WebGPU implementation (decision 43): builds gpu/ and the renderer
           # against wgpu-native and runs their offscreen tests only.
           - name: "Linux / GCC / ASan+UBSan / wgpu-native (gpu only)"
@@ -45,14 +45,15 @@ jobs:
             test_args: "-L \"^(gpu|render_wgpu)$\""
             coverage: wgpu-native-lavapipe
           # ThreadSanitizer over the code with cross-thread handoffs: base's primitives and jobs, the
-          # platform module's queues and triple buffers, the Render IR's mailbox, core's queues and
-          # the runtime's threads (with a fake presenter). gpu/ is not built: its suites run under
-          # ASan, and Dawn is not instrumented (decision 44).
-          - name: "Linux / Clang / TSan (base, platform, render IR, core, runtime)"
+          # platform module's queues and triple buffers, the Render IR's mailbox, core's queues, the
+          # runtime's threads (with a fake presenter), the software renderer's tiles on the job
+          # system and the headless host's instances and threaded mode. gpu/ is not built: its suites
+          # run under ASan, and Dawn is not instrumented (decision 44).
+          - name: "Linux / Clang / TSan (base, platform, render IR, core, runtime, soft, headless)"
             os: ubuntu-latest
             preset: clang-tsan
             configure_args: "-DAX_BUILD_GPU=OFF"
-            test_args: "-L \"^(base|platform|render_ir|core|runtime)$\""
+            test_args: "-L \"^(base|platform|render_ir|core|runtime|render_soft|headless)$\""
     steps:
       - uses: actions/checkout@v4
 
@@ -106,10 +107,11 @@ jobs:
         shell: bash
         run: mkdir -p "${{ runner.temp }}/coverage"
 
-      # Golden-image failures write the actual, expected and difference images here (decision 82).
-      - name: Golden failure directory
+      # Golden-image failures write the actual, expected and difference images here (decision 82);
+      # the jobs with `images` also keep every golden test's image for the determinism job.
+      - name: Golden failure and image directories
         shell: bash
-        run: mkdir -p "${{ runner.temp }}/golden-failures"
+        run: mkdir -p "${{ runner.temp }}/golden-failures" "${{ runner.temp }}/images"
 
       # gpu/ tests fail instead of skipping when no adapter exists (macOS runners have Metal).
       - name: Test
@@ -118,6 +120,7 @@ jobs:
           AX_REQUIRE_GPU_TESTS: "1"
           AX_TEST_ARTIFACT_DIR: ${{ matrix.coverage && format('{0}/coverage', runner.temp) || '' }}
           AX_TEST_FAILURE_DIR: ${{ runner.temp }}/golden-failures
+          AX_TEST_IMAGE_DIR: ${{ matrix.images && format('{0}/images', runner.temp) || '' }}
         run: ctest --preset ${{ matrix.preset }} ${{ matrix.test_args }}
 
       # Linux also runs the Wayland integration tests against a headless weston.
@@ -129,6 +132,7 @@ jobs:
           AX_REQUIRE_GPU_TESTS: "1"
           AX_TEST_ARTIFACT_DIR: ${{ matrix.coverage && format('{0}/coverage', runner.temp) || '' }}
           AX_TEST_FAILURE_DIR: ${{ runner.temp }}/golden-failures
+          AX_TEST_IMAGE_DIR: ${{ matrix.images && format('{0}/images', runner.temp) || '' }}
         run: tools/ci/with-weston.sh ctest --preset ${{ matrix.preset }} ${{ matrix.test_args }}
 
       - name: Upload golden failures
@@ -138,6 +142,14 @@ jobs:
           name: golden-failures-${{ strategy.job-index }}
           path: ${{ runner.temp }}/golden-failures
           if-no-files-found: ignore
+
+      - name: Upload images for the determinism check
+        if: matrix.images
+        uses: actions/upload-artifact@v4
+        with:
+          name: images-${{ matrix.images }}
+          path: ${{ runner.temp }}/images
+          if-no-files-found: error
 
       - name: Upload coverage images
         if: matrix.coverage
@@ -166,6 +178,25 @@ jobs:
           python3 tools/ci/compare_ppm.py --tolerance 3 \
             coverage/coverage-dawn-lavapipe coverage/coverage-wgpu-native-lavapipe \
             coverage/coverage-dawn-metal
+
+  # The same headless tests must give byte-identical images on Linux, macOS, Windows and the web
+  # (decisions 81, 82 and 86): the software renderer is deterministic and the PNG encoder depends
+  # only on the pixels.
+  compare-determinism:
+    name: Images are byte-identical across platforms
+    needs: [build-test, emscripten]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: images-*
+          path: images
+      - name: Compare
+        run: |
+          python3 tools/ci/compare_images.py \
+            images/images-linux images/images-macos images/images-windows images/images-web
 
   # Wayland tests against weston 15, which has wp_fifo_v1 and commit-timing (the Ubuntu runners
   # have weston 13, without them). Covers the drain before acknowledging a configure (decision 48),
@@ -227,11 +258,11 @@ jobs:
           AX_REQUIRE_WP_FIFO: "1"
         run: tools/ci/with-weston.sh ctest --preset gcc-debug -L "^(wayland|gpu_wayland)$"
 
-  # The single-threaded web build, with core's, the Render IR's and the runtime's tests run in
-  # Node: the cooperative mode (ax_host_frame) and the inline job system as the web runs them
-  # (decision 79). Tests that need threads skip.
+  # The single-threaded web build, with core's, the Render IR's, the runtime's, the software
+  # renderer's and the headless host's tests run in Node: the cooperative mode (ax_host_frame), the
+  # inline job system and SIMD128 as the web runs them (decision 79). Tests that need threads skip.
   emscripten:
-    name: Web / Emscripten / single-threaded (core, render IR and runtime tests in Node)
+    name: Web / Emscripten / single-threaded (core, render IR, runtime, soft, headless in Node)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -261,8 +292,9 @@ jobs:
       - name: Test (Node)
         env:
           AX_TEST_FAILURE_DIR: ${{ runner.temp }}/golden-failures
+          AX_TEST_IMAGE_DIR: ${{ runner.temp }}/images
         run: |
-          mkdir -p "$AX_TEST_FAILURE_DIR"
+          mkdir -p "$AX_TEST_FAILURE_DIR" "$AX_TEST_IMAGE_DIR"
           ctest --preset emscripten-tests
 
       - name: Upload golden failures
@@ -272,3 +304,10 @@ jobs:
           name: golden-failures-web
           path: ${{ runner.temp }}/golden-failures
           if-no-files-found: ignore
+
+      - name: Upload images for the determinism check
+        uses: actions/upload-artifact@v4
+        with:
+          name: images-web
+          path: ${{ runner.temp }}/images
+          if-no-files-found: error
