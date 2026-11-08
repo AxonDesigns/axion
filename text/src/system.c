@@ -349,7 +349,7 @@ ax_result ax_text_match_font(ax_text_system *ts, const ax_font_query *query, ax_
     for (i = 0; i < ts->source_count && *out == 0; ++i) {
         ax_font_source *src = ts->sources[i];
         ax_font_file file;
-        uint32_t blob, face;
+        uint32_t blob = 0, face = 0;
         memset(&file, 0, sizeof file);
         if (!src->vtbl->match(src, &q, &file)) {
             continue;
@@ -372,7 +372,7 @@ ax_result ax_text_match_font(ax_text_system *ts, const ax_font_query *query, ax_
         }
     }
     if (*out == 0 && fallback_set) {
-        uint32_t face;
+        uint32_t face = 0;
         last = face_for(ts, fallback_blob, fallback_index, &face);
         if (last == AX_OK) {
             last = font_for(ts, face, q.weight, q.width, out);
