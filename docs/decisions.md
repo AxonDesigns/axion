@@ -3121,6 +3121,7 @@ scheduler runs it.
 ## 77. The runtime, the frame's order and the single thread
 
 > Amended by decisions 94 (the tick animates after layout) and 96 (the scene driver is removed).
+> Amended by decision 104: the window's viewport is laid out before the cycle's transactions apply.
 
 **Context.** The architecture's frame pipeline runs on the scene and render threads. The same
 stage functions run in order on one thread through a cooperative scheduler, for hosts that call
@@ -4740,8 +4741,12 @@ measurement on their desktop.
 - **Missed refreshes at 260 Hz are not text's:** m1_nodes changes something every 1.2 s, so
   "quiet" is never at rest; the seconds with many missed refreshes are those of the cards'
   animations, and `main`'s m1_nodes (no text, built for the comparison) shows the same pattern
-  (seconds of 40 presented and 264 missed). Recorded to investigate apart (the pipeline's pacing
-  while animating, or what "missed" counts then); not changed here.
+  (seconds of 40 presented and 264 missed). **Issue #15** tracks it, as M1's exit criterion: after
+  this PR and before part 5B, measure the animating and resting seconds apart (whether the counter
+  counts refreshes at rest as missed since decision 95) and, if losses remain while animating,
+  bisect between 3b9c43c (before zero frames at rest) and the merge of #12.
+- **This table predates decision 104** (two layout passes in resize cycles); that decision gives
+  their cost.
 - **m1_nodes builds again:** PR #12 (commit 7ffa651) emptied `examples/m1_nodes/CMakeLists.txt`,
   so the example has not been built since; a build tree kept the older binary. Restored with
   `m1_cards.c` (and `ax_text`).
@@ -4769,6 +4774,15 @@ Under a continuous resize every cycle has a new viewport, so every animation fro
   transactions'. A node changed by both in one cycle animates from where the resize put it. Hosts
   that lay out once (tests) keep the old rule for that pass: changes in a cycle with a new viewport
   start nothing.
+- **Cost of the two passes** in resize cycles (`bench_text`, gcc-release, AMD Ryzen 5 3400G; the
+  window resized every cycle over 40 paragraphs, a transaction every tenth cycle; layout only):
+  0.174 ms median and 0.31 ms worst per cycle in one pass, 0.178 ms and 0.43 ms in two (two runs
+  agree within 0.02 ms). The second pass finds nothing dirty in a cycle without a transaction (+3
+  microseconds); a cycle with one lays out twice what both changed (+0.12 ms at worst). Against
+  decision 103's figures at 260 Hz, a 3.85 ms refresh whose handshake bound is half of it (1.9 ms;
+  the floor is 2 ms), that is 6 % of the bound at worst. Decision 103's table was measured just
+  before this change; the scene's added cost stays well inside the bound that table showed was
+  never hit.
 - **Tests** (`core.anim_resize`): a box sliding with the default spring keeps sliding when the
   window narrows mid-way, its width following at once; a move committed while the window changes
   size every cycle animates. Both fail with the previous behavior.

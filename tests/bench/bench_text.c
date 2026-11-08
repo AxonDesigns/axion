@@ -215,6 +215,82 @@ static void width_animation_case(bool parallel, double *out_median, double *out_
     }
 }
 
+/* Decision 104's cost: a window resized every frame (a new viewport each cycle) over the same 40
+ * paragraphs, laid out in one pass as before (viewport, transactions, layout) or in two (the
+ * viewport's pass before the transactions, then theirs), with a transaction every tenth cycle.
+ * Per cycle: layout passes only, median and worst over 200 cycles. */
+static void resize_passes(bool two)
+{
+    static clock_state clock = {1000 * MS};
+    ax_world w = AX_HANDLE_NULL_INIT;
+    ax_world_desc desc;
+    ax_txn *t;
+    ax_node root, column;
+    ax_dimension auto_w = {0.0f, AX_UNIT_AUTO};
+    double ms[200];
+    uint32_t i;
+    uint64_t now = clock.now;
+    static const float sizes[] = {11, 12, 13, 14, 16, 18, 20, 24, 32, 48};
+    memset(&desc, 0, sizeof desc);
+    desc.struct_size = sizeof desc;
+    desc.clock = read_clock;
+    desc.clock_user = &clock;
+    if (ax_world_create(&desc, &w) != AX_OK) {
+        return;
+    }
+    t = ax_txn_begin(w);
+    root = ax_txn_create(t, AX_NODE_VIEW);
+    column = ax_txn_create(t, AX_NODE_VIEW);
+    ax_txn_set_dimension(t, column, AX_PROP_WIDTH, auto_w);
+    ax_txn_append_child(t, root, column);
+    for (i = 0; i < 40; ++i) {
+        ax_node p = ax_txn_create(t, AX_NODE_VIEW);
+        ax_txn_set_str(t, p, AX_PROP_TEXT, WORDS, sizeof WORDS - 1u);
+        ax_txn_set_f32(t, p, AX_PROP_FONT_SIZE, sizes[i % 10u]);
+        ax_txn_append_child(t, column, p);
+    }
+    ax_txn_set_animated(t, false);
+    (void)ax_txn_commit(t, NULL);
+    clock.now = now;
+    (void)ax_world_apply_pending(w, now);
+    (void)ax_world_set_root_viewport(w, root, 900.0f, 8000.0f, 1.0f);
+    (void)ax_world_position(w);
+    (void)ax_world_animate(w, now);
+    ax_scene_clear_dirty(ax_world_scene(w));
+    for (i = 0; i < 200; ++i) {
+        const float width = 700.0f + 200.0f * (float)((i * 7u) % 29u) / 29.0f;
+        uint64_t t0;
+        if (i % 10u == 5u) {
+            ax_dimension pad = {(float)(i % 3u) * 4.0f, AX_UNIT_POINTS};
+            t = ax_txn_begin(w);
+            ax_txn_set_dimension(t, column, AX_PROP_PADDING, pad);
+            (void)ax_txn_commit(t, NULL);
+        }
+        now += 16666667ull;
+        clock.now = now;
+        t0 = ax_time_monotonic_ns();
+        if (two) {
+            (void)ax_world_set_root_viewport(w, root, width, 8000.0f, 1.0f);
+            (void)ax_world_layout_viewports(w);
+            (void)ax_world_apply_pending(w, now);
+            (void)ax_world_position(w);
+        } else {
+            (void)ax_world_apply_pending(w, now);
+            (void)ax_world_set_root_viewport(w, root, width, 8000.0f, 1.0f);
+            (void)ax_world_position(w);
+        }
+        ms[i] = ms_since(t0);
+        (void)ax_world_animate(w, now);
+        ax_world_record_collect(w);
+        ax_scene_clear_dirty(ax_world_scene(w));
+    }
+    qsort(ms, 200, sizeof(double), cmp_double);
+    printf("window resized every cycle, 40 paragraphs, %s: layout %.3f ms median, %.3f ms worst "
+           "per cycle\n",
+           two ? "two passes (viewport, then transactions)" : "one pass", ms[100], ms[199]);
+    ax_world_destroy(w);
+}
+
 /* Five runs of each mode: the median of the medians, and every run's worst frame (the slowest
  * frames are the first of each animation, whose widths have no cached layout yet). */
 static void width_animation(bool parallel)
@@ -238,5 +314,9 @@ int main(void)
     paragraph_cases();
     width_animation(false);
     width_animation(true);
+    resize_passes(false);
+    resize_passes(true);
+    resize_passes(false);
+    resize_passes(true);
     return 0;
 }
