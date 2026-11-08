@@ -52,7 +52,7 @@ void ax_scene_init(ax_scene *scene, const ax_node_store_desc *desc)
         r = ax_node_store_register_component(&scene->store, &cd, &scene->measure_component);
         AX_ASSERT(r == AX_OK);
         /* The animator's (decision 94): a node's own transitions and its running animations. */
-        cd.size = sizeof(uint16_t) * 8u;
+        cd.size = sizeof(uint16_t) * 9u; /* a curve per animation channel (anim_internal.h) */
         cd.align = AX_ALIGNOF(uint16_t);
         r = ax_node_store_register_component(&scene->store, &cd, &scene->transitions_component);
         AX_ASSERT(r == AX_OK);

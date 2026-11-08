@@ -603,8 +603,6 @@ static void tick(rt_impl *r, uint32_t index, const ax_rt_request *q)
      * surface's content changed. */
     (void)ax_world_position(world);
     (void)ax_world_animate(world, t);
-    ax_atomic_store_u32(&s->animating, ax_world_root_animating(world, s->root) ? 1u : 0u,
-                        AX_MO_RELEASE);
     ax_world_record_collect(world);
     if (ax_world_root_changed(world, s->root, &changed_seq)) {
         ax_ir_builder *b = ax_ir_mailbox_begin(&s->mailbox, q->logical_width, q->logical_height, t,
@@ -620,6 +618,10 @@ static void tick(rt_impl *r, uint32_t index, const ax_rt_request *q)
             r->counters.snapshots++;
         }
     }
+    /* After recording: a layer whose text waits for its scale to settle also needs frames
+     * (decision 101), besides running animations (decision 95). */
+    ax_atomic_store_u32(&s->animating, ax_world_root_animating(world, s->root) ? 1u : 0u,
+                        AX_MO_RELEASE);
     /* 6. The mirror, after layout. 7. The flags, consumed. */
     (void)ax_world_publish_mirror(world);
     ax_scene_clear_dirty(scene);

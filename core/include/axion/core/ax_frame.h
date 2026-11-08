@@ -152,6 +152,7 @@ typedef struct ax_frame_counters {
     uint64_t snapshots;         /* ax_world_record_root calls that succeeded */
     uint64_t glyph_runs;          /* glyph runs recorded (decision 101) */
     uint64_t glyph_runs_deferred; /* runs left out whole: their glyphs were not ready yet */
+    uint64_t text_rescaled;       /* layers whose settled scale changed: their text records again */
 } ax_frame_counters;
 
 AX_API void ax_world_get_frame_counters(ax_world world, ax_frame_counters *out, bool reset);

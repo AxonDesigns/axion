@@ -385,3 +385,171 @@ AX_TEST(background_glyphs_ask_for_a_frame_and_record_whole_runs)
     ax_world_destroy(w);
     ax_jobs_destroy(js);
 }
+
+/* ---- Text color animation and settling scales (decisions 94 and 101) -------------------------- */
+
+typedef struct manual_clock {
+    uint64_t now;
+} manual_clock;
+
+static uint64_t read_clock(void *user)
+{
+    return ((manual_clock *)user)->now;
+}
+
+/* The first glyph run of a snapshot (NULL when none). */
+static const ax_ir_glyph_run_item *first_run(const ax_render_ir *ir, ax_ir_glyph_run_item *out)
+{
+    uint32_t i;
+    for (i = 0; i < ir->layer_count; ++i) {
+        ax_ir_item_iter it = ax_ir_items(ir, ax_ir_layer_at(ir, i));
+        const ax_ir_item_header *h;
+        while ((h = ax_ir_item_next(&it)) != NULL) {
+            if (h->type == AX_IR_ITEM_GLYPH_RUN) {
+                memcpy(out, h, sizeof *out);
+                return out;
+            }
+        }
+    }
+    return NULL;
+}
+
+/* One frame at time t (ns): layout, animation, recording. */
+static const ax_render_ir *animated_frame(ax_world w, manual_clock *clock, ax_node root,
+                                          ax_ir_builder *b, uint64_t t, ax_frame_counters *c)
+{
+    const ax_render_ir *ir = NULL;
+    clock->now = t;
+    (void)ax_world_apply_pending(w, t);
+    (void)ax_world_set_root_viewport(w, root, 400.0f, 300.0f, 1.0f);
+    (void)ax_world_position(w);
+    (void)ax_world_animate(w, t);
+    ax_world_record_collect(w);
+    ax_world_get_frame_counters(w, c, true);
+    ax_ir_builder_begin(b, 400.0f, 300.0f, t, ax_color_make(1, 1, 1, 1));
+    (void)ax_world_record_root(w, root, b);
+    (void)ax_ir_builder_end(b, &ir);
+    ax_scene_clear_dirty(ax_world_scene(w));
+    ax_world_get_frame_counters(w, c, true);
+    return ir;
+}
+
+static ax_world make_clocked_world(manual_clock *clock)
+{
+    ax_world w = AX_HANDLE_NULL_INIT;
+    ax_world_desc desc;
+    memset(&desc, 0, sizeof desc);
+    desc.struct_size = sizeof desc;
+    desc.clock = read_clock;
+    desc.clock_user = clock;
+    if (ax_world_create(&desc, &w) != AX_OK) {
+        w.h = 0;
+    }
+    return w;
+}
+
+#define MS 1000000ull
+
+/* COLOR animates like the background (the default 0.2 s ease), on the node that sets it, and its
+ * descendants' text follows the presentation value. */
+AX_TEST(an_inherited_text_color_animates)
+{
+    static manual_clock clock = {1000 * MS};
+    ax_world w = make_clocked_world(&clock);
+    ax_ir_builder b;
+    ax_txn *t;
+    ax_node root, panel, label;
+    ax_frame_counters c;
+    ax_ir_glyph_run_item run;
+    const ax_render_ir *ir;
+    uint64_t now = 1000 * MS;
+    AX_REQUIRE(!AX_HANDLE_IS_NULL(w));
+    ax_ir_builder_init(&b, ax_default_allocator());
+    t = ax_txn_begin(w);
+    root = ax_txn_create(t, AX_NODE_VIEW);
+    panel = ax_txn_create(t, AX_NODE_VIEW);
+    label = ax_txn_create(t, AX_NODE_VIEW);
+    ax_txn_set_color(t, panel, AX_PROP_COLOR, ax_rgba_from_srgb8(0, 0, 0, 255));
+    text(t, label, "Fading color");
+    ax_txn_append_child(t, root, panel);
+    ax_txn_append_child(t, panel, label);
+    AX_REQUIRE(ax_txn_commit(t, NULL) == AX_OK);
+    ir = animated_frame(w, &clock, root, &b, now, &c);
+    AX_REQUIRE(first_run(ir, &run) != NULL);
+    AX_CHECK_NEAR_F(run.color.r, 0.0f, 0.0f);
+
+    t = ax_txn_begin(w);
+    ax_txn_set_color(t, panel, AX_PROP_COLOR, ax_rgba_from_srgb8(255, 255, 255, 255));
+    AX_REQUIRE(ax_txn_commit(t, NULL) == AX_OK);
+    now += 16 * MS;
+    (void)animated_frame(w, &clock, root, &b, now, &c);
+    now += 84 * MS; /* half-way through the 0.2 s ease */
+    ir = animated_frame(w, &clock, root, &b, now, &c);
+    AX_REQUIRE(first_run(ir, &run) != NULL);
+    AX_CHECK(run.color.r > 0.1f && run.color.r < 0.9f);
+    AX_CHECK_EQ_U(c.glyph_runs, 1u); /* the label's run, again with the new color */
+    AX_CHECK(ax_world_root_animating(w, root));
+    now += 300 * MS;
+    ir = animated_frame(w, &clock, root, &b, now, &c);
+    AX_REQUIRE(first_run(ir, &run) != NULL);
+    AX_CHECK_NEAR_F(run.color.r, 1.0f, 0.0001f);
+    ax_ir_builder_deinit(&b);
+    ax_world_destroy(w);
+}
+
+/* A scaled layer's text keeps its raster while the scale moves and records again at the exact
+ * size once the scale has held still for 150 ms; the window gets frames until then. */
+AX_TEST(text_under_a_changing_scale_rasterizes_again_once_it_settles)
+{
+    static manual_clock clock = {1000 * MS};
+    ax_world w = make_clocked_world(&clock);
+    ax_ir_builder b;
+    ax_txn *t;
+    ax_node root, layer, label;
+    ax_frame_counters c;
+    ax_ir_glyph_run_item run;
+    const ax_render_ir *ir;
+    ax_transform2d m2 = {2, 0, 0, 2, 0, 0}, m3 = {3, 0, 0, 3, 0, 0};
+    uint64_t now = 1000 * MS;
+    AX_REQUIRE(!AX_HANDLE_IS_NULL(w));
+    ax_ir_builder_init(&b, ax_default_allocator());
+    t = ax_txn_begin(w);
+    ax_txn_set_animated(t, false);
+    root = ax_txn_create(t, AX_NODE_VIEW);
+    layer = ax_txn_create(t, AX_NODE_VIEW);
+    label = ax_txn_create(t, AX_NODE_VIEW);
+    ax_txn_set_transform(t, layer, AX_PROP_TRANSFORM, m2);
+    text(t, label, "Scaled");
+    ax_txn_append_child(t, root, layer);
+    ax_txn_append_child(t, layer, label);
+    AX_REQUIRE(ax_txn_commit(t, NULL) == AX_OK);
+    ir = animated_frame(w, &clock, root, &b, now, &c);
+    AX_REQUIRE(first_run(ir, &run) != NULL);
+    AX_CHECK_NEAR_F(run.raster_scale, 2.0f, 0.0f); /* first seen: settled at once */
+
+    t = ax_txn_begin(w);
+    ax_txn_set_animated(t, false);
+    ax_txn_set_transform(t, layer, AX_PROP_TRANSFORM, m3);
+    AX_REQUIRE(ax_txn_commit(t, NULL) == AX_OK);
+    now += 16 * MS;
+    ir = animated_frame(w, &clock, root, &b, now, &c);
+    AX_REQUIRE(first_run(ir, &run) != NULL);
+    AX_CHECK_NEAR_F(run.raster_scale, 2.0f, 0.0f); /* the old raster, drawn scaled */
+    AX_CHECK_EQ_U(c.glyph_runs, 0u);
+    AX_CHECK(ax_world_root_animating(w, root)); /* frames go on until it settles */
+    now += 100 * MS;
+    ir = animated_frame(w, &clock, root, &b, now, &c);
+    AX_REQUIRE(first_run(ir, &run) != NULL);
+    AX_CHECK_NEAR_F(run.raster_scale, 2.0f, 0.0f);
+    now += 100 * MS; /* held still 200 ms */
+    ir = animated_frame(w, &clock, root, &b, now, &c);
+    AX_REQUIRE(first_run(ir, &run) != NULL);
+    AX_CHECK_NEAR_F(run.raster_scale, 3.0f, 0.0f);
+    AX_CHECK_EQ_U(c.text_rescaled, 1u);
+    AX_CHECK_EQ_U(c.glyph_runs, 1u);
+    now += 16 * MS;
+    (void)animated_frame(w, &clock, root, &b, now, &c);
+    AX_CHECK(!ax_world_root_animating(w, root)); /* settled: at rest */
+    ax_ir_builder_deinit(&b);
+    ax_world_destroy(w);
+}

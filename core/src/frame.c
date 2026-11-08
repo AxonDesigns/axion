@@ -41,6 +41,12 @@ typedef struct rec_entry {
     bool stale;             /* marked PAINT since (LAYOUT shows as a new size or origin) */
     bool incomplete;        /* some glyph runs waited for their glyphs (decision 100) */
     float raster_scale;     /* the raster scale its glyph runs were recorded at */
+    ax_color text_color;    /* the presentation color its glyph runs were recorded in */
+    /* A layer's scale for its text (decision 101): the settled one, the last seen, and since when
+     * it has held still (animator time). */
+    float settled_scale;
+    float seen_scale;
+    uint64_t still_since;
     bool promoted;          /* the node records a layer (until demoted, decision 94) */
     uint64_t neutral_since; /* animator time since its layer has been neutral; 0: not neutral */
     uint8_t *items;
@@ -52,6 +58,10 @@ typedef struct rec_frame {
     uint32_t slot;
     uint32_t layer; /* the layer the node's items go to */
     ax_vec2 origin; /* the node's top-left in that layer's space */
+    float raster;     /* raster pixels per unit of that layer: the window's scale times the layers'
+                       * settled scales (decision 101) */
+    ax_color color;   /* the text color the node's glyph runs take: its own COLOR's presentation
+                       * value, or the nearest ancestor's (decision 99) */
     uint32_t next;  /* next child to visit; AX_NODE_NONE when done */
     bool entered;
     bool pushed;           /* a layer was pushed for the node */
@@ -72,7 +82,9 @@ struct frame_state {
     ax_frame_counters counters;
     /* Text (decisions 100 and 101). */
     uint64_t epoch;        /* the newest snapshot's resource epoch */
-    float record_scale;    /* the window's scale, while a root records */
+    float record_scale;    /* the raster scale of the node being recorded */
+    ax_color record_color; /* the text color of the node being recorded */
+    bool settling;         /* a layer's scale changed and has not settled yet: frames go on */
     uint32_t glyph_budget; /* glyphs rasterized at once this frame, left */
     uint32_t glyph_budget_set; /* ax_world_set_glyph_budget (0 in a fresh state: automatic) */
     bool glyph_budget_custom;
@@ -472,6 +484,16 @@ ax_result ax_world_presentation(ax_world world, ax_node node, ax_prop prop, ax_v
     case AX_PROP_TRANSFORM:
         out->transform2d = pr.composite.transform;
         return AX_OK;
+    case AX_PROP_COLOR: {
+        /* The node's own COLOR as it shows (inherited colors are the ancestor's). */
+        const axa_node *an = ax__anim_node(w, row);
+        if (an != NULL && (an->active & (1u << AXA_TEXT_COLOR)) != 0) {
+            out->color = an->text_color;
+        } else {
+            (void)ax_scene_get(&w->scene, node, AX_PROP_COLOR, out);
+        }
+        return AX_OK;
+    }
     default:
         return ax_set_error(AX_ERR_INVALID_ARGUMENT,
                             "ax_world_presentation: property 0x%x does not animate",
@@ -602,7 +624,7 @@ static bool record_text(world_impl *w, rec_entry *e, uint32_t row, const pres *p
     if (t == NULL || t->paragraph == NULL || ts == NULL) {
         return true;
     }
-    color = t->computed.color;
+    color = w->frame->record_color; /* the presentation value (animated), inherited */
     if (!(color.a > 0.0f)) {
         return true;
     }
@@ -642,6 +664,7 @@ static bool record_items(world_impl *w, rec_entry *e, uint32_t row, const pres *
     e->size = 0;
     e->incomplete = false;
     e->raster_scale = w->frame->record_scale;
+    e->text_color = w->frame->record_color;
     w->frame->counters.nodes_recorded++;
     if (frame.w <= 0.0f || frame.h <= 0.0f) {
         return true; /* nothing visible */
@@ -685,9 +708,15 @@ static bool emit_items(world_impl *w, ax_ir_builder *b, uint32_t slot, const pre
     const ax_node_store *s = &w->scene.store;
     const ax_rect frame = pr->frame;
     uint32_t off = 0;
+    const ax_node_text *t = (const ax_node_text *)ax_node_store_peek_component(
+        s, slot, w->scene.text_component);
+    const bool text = t != NULL && t->paragraph != NULL;
     bool reuse = e->generation == s->slots[slot].generation && !e->stale && e->layer == layer &&
                  e->origin.x == origin.x && e->origin.y == origin.y && e->width == frame.w &&
-                 e->height == frame.h && e->raster_scale == w->frame->record_scale;
+                 e->height == frame.h &&
+                 (!text || (e->raster_scale == w->frame->record_scale &&
+                            memcmp(&e->text_color, &w->frame->record_color,
+                                   sizeof e->text_color) == 0));
     if (!reuse) {
         if (!record_items(w, e, s->slots[slot].row, pr, origin)) {
             return false;
@@ -745,6 +774,47 @@ static ax_ir_layer_desc layer_desc(const pres *pr, ax_vec2 origin)
     return d;
 }
 
+/*
+ * A layer's scale for the text inside it (decision 101), with hysteresis. Its transform's scale
+ * (the square root of the linear part's determinant: exact for uniform scales) becomes the settled
+ * scale when it has held still (within 0.1 %) for 150 ms of animator time and differs from the
+ * settled one by more than 1 %. Until then the glyphs keep the raster of the settled scale and are
+ * drawn scaled (bilinear), so an animated scale never rasterizes glyphs at every frame size; once
+ * settled, the glyph runs record again at the exact size. While a layer is unsettled the window
+ * keeps getting frames (`settling`), so it settles even when nothing else moves.
+ */
+#define SETTLE_NS 150000000ull
+
+static float settled_scale(world_impl *w, rec_entry *e, const ax_affine2 *m)
+{
+    const float det = m->a * m->d - m->b * m->c;
+    const float now_scale = det > 0.0f ? sqrtf(det) : (det < 0.0f ? sqrtf(-det) : 1.0f);
+    const uint64_t now = ax__anim_time(w);
+    if (!(e->settled_scale > 0.0f) || !(now_scale > 0.0f)) {
+        e->settled_scale = now_scale > 0.0f ? now_scale : 1.0f;
+        e->seen_scale = e->settled_scale;
+        e->still_since = 0;
+        return e->settled_scale;
+    }
+    if (fabsf(now_scale - e->settled_scale) > 0.01f * e->settled_scale) {
+        /* still_since: when this scale was first seen (it restarts whenever the scale moves). */
+        if (e->still_since == 0 || fabsf(now_scale - e->seen_scale) > 0.001f * now_scale) {
+            e->still_since = now != 0 ? now : 1u;
+        } else if (now >= e->still_since + SETTLE_NS) {
+            e->settled_scale = now_scale;
+            e->still_since = 0;
+            w->frame->counters.text_rescaled++;
+        }
+        if (e->settled_scale != now_scale) {
+            w->frame->settling = true;
+        }
+    } else {
+        e->still_since = 0;
+    }
+    e->seen_scale = now_scale;
+    return e->settled_scale;
+}
+
 ax_result ax_world_record_root(ax_world world, ax_node root, ax_ir_builder *b)
 {
     world_impl *w = scene_world(world);
@@ -764,6 +834,7 @@ ax_result ax_world_record_root(ax_world world, ax_node root, ax_ir_builder *b)
      * glyph source lets the renderer read them. */
     f->epoch++;
     f->record_scale = r->scale;
+    f->settling = false;
     f->glyph_budget = f->glyph_budget_custom ? f->glyph_budget_set
                       : w->jobs != NULL && !ax_jobs_is_inline(w->jobs) ? 1024u
                                                                         : 256u;
@@ -776,6 +847,8 @@ ax_result ax_world_record_root(ax_world world, ax_node root, ax_ir_builder *b)
     f->stack[0].slot = ax_handle_slot(root.h);
     f->stack[0].layer = AX_NODE_NONE; /* the snapshot's root layer */
     f->stack[0].origin = ax_vec2_make(0.0f, 0.0f);
+    f->stack[0].raster = r->scale;
+    f->stack[0].color = ax_prop_builtin(AX_PROP_COLOR)->default_value.color;
     f->stack[0].entered = false;
     f->stack[0].pushed = false;
     f->stack[0].clipped = false;
@@ -857,7 +930,21 @@ ax_result ax_world_record_root(ax_world world, ax_node root, ax_ir_builder *b)
                 top->pushed = true;
                 top->layer = top->slot;
                 top->origin = ax_vec2_make(0.0f, 0.0f);
+                top->raster *= settled_scale(w, e, &d.transform);
+            } else {
+                e->settled_scale = 0.0f; /* in its parent's space: no scale of its own */
             }
+            /* The text color: its own COLOR's presentation value, else inherited. */
+            {
+                const ax_node_text *tc = (const ax_node_text *)ax_node_store_peek_component(
+                    s, top->slot, w->scene.text_component);
+                if (tc != NULL && (tc->own & AX_TEXT_PROP_BIT(AX_PROP_COLOR)) != 0) {
+                    const axa_node *an = ax__anim_node(w, row);
+                    top->color = an != NULL ? an->text_color : tc->color;
+                }
+            }
+            f->record_scale = top->raster;
+            f->record_color = top->color;
             if (!emit_items(w, b, top->slot, &pr, top->layer, top->origin)) {
                 return ax_set_error(AX_ERR_OUT_OF_MEMORY, "ax_world_record_root: out of memory");
             }
@@ -887,6 +974,8 @@ ax_result ax_world_record_root(ax_world world, ax_node root, ax_ir_builder *b)
             next = &f->stack[depth++];
             next->slot = child;
             next->layer = top->layer;
+            next->raster = top->raster;
+            next->color = top->color;
             next->origin = ax_vec2_add(
                 top->origin, ax_vec2_make(s->layout[crow].frame.x, s->layout[crow].frame.y));
             next->entered = false;
@@ -905,6 +994,10 @@ ax_result ax_world_record_root(ax_world world, ax_node root, ax_ir_builder *b)
         depth--;
     }
     r->changed = false;
+    if (f->settling) {
+        r->animating = true; /* a layer's text waits to settle: the window needs more frames */
+        r->changed = true;
+    }
     f->counters.snapshots++;
     return AX_OK;
 }

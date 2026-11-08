@@ -13,11 +13,12 @@
 
 #include <axion/base/ax_assert.h>
 #include <axion/base/ax_math.h>
+#include <axion/core/ax_text_node.h>
 #include <axion/base/ax_memory.h>
 
 #define PI_F 3.14159265f
 
-static const uint8_t COMPONENTS[AXA_CHANNELS] = {4, 4, 1, 1, 1, 1, 1, 6};
+static const uint8_t COMPONENTS[AXA_CHANNELS] = {4, 4, 1, 1, 1, 1, 1, 6, 4};
 
 /* Rest thresholds per component: displacement and velocity (per second). */
 static float rest_x(int ch, int k)
@@ -26,6 +27,7 @@ static float rest_x(int ch, int k)
     case AXA_FRAME:
         return 0.01f;
     case AXA_BACKGROUND:
+    case AXA_TEXT_COLOR:
     case AXA_OPACITY:
         return 1e-4f;
     case AXA_TRANSFORM:
@@ -41,7 +43,8 @@ size_t ax__anim_node_size(void)
     return sizeof(axa_node);
 }
 
-AX_STATIC_ASSERT(sizeof(axa_transitions) == sizeof(uint16_t) * 8u, "scene.c registers this size");
+AX_STATIC_ASSERT(sizeof(axa_transitions) == sizeof(uint16_t) * AXA_CHANNELS,
+                 "scene.c registers this size");
 
 int axa_channel_of(ax_prop prop)
 {
@@ -59,6 +62,8 @@ int axa_channel_of(ax_prop prop)
         return AXA_OPACITY;
     case AX_PROP_TRANSFORM:
         return AXA_TRANSFORM;
+    case AX_PROP_COLOR:
+        return AXA_TEXT_COLOR;
     default:
         return -1;
     }
@@ -465,10 +470,28 @@ static axa_node *anim_node(world_impl *w, ax_node node, bool create)
 }
 
 /* The target values of a channel, as components. */
-static void target_of(const ax_node_store *s, uint32_t row, int ch, float out[AXA_MAX_COMPONENTS])
+/* A node's own COLOR, or the default when it set none. */
+static ax_color own_text_color(const world_impl *w, uint32_t row)
 {
+    const ax_scene *scene = &w->scene;
+    const ax_node_text *t = (const ax_node_text *)ax_node_store_peek_component(
+        &scene->store, scene->store.slot_of_row[row], scene->text_component);
+    if (t != NULL && (t->own & AX_TEXT_PROP_BIT(AX_PROP_COLOR)) != 0) {
+        return t->color;
+    }
+    return ax_prop_builtin(AX_PROP_COLOR)->default_value.color;
+}
+
+static void target_of(const world_impl *w, uint32_t row, int ch, float out[AXA_MAX_COMPONENTS])
+{
+    const ax_node_store *s = &w->scene.store;
     memset(out, 0, sizeof(float) * AXA_MAX_COMPONENTS);
     switch (ch) {
+    case AXA_TEXT_COLOR: {
+        const ax_color c = own_text_color(w, row);
+        memcpy(out, &c, sizeof c);
+        break;
+    }
     case AXA_FRAME:
         memcpy(out, &s->layout[row].frame, sizeof(ax_rect));
         break;
@@ -492,6 +515,7 @@ static void value_components(int ch, const ax_value *v, float out[AXA_MAX_COMPON
     memset(out, 0, sizeof(float) * AXA_MAX_COMPONENTS);
     switch (ch) {
     case AXA_BACKGROUND:
+    case AXA_TEXT_COLOR:
         memcpy(out, &v->color, sizeof(ax_color));
         break;
     case AXA_TRANSFORM:
@@ -537,7 +561,7 @@ void ax__anim_on_set(world_impl *w, uint64_t seq, ax_node node, ax_prop prop, co
         return; /* this transaction's first change of the channel was handled */
     }
     value_components(ch, old, from);
-    target_of(s, row, ch, to);
+    target_of(w, row, ch, to);
     if (memcmp(from, to, sizeof from) == 0) {
         return;
     }
@@ -685,7 +709,7 @@ static void frames(world_impl *w, anim_state *a)
         }
         memset(from, 0, sizeof from);
         memcpy(from, &c->prev, sizeof(ax_rect));
-        target_of(s, row, AXA_FRAME, to);
+        target_of(w, row, AXA_FRAME, to);
         retarget(w, a, an, AXA_FRAME, id, from, to, a->change_time);
     }
     if (resizing != NULL) {
@@ -703,8 +727,9 @@ static float clamp01(float v)
 
 /* The presentation values of a node's paint and composite channels: target + offset, clamped to
  * their valid ranges (a bouncing spring never makes opacity leave 0..1 or a radius negative). */
-static void present(const ax_node_store *s, uint32_t row, axa_node *an)
+static void present(const world_impl *w, uint32_t row, axa_node *an)
 {
+    const ax_node_store *s = &w->scene.store;
     const ax_node_paint *p = &s->paint[row];
     const ax_node_composite *c = &s->composite[row];
     int k;
@@ -722,6 +747,14 @@ static void present(const ax_node_store *s, uint32_t row, axa_node *an)
             r += an->track[AXA_RADIUS + k].off[0];
         }
         an->radii[k] = r > 0.0f ? r : 0.0f;
+    }
+    an->text_color = own_text_color(w, row);
+    if (an->active & (1u << AXA_TEXT_COLOR)) {
+        const float *o = an->track[AXA_TEXT_COLOR].off;
+        an->text_color.r += o[0];
+        an->text_color.g += o[1];
+        an->text_color.b += o[2];
+        an->text_color.a = clamp01(an->text_color.a + o[3]);
     }
     an->opacity = c->opacity;
     if (an->active & (1u << AXA_OPACITY)) {
@@ -765,13 +798,13 @@ uint32_t ax__anim_step(world_impl *w, uint64_t t, void (*on_root)(world_impl *, 
                 a->counters.finished++;
             }
         }
-        present(s, row, an);
+        present(w, row, an);
         /* What changed on screen: the frame and the composite only move layers; paint records the
          * node's items again. */
         if (was & ((1u << AXA_FRAME) | (1u << AXA_OPACITY) | (1u << AXA_TRANSFORM))) {
             s->dirty[row] |= AX_DIRTY_COMPOSITE;
         }
-        if (was & ((1u << AXA_BACKGROUND) | (0xFu << AXA_RADIUS))) {
+        if (was & ((1u << AXA_BACKGROUND) | (0xFu << AXA_RADIUS) | (1u << AXA_TEXT_COLOR))) {
             s->dirty[row] |= AX_DIRTY_PAINT;
         }
         if (an->active == 0) {
