@@ -60,6 +60,7 @@ typedef struct rt_surface {
 
     /* App thread. */
     bool app_used;
+    bool removing; /* the removal commands are queued; a retry only waits again */
     float host_width, host_height, host_scale;
 } rt_surface;
 

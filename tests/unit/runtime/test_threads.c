@@ -44,6 +44,7 @@ typedef struct fake_display {
     ax_atomic_u64 shown[MAX_S]; /* new snapshots shown */
     ax_atomic_u64 late[MAX_S];  /* frames that missed their refresh */
     ax_atomic_u32 detached;
+    ax_atomic_u64 detach_stall_ns; /* set by the test */
 } fake_display;
 
 static void request_next(fake_display *d, uint32_t i)
@@ -74,6 +75,13 @@ static ax_result fd_attach(void *self, ax_runtime rt, uint32_t i, uint64_t nativ
 static void fd_detach(void *self, uint32_t i)
 {
     fake_display *d = (fake_display *)self;
+    uint64_t stall = ax_atomic_load_u64(&d->detach_stall_ns, AX_MO_ACQUIRE);
+    if (stall != 0) { /* a render thread stuck in the driver */
+        uint64_t until = ax_time_monotonic_ns() + stall;
+        while (ax_time_monotonic_ns() < until) {
+            ax_thread_yield();
+        }
+    }
     d->live[i] = false;
     ax_atomic_fetch_add_u32(&d->detached, 1, AX_MO_RELAXED);
 }
@@ -144,6 +152,7 @@ static void display_init(fake_display *d, uint64_t refresh0, uint64_t refresh1)
         ax_atomic_init_u64(&d->late[i], 0);
     }
     ax_atomic_init_u32(&d->detached, 0);
+    ax_atomic_init_u64(&d->detach_stall_ns, 0);
 }
 
 static void display_deinit(fake_display *d)
@@ -437,6 +446,45 @@ AX_TEST(surfaces_come_and_go_while_the_threads_run)
         poll_all(w);
     }
     AX_CHECK_EQ_U(ax_atomic_load_u32(&d.detached, AX_MO_RELAXED), 20);
+    AX_CHECK_RESULT(ax_runtime_destroy(rt), AX_OK);
+    AX_CHECK_RESULT(ax_world_destroy(w), AX_OK);
+    display_deinit(&d);
+}
+
+/* A removal the threads do not confirm within 1 s fails, the surface still in use; calling again
+ * waits again without queuing a second removal, and succeeds. */
+AX_TEST(a_removal_that_times_out_can_be_retried)
+{
+    static fake_display d;
+    ax_world w;
+    ax_runtime rt;
+    ax_rt_desc rd;
+    ax_rt_surface_desc sd;
+    ax_node root;
+    uint32_t s;
+    ax_result first;
+    REQUIRE_THREADS();
+    display_init(&d, 16666667u, 16666667u);
+    AX_REQUIRE(ax_world_create(NULL, &w) == AX_OK);
+    memset(&rd, 0, sizeof rd);
+    rd.world = w;
+    rd.mode = AX_RUNTIME_THREADED;
+    rd.presenter = &k_display;
+    rd.presenter_self = &d;
+    AX_REQUIRE(ax_rt_create(&rd, &rt) == AX_OK);
+    AX_REQUIRE(!AX_HANDLE_IS_NULL(make_root(w, &root)));
+    memset(&sd, 0, sizeof sd);
+    AX_REQUIRE(ax_rt_add_surface(rt, root, &sd, &s) == AX_OK);
+    idle_for(w, 100 * MS);
+
+    ax_atomic_store_u64(&d.detach_stall_ns, 1500 * MS, AX_MO_RELEASE);
+    first = ax_rt_remove_surface(rt, s);
+    AX_CHECK_RESULT(first, AX_ERR_UNSUPPORTED);
+    AX_CHECK_EQ_U(ax_rt_surface_of_root(rt, root), s); /* still attached */
+    AX_CHECK_RESULT(ax_rt_remove_surface(rt, s), AX_OK);
+    AX_CHECK_EQ_U(ax_rt_surface_of_root(rt, root), UINT32_MAX);
+    AX_CHECK_EQ_U(ax_atomic_load_u32(&d.detached, AX_MO_RELAXED), 1); /* removed once */
+    ax_atomic_store_u64(&d.detach_stall_ns, 0, AX_MO_RELEASE);
     AX_CHECK_RESULT(ax_runtime_destroy(rt), AX_OK);
     AX_CHECK_RESULT(ax_world_destroy(w), AX_OK);
     display_deinit(&d);

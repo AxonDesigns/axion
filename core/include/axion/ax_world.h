@@ -63,9 +63,10 @@ AX_API uint64_t ax_world_now(ax_world world);
 /* ---- Events (scene thread -> app thread) ----------------------------------------------------- */
 
 /*
- * What the scene thread tells the app thread, in order: the windowing system's events for the
- * windows whose roots the world owns (the scene thread consumes the platform's events and forwards
- * them), with times on the world's clock. Values match the platform's ax_event_type.
+ * What the scene thread tells the app thread, in order: the windowing system's events for every
+ * window of the app (the scene thread consumes the platform's events and forwards them), with the
+ * window's root, or 0 for a window the runtime does not have, and times on the world's clock.
+ * Values match the platform's ax_event_type.
  * Delivery: nothing is dropped (resizes are already coalesced per window by the platform).
  */
 typedef enum ax_world_event_type {
@@ -81,7 +82,7 @@ typedef struct ax_world_event {
     uint32_t struct_size; /* set by the caller: sizeof(ax_world_event) */
     uint32_t type;        /* ax_world_event_type */
     uint64_t window;      /* the window's handle value (platform's ax_window) */
-    uint64_t root;        /* the window's root node (ax_node.h), 0 when it has none */
+    uint64_t root;        /* the window's root node (ax_node.h); 0: the runtime does not have it */
     uint64_t time_ns;     /* world clock */
     union {
         struct {

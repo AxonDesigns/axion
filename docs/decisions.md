@@ -2944,10 +2944,12 @@ thread split).
 - **One queue, scene thread to app thread** (`core/src/events.c`): a fixed SPSC ring of 256
   records with a scene-side backlog when it is full, as the rings of decision 65; nothing is lost
   but to out of memory. Three kinds of record:
-  - an `ax_world_event` (stable, `ax_world.h`): close, resize, scale, focus and occlusion of a
-    window whose root the world owns, with the window's and the root's handles and the time on
-    the world's clock. The type values are the platform's `ax_event_type`. The scene thread (the
-    platform's event consumer in the pipeline) forwards them with `ax_world_push_event`;
+  - an `ax_world_event` (stable, `ax_world.h`): close, resize, scale, focus and occlusion of
+    **every window of the app**, with the window's handle, its root's handle (0 for a window the
+    runtime does not have) and the time on the world's clock. The type values are the platform's
+    `ax_event_type`. The scene thread (the platform's event consumer in the pipeline) forwards
+    them with `ax_world_push_event`. (Corrected after review: an earlier version of this entry
+    said only the windows whose roots the world owns.);
   - `PRESENTED(seq, time)`: every applied transaction up to seq is on screen
     (`ax_world_report_presented`, scene thread). Which roots must have shown it is the
     pipeline's rule; core only carries the watermark. A newer one replaces one waiting at the end
@@ -3202,7 +3204,14 @@ surface from one render thread. The owner asked for:
     - with no surface, sleeps on its own condition until a command;
     - when it stops, detaches every surface and destroys the presenter's resources on itself.
   - Removing a surface waits, bounded by 1 s, for both threads to acknowledge it, so the
-    window can then be destroyed.
+    window can then be destroyed. **If they do not confirm within 1 s** (a render thread stuck
+    in the driver), `ax_rt_remove_surface` and `ax_runtime_remove_window` return
+    `AX_ERR_UNSUPPORTED`. The surface is then still in use, the render thread may still present
+    it, and its window must not be destroyed; the caller calls again until `AX_OK`. A retry
+    queues nothing new and only waits again. Both headers say so (the owner's review). Test:
+    `runtime.threads.a_removal_that_times_out_can_be_retried`, with a detach that stalls 1.5 s:
+    the first call fails with the surface still attached, the second succeeds, and the presenter
+    detaches once.
 - **The platform presenter** (`runtime/src/platform.c`, built with the platform module):
   - **The renderer.** It defaults to `ax_render_wgpu` when the gpu module is built. It is
     created on the render thread at the first window. Each window gets decision 57's frame step
@@ -3219,9 +3228,17 @@ surface from one render thread. The owner asked for:
     mailbox sequence (16 per surface). When the platform reports a newer commit on screen, the
     newest snapshot at or before it goes to the scene for `ax_txn_on_presented` (decisions 74
     and 75).
-  - **Events.** The scene thread is the app's event consumer. It forwards window events to the
-    world (`ax_world_push_event`) with the window's root and the time on the world's clock, and
-    turns occlusion into the surface's visibility (decision 77's watermark).
+  - **Events.** The scene thread is the app's event consumer. It forwards every window event to
+    the world (`ax_world_push_event`) with the window's root (0 for a window the runtime does not
+    have) and the time on the world's clock, and turns occlusion into the surface's visibility
+    (decision 77's watermark).
+    - **No event type goes through without its data** (the owner's review, for M2's input). The
+      payload is copied by a switch that names every `ax_event_type` and has no default, so a
+      type added to the platform without a case is a `-Wswitch` error, which `-Wall -Werror`
+      turns into a failed build on GCC and Clang. `_Static_assert`s keep the world's type values
+      equal to the platform's. Checked by adding a probe type to `ax_event.h`: both compilers
+      stop at the switch. (MSVC does not build the platform module yet; its equivalent warning,
+      C4061, is off by default and would have to be enabled when it does.)
   - **Stable ABI** (`ax_runtime_window.h`): `ax_runtime_create_for_app`,
     `ax_runtime_add_window` (it creates the window's root in a transaction of its own) and
     `ax_runtime_remove_window`. The internal SDK (`ax_runtime_platform.h`) adds the options
@@ -3256,14 +3273,30 @@ surface from one render thread. The owner asked for:
     - a maximize is answered with a snapshot of the new size (locally 1280x688, `scene_late` 1,
       no forced acknowledgement);
     - with the app thread blocked 500 ms, no frame is lost compared with the 500 ms before it
-      unblocked: presentations and new snapshots no fewer (two frames of slack: on runners that
-      present every other refresh, a window edge moves the count by two), missed vblanks no more
-      (one of slack). A block that held the pipeline back would lose about 30. Locally at weston's 60 Hz: 30 presentations, 30 snapshots and 0 missed in both.
+      unblocked: presentations, new snapshots and missed vblanks within two frames (on runners
+      that present every other refresh, a window edge moves each count by two, and missed
+      refreshes follow presentations one for one). A block that held the pipeline back would lose
+      about 30. Locally at weston's 60 Hz: 30 presentations, 30 snapshots and 0 missed in both.
       **The criterion is relative** because GitHub's Ubuntu runners (weston 13 at 79.6 Hz,
       lavapipe) present every other refresh in any window: 19 to 21 of 39, with the app thread
       blocked or not, while weston 15 in CI and the local weston reach every refresh. That is the software
       renderer's speed on those runners (the commit misses weston's repaint window), not the
       block; the desktop check with `m1_nodes --block-ms=500` covers real hardware.
+    - **Baseline: M0's loop on the same runner** (the owner's review),
+      `gpu_wayland.pipeline.the_pipeline_presents_as_often_as_the_m0_loop`. It measures M0's
+      render loop for 500 ms: `ax_render_frame_step`, with a scene thread that records a
+      background, a card and a moving bar on each request, as `test_ir_present` does. It then
+      measures the M1 pipeline for 500 ms with the same picture, and requires the pipeline to
+      present as often and miss no more refreshes, within two frames.
+      - On GitHub's Ubuntu runner (weston 13 at 79.5 Hz, lavapipe, Clang ASan): **M0 20
+        presented, 19 missed; M1 21 presented, 21 missed.** M0 also presents every other
+        refresh, so the explanation holds: it is the runner, not the pipeline.
+      - The three other Ubuntu jobs passed the same comparison, so their M0 presented at most
+        two frames more than M1's 19 to 21: also every other refresh.
+      - Locally (weston at 60 Hz) and with weston 15 in CI, both present every refresh: 30 of 30
+        locally, with 0 missed.
+      - The test stays as a guard: a pipeline that added latency of its own would fall behind
+        M0's loop on any machine.
 
 **Status.** Deviation (the vsync), recorded as the owner asked; the rest Implementation, pending
 the owner's approval.

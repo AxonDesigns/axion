@@ -39,8 +39,16 @@ AX_API ax_result ax_runtime_create_for_app(const ax_runtime_desc *desc, ax_app a
  */
 AX_API ax_result ax_runtime_add_window(ax_runtime runtime, ax_window window, ax_node *out_root);
 
-/* Stops presenting the window (waits for the render thread to let it go); call it before
- * ax_window_destroy. The root node stays. thread: app */
+/*
+ * Stops presenting the window; call it before ax_window_destroy. It waits until the runtime's
+ * threads have let the window go, at most 1 s. The root node stays.
+ * Errors:
+ *   - AX_ERR_INVALID_HANDLE: invalid runtime; AX_ERR_INVALID_ARGUMENT: the window was not added;
+ *   - AX_ERR_UNSUPPORTED: the threads did not confirm within 1 s. The window is then still in
+ *     use (the render thread may still present it) and must not be destroyed. Call again until
+ *     AX_OK; a retry queues nothing new, it only waits again.
+ * thread: app
+ */
 AX_API ax_result ax_runtime_remove_window(ax_runtime runtime, ax_window window);
 
 AX_EXTERN_C_END

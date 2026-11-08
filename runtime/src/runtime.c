@@ -313,6 +313,7 @@ ax_result ax_rt_add_surface(ax_runtime rt, ax_node root, const ax_rt_surface_des
     ax_atomic_store_u32(&s->scene_done, 0, AX_MO_RELAXED);
     ax_atomic_store_u32(&s->render_done, 0, AX_MO_RELAXED);
     s->app_used = true;
+    s->removing = false;
     (void)push_cmd(&r->scene_cmds, RT_CMD_ADD, i);
     (void)push_cmd(&r->render_cmds, RT_CMD_ADD, i);
     if (r->desc.mode == AX_RUNTIME_SINGLE_THREADED) {
@@ -340,11 +341,14 @@ ax_result ax_rt_remove_surface(ax_runtime rt, uint32_t surface)
     if (s == NULL || !s->app_used) {
         return ax_set_error(AX_ERR_INVALID_ARGUMENT, "ax_rt_remove_surface: no such surface");
     }
-    while (!push_cmd(&r->scene_cmds, RT_CMD_REMOVE, surface)) {
-        ax_thread_yield(); /* the scene drains commands at every pass */
-    }
-    while (!push_cmd(&r->render_cmds, RT_CMD_REMOVE, surface)) {
-        ax_thread_yield();
+    if (!s->removing) { /* a retry after a timeout queues nothing new: it waits again */
+        while (!push_cmd(&r->scene_cmds, RT_CMD_REMOVE, surface)) {
+            ax_thread_yield(); /* the scene drains commands at every pass */
+        }
+        while (!push_cmd(&r->render_cmds, RT_CMD_REMOVE, surface)) {
+            ax_thread_yield();
+        }
+        s->removing = true;
     }
     if (r->desc.mode == AX_RUNTIME_SINGLE_THREADED || !r->threads_running) {
         (void)ax_rt_scene_step(rt);
@@ -359,8 +363,10 @@ ax_result ax_rt_remove_surface(ax_runtime rt, uint32_t surface)
         }
         ax_mutex_unlock(&r->ack_lock);
         if (!both_done(s)) {
+            /* Still attached: the render thread may be presenting it. The caller retries. */
             return ax_set_error(AX_ERR_UNSUPPORTED,
-                                "ax_rt_remove_surface: the runtime's threads did not answer");
+                                "ax_rt_remove_surface: the runtime's threads did not let the "
+                                "surface go within 1 s; it is still in use, call again");
         }
     }
     /* Neither side uses the mailbox any more: start the slot's next surface without the old
@@ -368,6 +374,7 @@ ax_result ax_rt_remove_surface(ax_runtime rt, uint32_t surface)
     ax_ir_mailbox_deinit(&s->mailbox);
     ax_ir_mailbox_init(&s->mailbox, &r->allocator);
     s->app_used = false;
+    s->removing = false;
     s->root.h = 0;
     return AX_OK;
 }

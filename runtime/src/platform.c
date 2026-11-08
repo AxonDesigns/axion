@@ -289,10 +289,59 @@ static uint32_t surface_of_window(ax_runtime rt, uint64_t window)
     return UINT32_MAX;
 }
 
+/* The world's event types are the platform's, value for value (ax_world.h). */
+_Static_assert((int)AX_WORLD_EVENT_NONE == (int)AX_EVENT_NONE, "event types differ");
+_Static_assert((int)AX_WORLD_EVENT_CLOSE_REQUESTED == (int)AX_EVENT_CLOSE_REQUESTED,
+               "event types differ");
+_Static_assert((int)AX_WORLD_EVENT_RESIZED == (int)AX_EVENT_RESIZED, "event types differ");
+_Static_assert((int)AX_WORLD_EVENT_SCALE_CHANGED == (int)AX_EVENT_SCALE_CHANGED,
+               "event types differ");
+_Static_assert((int)AX_WORLD_EVENT_FOCUS == (int)AX_EVENT_FOCUS, "event types differ");
+_Static_assert((int)AX_WORLD_EVENT_OCCLUSION == (int)AX_EVENT_OCCLUSION, "event types differ");
+
+/*
+ * Copies a platform event's payload into a world event. The switch names every ax_event_type and
+ * has no default: a type added to the platform without a case here is a -Wswitch error (part of
+ * -Wall, which builds with -Werror), so no event (M2's input among them) is forwarded without its
+ * data. Returns false for AX_EVENT_NONE and for a value outside the enum.
+ */
+static bool copy_event_data(const ax_event *e, ax_world_event *we)
+{
+    switch ((ax_event_type)e->type) {
+    case AX_EVENT_NONE:
+        return false;
+    case AX_EVENT_CLOSE_REQUESTED:
+        return true; /* no payload */
+    case AX_EVENT_RESIZED:
+        we->data.resized.width = e->data.resized.width;
+        we->data.resized.height = e->data.resized.height;
+        we->data.resized.pixel_width = e->data.resized.pixel_width;
+        we->data.resized.pixel_height = e->data.resized.pixel_height;
+        we->data.resized.scale = e->data.resized.scale;
+        return true;
+    case AX_EVENT_SCALE_CHANGED:
+        we->data.scale_changed.scale = e->data.scale_changed.scale;
+        return true;
+    case AX_EVENT_FOCUS:
+        we->data.focus.focused = e->data.focus.focused;
+        return true;
+    case AX_EVENT_OCCLUSION:
+        we->data.occlusion.occluded = e->data.occlusion.occluded;
+        return true;
+    }
+    return false; /* not a known type: never forwarded */
+}
+
+/*
+ * Every event of the app's windows is forwarded, with the window's root when the runtime has that
+ * window and root 0 otherwise (a window the app never added). Occlusion also sets the surface's
+ * visibility for ax_txn_on_presented.
+ */
 static void pump_events(void *user, ax_runtime rt)
 {
     plat *p = (plat *)user;
     rt_impl *r = ax__rt_from_handle(rt);
+    ax_world world = r != NULL ? r->desc.world : (ax_world){0};
     ax_event e;
     ax_atomic_store_u64(&p->rt, rt.h, AX_MO_RELEASE);
     if (!p->notify_set) {
@@ -307,38 +356,20 @@ static void pump_events(void *user, ax_runtime rt)
         if (ax_app_poll_event(p->app, &e) != AX_OK || e.type == AX_EVENT_NONE) {
             break;
         }
-        s = surface_of_window(rt, e.window.h);
         memset(&we, 0, sizeof we);
         we.struct_size = sizeof we;
-        we.type = e.type; /* the same values (ax_world_event_type) */
+        if (!copy_event_data(&e, &we)) {
+            continue;
+        }
+        s = surface_of_window(rt, e.window.h);
+        we.type = e.type;
         we.window = e.window.h;
         we.root = s != UINT32_MAX && r != NULL ? r->surfaces[s].root.h : 0;
-        we.time_ns =
-            ax_world_time_from_monotonic(r != NULL ? r->desc.world : (ax_world){0}, e.time_ns);
-        switch (e.type) {
-        case AX_EVENT_RESIZED:
-            we.data.resized.width = e.data.resized.width;
-            we.data.resized.height = e.data.resized.height;
-            we.data.resized.pixel_width = e.data.resized.pixel_width;
-            we.data.resized.pixel_height = e.data.resized.pixel_height;
-            we.data.resized.scale = e.data.resized.scale;
-            break;
-        case AX_EVENT_SCALE_CHANGED:
-            we.data.scale_changed.scale = e.data.scale_changed.scale;
-            break;
-        case AX_EVENT_FOCUS:
-            we.data.focus.focused = e.data.focus.focused;
-            break;
-        case AX_EVENT_OCCLUSION:
-            we.data.occlusion.occluded = e.data.occlusion.occluded;
-            if (s != UINT32_MAX) {
-                ax_rt_set_surface_visible(rt, s, !e.data.occlusion.occluded);
-            }
-            break;
-        default:
-            break;
+        we.time_ns = ax_world_time_from_monotonic(world, e.time_ns);
+        if (e.type == AX_EVENT_OCCLUSION && s != UINT32_MAX) {
+            ax_rt_set_surface_visible(rt, s, !e.data.occlusion.occluded);
         }
-        (void)ax_world_push_event(r != NULL ? r->desc.world : (ax_world){0}, &we);
+        (void)ax_world_push_event(world, &we);
     }
 }
 

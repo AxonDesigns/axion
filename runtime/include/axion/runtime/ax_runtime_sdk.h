@@ -120,8 +120,17 @@ typedef struct ax_rt_surface_desc {
 AX_API ax_result ax_rt_add_surface(ax_runtime rt, ax_node root, const ax_rt_surface_desc *desc,
                                    uint32_t *out_surface);
 
-/* Detaches the surface. In threaded mode it waits (bounded by a second) until the scene and the
- * render threads have let it go; the root node stays. thread: app */
+/*
+ * Detaches the surface; the root node stays. In threaded mode it waits until the scene and the
+ * render threads have let the surface go, at most 1 s.
+ * Errors:
+ *   - AX_ERR_INVALID_ARGUMENT: no such surface;
+ *   - AX_ERR_UNSUPPORTED: the threads did not confirm within 1 s (a render thread stuck in the
+ *     driver, for example). The surface is then still in use: the render thread may still present
+ *     it, so its window must not be destroyed. Call again until AX_OK; a retry queues nothing new,
+ *     it only waits again.
+ * thread: app
+ */
 AX_API ax_result ax_rt_remove_surface(ax_runtime rt, uint32_t surface);
 
 /* The surface of a root, or UINT32_MAX. thread: app */
