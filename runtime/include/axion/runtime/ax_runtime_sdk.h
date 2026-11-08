@@ -22,10 +22,10 @@
  *   2. ax_world_apply_pending(world, T - refresh): transactions committed after the frame's
  *      latch point wait for the next frame. The queue is the world's: a tick of one surface
  *      applies transactions that the other surfaces see at their next tick;
- *   3. the scene driver, if any (examples only, until animations);
- *   4. the root's viewport, ax_world_position;
- *   5. ax_world_record_collect, and if the root's content changed, ax_world_record_root into the
- *      surface's mailbox, published;
+ *   3. the root's viewport (the surface's logical size);
+ *   4. the scene driver, if any (examples only, until animations), which may read that size;
+ *   5. ax_world_position, ax_world_record_collect, and if the root's content changed,
+ *      ax_world_record_root into the surface's mailbox, published;
  *   6. ax_world_publish_mirror (after layout, decision 69);
  *   7. ax_scene_clear_dirty.
  */
@@ -76,10 +76,11 @@ typedef struct ax_rt_presenter_vtbl {
     void (*destroy)(void *self);
 } ax_rt_presenter_vtbl;
 
-/* Called by the scene before positioning at each tick of a surface (examples only: it moves
- * nodes until implicit animations exist, and goes away with them). Scene side. */
-typedef void (*ax_rt_scene_driver)(void *user, ax_world world, ax_node root,
-                                   uint64_t frame_time_ns);
+/* Called by the scene before positioning at each tick of a surface, with the frame's time (world
+ * clock) and the root's viewport (examples only: it moves nodes until implicit animations exist,
+ * and goes away with them). Scene side. */
+typedef void (*ax_rt_scene_driver)(void *user, ax_world world, ax_node root, uint64_t frame_time_ns,
+                                   float width, float height);
 
 typedef struct ax_rt_desc {
     ax_world world;

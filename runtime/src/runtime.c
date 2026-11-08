@@ -535,16 +535,15 @@ static void tick(rt_impl *r, uint32_t index, const ax_rt_request *q)
     if (!ax_node_store_is_live(&scene->store, s->root)) {
         return; /* the root's transaction has not applied yet */
     }
-    /* 3. The examples' driver. */
-    if (r->desc.driver != NULL) {
-        r->desc.driver(r->desc.driver_user, world, s->root, t);
-    }
-    /* 4. Positioning. */
+    /* 3. The root's viewport. 4. The examples' driver, which may read it. */
     if (ax_world_set_root_viewport(world, s->root, q->logical_width, q->logical_height) != AX_OK) {
         return; /* out of memory, or the root has gained a parent: nothing to record */
     }
+    if (r->desc.driver != NULL) {
+        r->desc.driver(r->desc.driver_user, world, s->root, t, q->logical_width, q->logical_height);
+    }
+    /* 5. Positioning, then recording when this surface's content changed. */
     (void)ax_world_position(world);
-    /* 5. Recording, when this surface's content changed. */
     ax_world_record_collect(world);
     if (ax_world_root_changed(world, s->root, &changed_seq)) {
         ax_ir_builder *b = ax_ir_mailbox_begin(&s->mailbox, q->logical_width, q->logical_height, t,

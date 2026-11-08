@@ -55,8 +55,10 @@ static ax_dimension pt(float v)
 }
 
 /* The scene driver: a bar moving at 400 units a second, so every frame has new content. */
-static void slide(void *user, ax_world world, ax_node root, uint64_t t)
+static void slide(void *user, ax_world world, ax_node root, uint64_t t, float w, float h)
 {
+    (void)w;
+    (void)h;
     ax_scene *scene = ax_world_scene(world);
     ax_node bar = ax_node_store_last_child(&scene->store, root);
     ax_value v;

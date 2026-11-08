@@ -3124,8 +3124,11 @@ stage functions run in order on one thread through a cooperative scheduler, for 
      latency for a commit that lands just before the tick. **The queue is the world's**, so with
      roots at different rates (60 and 120 Hz) a tick of one root applies transactions that the
      other root sees at its own next tick (the owner's note);
-  3. the scene driver, examples only (`ax_rt_scene_driver`; it goes away with animations);
-  4. the root's viewport (the surface's logical size) and `ax_world_position`;
+  3. the root's viewport (the surface's logical size);
+  4. the scene driver, examples only (`ax_rt_scene_driver`; it goes away with animations). It
+     gets the viewport, so geometry that depends on the window's size follows a resize in the
+     same frame;
+  then `ax_world_position`;
   5. `ax_world_record_collect`; if the root's content changed, `ax_world_record_root` into the
      surface's mailbox, published, remembering the newest applied transaction the snapshot
      includes;

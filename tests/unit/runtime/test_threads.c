@@ -308,8 +308,10 @@ AX_TEST(two_surfaces_keep_their_own_rates_while_the_app_commits)
 }
 
 /* The scene driver moves the child at every tick, as an animation would. */
-static void slide(void *user, ax_world world, ax_node root, uint64_t t)
+static void slide(void *user, ax_world world, ax_node root, uint64_t t, float w, float h)
 {
+    (void)w;
+    (void)h;
     ax_scene *scene = ax_world_scene(world);
     ax_value v;
     ax_node child = ax_node_store_first_child(&scene->store, root);

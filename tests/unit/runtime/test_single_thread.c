@@ -121,8 +121,10 @@ typedef struct pipeline {
     uint64_t driver_time;
 } pipeline;
 
-static void driver(void *user, ax_world world, ax_node root, uint64_t t)
+static void driver(void *user, ax_world world, ax_node root, uint64_t t, float w, float h)
 {
+    (void)w;
+    (void)h;
     pipeline *p = (pipeline *)user;
     (void)world;
     (void)root;
