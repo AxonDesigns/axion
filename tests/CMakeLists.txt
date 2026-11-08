@@ -157,7 +157,7 @@ endif()
 
 # Every header must compile on its own (includes what it uses). One generated translation unit
 # per header, built with the same strict settings; failure breaks the build.
-set(_ax_header_modules base core headless)
+set(_ax_header_modules base core headless text)
 if(AX_BUILD_PLATFORM)
     list(APPEND _ax_header_modules platform)
 endif()
@@ -200,7 +200,7 @@ foreach(_h IN LISTS _ax_headers)
     list(APPEND _ax_header_tus "${_tu}")
 endforeach()
 add_library(ax_header_check OBJECT ${_ax_header_tus})
-target_link_libraries(ax_header_check PRIVATE ax_base ax_core ax_render_ir ax_render_soft ax_headless)
+target_link_libraries(ax_header_check PRIVATE ax_base ax_core ax_render_ir ax_render_soft ax_headless ax_text)
 if(AX_BUILD_PLATFORM)
     target_link_libraries(ax_header_check PRIVATE ax_platform ax_render_frame)
 endif()

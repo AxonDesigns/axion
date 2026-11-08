@@ -83,11 +83,13 @@ jobs:
       # The platform module (Linux only for now) needs libwayland and wayland-scanner; weston
       # runs headless for the Wayland integration tests. The runners have no GPU: gpu/ tests run on
       # Mesa's software Vulkan driver (lavapipe, in mesa-vulkan-drivers).
+      # libfontconfig-dev: text's system font source (decision 98).
       - name: Wayland and Vulkan packages
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libwayland-dev libwayland-bin weston \
+            libfontconfig-dev \
             libvulkan1 mesa-vulkan-drivers
 
       # Pinned prebuilt WebGPU packages (gpu/third_party/webgpu_deps.cmake) and text's source
