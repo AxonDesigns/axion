@@ -85,7 +85,8 @@ new entry that points back to the old one.
 | 69  | The app thread's mirror                                  | Approved       |
 | 70  | Reference benchmarks: core and jobs                      | Approved       |
 | 71  | The IDL: `.axidl`, and the line between ABI and SDK      | Approved       |
-| 72  | Wayland layer-shell surfaces                             | Approved       |
+| 72  | Wayland layer-shell surfaces                             | Implementation |
+| 73  | Extension chains: the `next` header                      | Implementation |
 
 ---
 
@@ -2692,38 +2693,80 @@ gives the client no way to anchor to an edge, reserve space or stay above other 
 "Always on top" row of "What each platform allows" says No for Wayland for the same reason.
 
 **Decision.**
-- **A new window kind, the layer surface** ("Windowing API"). On Wayland it is a
-  `zwlr_layer_shell_v1` surface. On every other platform it is unsupported and
-  `AX_CAP_WINDOW_LAYER_SHELL` (the next free bit, `1ull << 15`) is unset. It is not emulated with
-  ordinary windows: an emulation could not reserve space or stay above fullscreen windows, and
-  an app that checks the flag can fall back to a normal window itself.
-- **API shape:**
-  - `ax_window_layer_desc`, chained through `ax_window_desc.next`: `layer` (background, bottom,
-    top, overlay), `anchor` (edge flags), `margin` (four sides, logical units),
-    `exclusive_zone`, `keyboard` (none, exclusive, on-demand), `output` (a monitor, or none for
-    the compositor's choice) and `layer_namespace`.
-  - It is the first struct defined for any `next` chain, so it also fixes the chain header: a
-    type tag and `next`, as in WebGPU. The window desc's own fields that do not apply to a layer
-    surface (title, decorations, level, minimum size, `AX_WINDOW_RESIZABLE`) are ignored, as
-    unsupported fields already are.
-  - `ax_window_set_layer` changes the same fields after creation. They are double-buffered on
-    Wayland: the main thread sends them and calls `ax__window_request_commit`, and they apply
-    with the presenter's next commit (decision 35).
-  - On a platform without the capability, `ax_window_create` ignores the chained struct, as it
-    ignores other fields it cannot honour, and creates a normal window.
+- **A new window kind, the layer surface.** It is anchored to a monitor's edges and stacked in one
+  of four layers around normal windows. The owner carries the description into the "Windowing
+  API" section of the architecture document; this entry holds the details.
+- **Platforms:**
+  - **Wayland:** a `zwlr_layer_shell_v1` surface, where the compositor offers it: KDE (KWin),
+    wlroots compositors (sway, labwc, river), Hyprland, COSMIC and niri. GNOME (Mutter) does not.
+  - **X11 and Windows: not in v1.** X11 could cover part of it with an EWMH dock window
+    (`_NET_WM_WINDOW_TYPE_DOCK`) and struts, and Windows with AppBars (`SHAppBarMessage`).
+  - **macOS, iOS, Android and the web:** no.
+  - The capability is `AX_CAP_WINDOW_LAYER_SURFACE`, the next free bit (`1ull << 15`). It is not
+    emulated with ordinary windows: an emulation could not reserve space or stay above fullscreen
+    windows, and an app that checks the flag can fall back to a normal window itself.
+- **`ax_window_layer_desc`**, chained through `ax_window_desc.next` with the header of decision 73
+  (type `AX_STYPE_WINDOW_LAYER_DESC`):
+  - `layer`: `BACKGROUND`, `BOTTOM`, `TOP` or `OVERLAY`;
+  - `anchor`: any combination of the top, bottom, left and right edges;
+  - `width`, `height`: the size in logical units. 0 on an axis stretches the surface between the
+    two opposite edges of that axis, which must both be anchored;
+  - `margin`: top, right, bottom and left, in logical units, from the anchored edges;
+  - `exclusive_zone`: the space other surfaces must leave free along the anchored edge (a panel's
+    height); 0 for none, -1 to ignore other surfaces' zones;
+  - `keyboard`: `NONE`, `EXCLUSIVE` (takes all keyboard input while on `TOP` or `OVERLAY`, as a
+    launcher or lock screen does) or `ON_DEMAND` (focus follows normal clicks);
+  - `output`: the monitor to appear on, or none to let the compositor choose;
+  - `layer_namespace`: a fixed string naming the surface's purpose (`"panel"`, `"notifications"`),
+    which compositors use for rules and effects. The field avoids the name `namespace`, which C++
+    reserves.
+
+  ```c
+  ax_window_layer_desc layer = {
+      .chain = {.type = AX_STYPE_WINDOW_LAYER_DESC, .struct_size = sizeof layer},
+      .layer = AX_LAYER_TOP,
+      .anchor = AX_ANCHOR_TOP | AX_ANCHOR_LEFT | AX_ANCHOR_RIGHT,
+      .height = 32, /* width 0: stretched between the left and right edges */
+      .exclusive_zone = 32,
+      .keyboard = AX_LAYER_KEYBOARD_ON_DEMAND,
+      .layer_namespace = AX_STR("panel"),
+  };
+  ax_window_desc desc = {.struct_size = sizeof desc, .next = &layer};
+  ```
+- **Creation rules:**
+  - **Without the capability, `ax_window_create` with a chained `ax_window_layer_desc` returns
+    `AX_ERR_UNSUPPORTED`** (the owner's correction after review), not a normal window. Decision
+    73's rule applies: a chained struct changes what is created, so it is never ignored, unlike a
+    field the platform cannot honour (such as a backdrop).
+  - **A width or height of 0 without both opposite edges of that axis anchored is rejected with
+    `AX_ERR_INVALID_ARGUMENT`**, at creation and in `ax_window_set_layer`, before the compositor
+    would end the connection with a protocol error (`invalid_size`).
+  - The window desc's fields that do not apply to a layer surface are ignored, as before: the
+    title, decorations, level, size and minimum size (the size comes from the layer desc), and
+    `AX_WINDOW_RESIZABLE`. A layer surface is never decorated.
+- **`ax_window_set_layer`** changes the layer, anchors, margins, exclusive zone, keyboard mode and
+  size after creation.
+  - **`output` and `layer_namespace` are set only at creation:** the protocol takes them in
+    `get_layer_surface` and has no request to change them. A call that asks for different values
+    fails with `AX_ERR_INVALID_ARGUMENT`; leaving them empty, or equal to the creation values,
+    keeps them.
+  - The changes are double-buffered on Wayland. The main thread sends them and calls
+    `ax__window_request_commit`, and they apply with the presenter's next commit (decision 35).
+    Changing the layer needs protocol version 2, which the version-4 minimum below includes.
 - **Configure contract unchanged** (decisions 34 and 54).
-  `zwlr_layer_surface_v1.configure` publishes an `ax_surface_config`, as `xdg_surface.configure`
-  does, and the presenter acknowledges it in the same commit as a buffer of that size, with the
-  same wait for content of that size. A configured size of 0 on an axis lets the client pick it;
-  the backend uses the desc's size.
+  - `zwlr_layer_surface_v1.configure` publishes an `ax_surface_config`, as `xdg_surface.configure`
+    does. The presenter acknowledges it in the same commit as a buffer of that size, with the same
+    wait for content of that size.
+  - A configured size of 0 on an axis lets the client pick it; the backend uses the layer desc's
+    size.
 - **Window behaviour on a layer surface:**
-  - Caption and resize hit regions do nothing; the compositor places the surface.
+  - Caption and resize hit regions do nothing: the compositor places the surface.
   - No occlusion events: the protocol has no suspended state. `ax_window_info.occluded` stays
     false.
   - `zwlr_layer_surface_v1.closed` queues a close request. The compositor has already removed
     the surface, so the request cannot be cancelled; the app destroys the window.
 - **Upstream protocol.** wayland-protocols has no layer-shell protocol in stable or staging as of
-  this entry; the `ext-layer-shell` proposal (wayland-protocols merge request 28) is still a draft
+  this entry. The `ext-layer-shell` proposal (wayland-protocols merge request 28) is still a draft
   that renames the wlr protocol. AXION uses `wlr-layer-shell-unstable-v1`. When an `ext-` layer
   shell lands upstream, the backend prefers it and keeps the wlr one as the fallback, behind the
   same capability flag.
@@ -2732,7 +2775,7 @@ gives the client no way to anchor to an edge, reserve space or stay above other 
   (`unstable/wlr-layer-shell-unstable-v1.xml`), not wayland-protocols, so it is vendored
   separately. `protocols/README.md` records its repository, commit and SHA-256 next to the others.
   Its copyright notice is the older MIT/X11 permission notice rather than the Expat text the
-  README names for the other files; it is compatible with Apache 2.0, and the README's licence
+  README names for the other files. It is compatible with Apache 2.0, and the README's licence
   section is updated to say so.
 - **Binding.** `wl_app.c` binds `zwlr_layer_shell_v1` when the compositor offers it, at version
   4 or newer (`ON_DEMAND` keyboard interactivity needs 4); it is never required. `xdg_wm_base`
@@ -2750,11 +2793,14 @@ gives the client no way to anchor to an edge, reserve space or stay above other 
 
   Each becomes a per-role operation chosen when the window is created (toplevel or layer
   surface; popups later).
-- **Testing.** Headless Weston (`tools/ci/with-weston.sh`) does not implement layer-shell. The
-  layer-surface integration tests run under a second headless compositor in CI, sway
-  (`WLR_BACKENDS=headless`) or labwc, started by a sibling script that sets a variable requiring
-  the global. Under Weston those tests skip instead of failing, even with
-  `AX_REQUIRE_WAYLAND_TESTS=1`.
+- **Testing.**
+  - Headless Weston (`tools/ci/with-weston.sh`) does not implement layer-shell.
+  - The layer-surface integration tests run under a second headless compositor in CI, sway
+    (`WLR_BACKENDS=headless`) or labwc. A sibling script starts it and sets a variable requiring
+    the global.
+  - Under Weston those tests skip instead of failing, even with `AX_REQUIRE_WAYLAND_TESTS=1`.
+  - Unit tests cover the two creation rules above (no capability, a size of 0 without opposite
+    anchors) and `ax_window_set_layer` refusing a new output or namespace, without a compositor.
 - **Schedule.** Documented now, implemented in M3 with the rest of the windowing API. The only
   obligation before then: any M1 or M2 rework of `wl_present.c` routes the configure ack through
   a per-role function, not a hard-coded `xdg_surface_ack_configure` call.
@@ -2762,4 +2808,82 @@ gives the client no way to anchor to an edge, reserve space or stay above other 
   locker that must guarantee the session stays locked uses `ext-session-lock-v1`
   (wayland-protocols staging), which is a separate decision.
 
-**Status.** Approved by the owner.
+**Status.** Implementation, pending the owner's approval.
+
+## 73. Extension chains: the `next` header
+
+**Context.** Descriptor structs carry `struct_size` plus a `next` extension chain ("Core runtime
+conventions"; `ax_app_desc`, `ax_window_desc`, `ax_world_desc` and `ax_transition` have one, all
+NULL so far). Decision 71's IDL marks such structs `[extensible]`. Layer surfaces (decision 72)
+define the first public struct chained through `next`, so the chain's header must be fixed: its
+exact layout, how types are numbered, and what a consumer does with a type it does not know. The
+internal renderer interface already chains `{next, type}` (`ax_renderer_chain`, decision 55).
+
+**Decision.**
+- **The header** (stable ABI, `base/include/axion/ax_types.h`), the first member of every chained
+  struct, named `chain`:
+
+  ```c
+  typedef struct ax_chain {
+      const void *next;     /* the next chained struct, or NULL */
+      uint32_t type;        /* AX_STYPE_*: which struct this is */
+      uint32_t struct_size; /* sizeof the whole struct, header included */
+  } ax_chain;
+  ```
+
+  - 16 bytes on 64-bit targets, 12 on wasm32. The fields after it follow C's natural alignment.
+  - A root descriptor's `next` keeps its type, `const void *`, and points at the first chained
+    struct. Because the header is the struct's first member, `&layer` and `&layer.chain` are the
+    same address and C code writes `.next = &layer`. Every `next`, in the root or in a header,
+    points at an `ax_chain`.
+  - `struct_size` lets a chained struct grow by appending fields, like a root descriptor. A
+    consumer reads the fields it knows that fit in `struct_size`, and gives the rest their default
+    (zero) values. A `struct_size` smaller than the struct's first version is
+    `AX_ERR_ABI_MISMATCH`.
+  - The prefix `{next, type}` is `ax_renderer_chain`'s. When the renderer interface becomes stable
+    it moves to `ax_chain`, and `AX_RENDERER_CHAIN_WGPU` gets a number in the render block.
+- **Type numbers** (`uint32_t`, fixed forever):
+  - `0` is invalid. A zeroed header is an error (`AX_ERR_INVALID_ARGUMENT`), which catches a
+    forgotten type.
+  - Bits 0-15: the struct. AXION's own structs take blocks of 256 per module, numbered by the high
+    byte:
+    - `0x01xx` base;
+    - `0x02xx` platform (`AX_STYPE_WINDOW_LAYER_DESC = 0x0201`);
+    - `0x03xx` gpu;
+    - `0x04xx` render;
+    - `0x05xx` core;
+    - `0x06xx` text;
+    - later modules take the next free block.
+  - Bits 16-29: reserved, zero.
+  - Bit 30 (`AX_STYPE_OPTIONAL`, `0x40000000`): **optional**. A consumer that does not know the
+    type may skip it. For hints that never change what is created: a debug label, a performance
+    preference. Without the bit, a struct is **required**.
+  - Bit 31 (`AX_STYPE_VENDOR`, `0x80000000`): **vendor**, for plugins and private extensions. How
+    plugins are given blocks there is decided with the plugin ABI (M3); until then nothing uses it.
+- **A consumer walks the whole chain before acting**, and rejects the call with nothing created
+  or changed when:
+  - a required type is unknown: `AX_ERR_UNSUPPORTED`, with the type in the message. This covers
+    a runtime older than the header that defines the struct, and an extension the platform lacks:
+    decision 72's layer desc without the capability is the first case;
+  - a known type does not belong to this descriptor (a layer desc chained into an `ax_world_desc`):
+    `AX_ERR_INVALID_ARGUMENT`;
+  - the same type appears twice: `AX_ERR_INVALID_ARGUMENT`;
+  - a header is zeroed, or its `struct_size` is smaller than the struct's first version.
+
+  Unknown optional types are skipped. Ignoring unsupported **fields** (a backdrop the platform
+  lacks) stays as it is: it never changes what is created. A **required struct** is never ignored.
+- **Chains are read, never kept.** A function reads its chain during the call; the caller's
+  structs may be freed when it returns, and `layer_namespace`-like strings are copied.
+- **In the IDL** (decision 71):
+  - `[extensible]` on a root struct, as now, adds `u32 struct_size` and `const void *next`.
+  - A chained struct is declared with `[extends(window_desc), stype(0x0201)]`, adding `optional`
+    for an optional type. The generator then:
+    - emits `ax_chain chain;` as its first member and the `AX_STYPE_*` constant;
+    - emits an initializer macro that sets `type` and `struct_size`
+      (`AX_WINDOW_LAYER_DESC_INIT`);
+    - records in the JSON model which root descriptor it extends.
+  - Bindings never show the chain. Each extension becomes an optional member of the root
+    descriptor's class (`WindowDesc.Layer` in C#), and the binding builds the chain when it calls
+    in.
+
+**Status.** Implementation, pending the owner's approval.
