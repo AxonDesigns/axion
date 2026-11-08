@@ -37,7 +37,9 @@ typedef struct presenter {
     ax_atomic_u32 presented;
     ax_atomic_u32 bad_predictions; /* a target earlier than the previous frame's */
     ax_atomic_u32 failures;
-    ax_atomic_u64 max_lead_ns; /* largest (target - now) seen at begin_frame */
+    ax_atomic_u64 max_lead_ns;      /* largest (target - now) seen at begin_frame */
+    ax_atomic_u64 presented_commit; /* ax_surface_get_presented_commit's id */
+    ax_atomic_u32 id_errors;        /* commit ids out of order or ahead of the commits made */
 
     /* written by the presenter, read by the test after an acquire of `committed` */
     commit_record commits[MAX_COMMITS];
@@ -59,6 +61,8 @@ static void presenter_init(presenter *p, ax_surface surface, bool idle)
     ax_atomic_init_u32(&p->bad_predictions, 0);
     ax_atomic_init_u32(&p->failures, 0);
     ax_atomic_init_u64(&p->max_lead_ns, 0);
+    ax_atomic_init_u64(&p->presented_commit, 0);
+    ax_atomic_init_u32(&p->id_errors, 0);
 }
 
 static int presenter_main(void *arg)
@@ -107,6 +111,9 @@ static int presenter_main(void *arg)
                 ax_atomic_fetch_add_u32(&p->failures, 1, AX_MO_RELAXED);
                 break;
             }
+            if (ax_surface_prepared_commit(p->surface) != (uint64_t)n + 1u) {
+                ax_atomic_fetch_add_u32(&p->id_errors, 1, AX_MO_RELAXED);
+            }
             if (n < MAX_COMMITS) {
                 p->commits[n].acked = t.acks_configure;
                 p->commits[n].serial = t.configure_serial;
@@ -135,6 +142,15 @@ static int presenter_main(void *arg)
         default:
             draw = false; /* nothing is due: an animating presenter waits for the callback */
             break;
+        }
+        {
+            uint64_t id = 0, at = 0;
+            uint64_t prev = ax_atomic_load_u64(&p->presented_commit, AX_MO_RELAXED);
+            if (ax_surface_get_presented_commit(p->surface, &id, &at) != AX_OK || id < prev ||
+                id > n || (id != 0 && at == 0)) {
+                ax_atomic_fetch_add_u32(&p->id_errors, 1, AX_MO_RELAXED);
+            }
+            ax_atomic_store_u64(&p->presented_commit, id, AX_MO_RELEASE);
         }
         stats.struct_size = sizeof stats;
         if (ax_surface_get_present_stats(p->surface, &stats, false) == AX_OK) {
@@ -387,4 +403,149 @@ AX_TEST(configure_bursts_do_not_outrun_frames)
     if (f.p.stats.presented > 0) {
         AX_CHECK(f.p.stats.discarded <= 2);
     }
+}
+
+/* Each prepared commit gets the next id, and the newest one shown is reported with its time. */
+AX_TEST(presented_commits_are_reported_by_id)
+{
+    static fixture f;
+    uint64_t until;
+    AXT_REQUIRE_COMPOSITOR();
+    AX_REQUIRE(fixture_start(&f, 320, 240, false));
+    until = ax_time_monotonic_ns() + AXT_SECONDS(10);
+    while (ax_atomic_load_u64(&f.p.presented_commit, AX_MO_ACQUIRE) < 20 &&
+           ax_time_monotonic_ns() < until) {
+        ax_app_pump(f.t.app, 5u * 1000000u);
+    }
+    AX_CHECK(ax_atomic_load_u64(&f.p.presented_commit, AX_MO_ACQUIRE) >= 20);
+    AX_CHECK_EQ_U(fixture_stop(&f), 0);
+    AX_CHECK_EQ_U(ax_atomic_load_u32(&f.p.failures, AX_MO_RELAXED), 0);
+    AX_CHECK_EQ_U(ax_atomic_load_u32(&f.p.id_errors, AX_MO_RELAXED), 0);
+}
+
+/* ---- one presenter, several surfaces (the render thread) ------------------------------------- */
+
+typedef struct multi_presenter {
+    ax_surface surfaces[2];
+    ax_atomic_u32 stop;
+    ax_atomic_u32 ready;
+    ax_atomic_u32 frames[2];
+    ax_atomic_u32 failures;
+} multi_presenter;
+
+static int multi_presenter_main(void *arg)
+{
+    multi_presenter *m = (multi_presenter *)arg;
+    axt_shm shm[2];
+    struct wl_surface *wl_surfaces[2];
+    bool draw[2] = {true, true};
+    int i;
+
+    for (i = 0; i < 2; ++i) {
+        ax_surface_native native;
+        memset(&native, 0, sizeof native);
+        native.struct_size = sizeof native;
+        if (!axt_shm_init(&shm[i], m->surfaces[i]) ||
+            ax_surface_get_native(m->surfaces[i], &native) != AX_OK) {
+            ax_atomic_fetch_add_u32(&m->failures, 1, AX_MO_RELAXED);
+            return 1;
+        }
+        wl_surfaces[i] = (struct wl_surface *)native.u.wayland.surface;
+    }
+    ax_atomic_store_u32(&m->ready, 1, AX_MO_RELEASE);
+
+    while (ax_atomic_load_u32(&m->stop, AX_MO_ACQUIRE) == 0) {
+        ax_wake_reason reasons[2];
+        for (i = 0; i < 2; ++i) {
+            ax_frame_target t;
+            memset(&t, 0, sizeof t);
+            t.struct_size = sizeof t;
+            if (!draw[i]) {
+                continue;
+            }
+            if (ax_surface_begin_frame(m->surfaces[i], &t) != AX_OK) {
+                ax_atomic_fetch_add_u32(&m->failures, 1, AX_MO_RELAXED);
+                return 1;
+            }
+            if (t.ready && (ax_surface_prepare_commit(m->surfaces[i], &t) != AX_OK ||
+                            !axt_shm_commit(&shm[i], wl_surfaces[i], t.pixel_width, t.pixel_height,
+                                            i == 0 ? 0xFF402020u : 0xFF204020u))) {
+                ax_atomic_fetch_add_u32(&m->failures, 1, AX_MO_RELAXED);
+                return 1;
+            }
+        }
+        if (ax_surface_wait_frames(m->surfaces, 2, 50u * 1000000u, reasons) != AX_OK) {
+            ax_atomic_fetch_add_u32(&m->failures, 1, AX_MO_RELAXED);
+            break;
+        }
+        for (i = 0; i < 2; ++i) {
+            draw[i] = reasons[i] != AX_WAKE_TIMEOUT;
+            if (reasons[i] == AX_WAKE_FRAME) {
+                ax_atomic_fetch_add_u32(&m->frames[i], 1, AX_MO_RELAXED);
+            }
+        }
+    }
+    axt_shm_deinit(&shm[0]);
+    axt_shm_deinit(&shm[1]);
+    return 0;
+}
+
+typedef struct two_counts {
+    multi_presenter *m;
+    uint32_t at_least;
+} two_counts;
+
+static bool both_reached(void *ctx)
+{
+    two_counts *g = (two_counts *)ctx;
+    return ax_atomic_load_u32(&g->m->frames[0], AX_MO_RELAXED) >= g->at_least &&
+           ax_atomic_load_u32(&g->m->frames[1], AX_MO_RELAXED) >= g->at_least;
+}
+
+AX_TEST(one_presenter_waits_on_two_surfaces)
+{
+    static multi_presenter m;
+    axt_app t;
+    ax_window_desc d = axt_window_desc(200, 150, AX_DECORATIONS_NONE);
+    ax_window w[2];
+    ax_thread thread;
+    two_counts goal;
+    ax_wake_reason reasons[2];
+    ax_surface bad[2];
+    int i;
+    AXT_REQUIRE_COMPOSITOR();
+    AX_REQUIRE(axt_app_create(&t, 0) == AX_OK);
+    memset(&m, 0, sizeof m);
+    for (i = 0; i < 2; ++i) {
+        AX_REQUIRE(ax_window_create(t.app, &d, &w[i]) == AX_OK);
+        AX_REQUIRE(ax_window_get_surface(w[i], &m.surfaces[i]) == AX_OK);
+        ax_atomic_init_u32(&m.frames[i], 0);
+    }
+    ax_atomic_init_u32(&m.stop, 0);
+    ax_atomic_init_u32(&m.ready, 0);
+    ax_atomic_init_u32(&m.failures, 0);
+
+    /* Arguments are checked before anything waits. */
+    AX_CHECK_RESULT(ax_surface_wait_frames(m.surfaces, 0, 0, reasons), AX_ERR_INVALID_ARGUMENT);
+    AX_CHECK_RESULT(ax_surface_wait_frames(NULL, 1, 0, reasons), AX_ERR_INVALID_ARGUMENT);
+    AX_CHECK_RESULT(ax_surface_wait_frames(m.surfaces, AX_SURFACE_WAIT_MAX + 1u, 0, reasons),
+                    AX_ERR_INVALID_ARGUMENT);
+    bad[0] = m.surfaces[0];
+    bad[1].h = 0;
+    AX_CHECK_RESULT(ax_surface_wait_frames(bad, 2, 0, reasons), AX_ERR_INVALID_HANDLE);
+
+    AX_REQUIRE(ax_thread_create(&thread, multi_presenter_main, &m) == AX_OK);
+    AX_REQUIRE(pump_until_count(t.app, &m.ready, 1, AXT_SECONDS(5)));
+    /* Both surfaces keep their own cadence from the one thread. */
+    goal.m = &m;
+    goal.at_least = 30;
+    AX_CHECK(axt_pump_until(t.app, both_reached, &goal, AXT_SECONDS(10)));
+    ax_atomic_store_u32(&m.stop, 1, AX_MO_RELEASE);
+    ax_thread_join(&thread);
+    AX_CHECK_EQ_U(ax_atomic_load_u32(&m.failures, AX_MO_RELAXED), 0);
+    AX_CHECK_RESULT(ax_app_pump(t.app, 0), AX_OK); /* no protocol error */
+    for (i = 0; i < 2; ++i) {
+        AX_CHECK_RESULT(ax_window_destroy(w[i]), AX_OK);
+    }
+    AX_CHECK_EQ_U(axt_app_destroy(&t), 0);
 }

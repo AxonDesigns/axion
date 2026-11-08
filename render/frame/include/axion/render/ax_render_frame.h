@@ -79,7 +79,8 @@ typedef struct ax_render_frame_stats {
 typedef struct ax_render_frame {
     ax_render_frame_desc desc;
     ax_render_frame_stats stats;
-    bool requested_first; /* the scene was asked for a first snapshot */
+    bool requested_first;   /* the scene was asked for a first snapshot */
+    uint64_t last_sequence; /* mailbox sequence of the snapshot the last present drew, 0: none */
 } ax_render_frame;
 
 /* thread: render */
@@ -94,6 +95,14 @@ AX_API void ax_render_frame_init(ax_render_frame *rf, const ax_render_frame_desc
  */
 AX_API ax_result ax_render_frame_step(ax_render_frame *rf, bool animating, uint64_t timeout_ns,
                                       ax_frame_result *out_result);
+
+/*
+ * Steps 2 and 3 alone, after the caller waited itself (one render thread waiting on several
+ * surfaces: vtbl->wait_frames) and got `reason` for this surface. rf->last_sequence is then the
+ * snapshot drawn, when the frame was presented with one. thread: render
+ */
+AX_API ax_result ax_render_frame_present(ax_render_frame *rf, ax_wake_reason reason, bool animating,
+                                         ax_frame_result *out_result);
 
 /* Statistics since the last reset. thread: render */
 AX_API void ax_render_frame_get_stats(ax_render_frame *rf, ax_render_frame_stats *out, bool reset);

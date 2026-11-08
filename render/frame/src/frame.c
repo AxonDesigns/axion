@@ -66,18 +66,26 @@ static void add_counts(ax_render_counts *sum, const ax_render_counts *c)
 ax_result ax_render_frame_step(ax_render_frame *rf, bool animating, uint64_t timeout_ns,
                                ax_frame_result *out_result)
 {
+    ax_wake_reason reason = AX_WAKE_TIMEOUT;
+    ax_result r = rf->desc.vtbl->wait_frame(rf->desc.renderer, rf->desc.surface, animating,
+                                            timeout_ns, &reason);
+    if (r != AX_OK) {
+        return r;
+    }
+    return ax_render_frame_present(rf, reason, animating, out_result);
+}
+
+ax_result ax_render_frame_present(ax_render_frame *rf, ax_wake_reason reason, bool animating,
+                                  ax_frame_result *out_result)
+{
     const ax_renderer_vtbl *vt = rf->desc.vtbl;
+    const ax_render_ir *drawn = NULL;
     ax_frame_result res;
     ax_frame_info info;
-    ax_wake_reason reason = AX_WAKE_TIMEOUT;
     uint64_t wait_start = 0, wait_end = 0, deadline = 0;
     bool waited = false, accept_any = false;
     ax_result r;
 
-    r = vt->wait_frame(rf->desc.renderer, rf->desc.surface, animating, timeout_ns, &reason);
-    if (r != AX_OK) {
-        return r;
-    }
     for (;;) {
         const ax_render_ir *ir = ax_ir_mailbox_acquire(rf->desc.mailbox);
         memset(&res, 0, sizeof res);
@@ -91,6 +99,7 @@ ax_result ax_render_frame_step(ax_render_frame *rf, bool animating, uint64_t tim
             wait_end = ax_time_monotonic_ns(); /* the wait ends where this attempt starts */
         }
         r = vt->render(rf->desc.renderer, rf->desc.surface, ir, info);
+        drawn = ir;
         if (out_result != NULL) {
             *out_result = res;
         }
@@ -140,6 +149,7 @@ ax_result ax_render_frame_step(ax_render_frame *rf, bool animating, uint64_t tim
     if (res.status == AX_FRAME_PRESENTED || res.status == AX_FRAME_CLEARED) {
         if (res.status == AX_FRAME_PRESENTED) {
             rf->stats.presented++;
+            rf->last_sequence = drawn != NULL ? drawn->sequence : 0;
         } else {
             rf->stats.cleared++;
         }

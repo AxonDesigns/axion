@@ -60,8 +60,10 @@ ax_result ax_evq_init(ax_event_queue *q, const ax_allocator *allocator, uint32_t
     ax_atomic_init_u32(&q->tail, 0);
     ax_atomic_init_u32(&q->has_deferred, 0);
     ax_atomic_init_u32(&q->consumer_sleeping, 0);
+    ax_atomic_init_u32(&q->notify_set, 0);
     ax_mutex_init(&q->wait_lock);
     ax_cond_init(&q->wait_cond);
+    ax_mutex_init(&q->notify_lock);
     return AX_OK;
 }
 
@@ -71,6 +73,7 @@ void ax_evq_deinit(ax_event_queue *q)
         ax_mem_free(&q->allocator, q->ring, sizeof(ax_evq_record) * q->capacity);
         ax_cond_deinit(&q->wait_cond);
         ax_mutex_deinit(&q->wait_lock);
+        ax_mutex_deinit(&q->notify_lock);
     }
     if (q->windows != NULL) {
         ax_mem_free(&q->allocator, q->windows, sizeof(ax_evq_window) * q->window_count);
@@ -91,6 +94,26 @@ static void wake_consumer(ax_event_queue *q)
         ax_cond_signal(&q->wait_cond);
         ax_mutex_unlock(&q->wait_lock);
     }
+    /* A consumer that waits on something else (the scene thread) asked to be told. The call is
+     * made under notify_lock, so clearing the hook waits for a call in progress. seq_cst pairs
+     * with the record's publication: a consumer that sets the hook and then polls sees either the
+     * record or the call. */
+    if (ax_atomic_load_u32(&q->notify_set, AX_MO_SEQ_CST) != 0) {
+        ax_mutex_lock(&q->notify_lock);
+        if (q->notify != NULL) {
+            q->notify(q->notify_user);
+        }
+        ax_mutex_unlock(&q->notify_lock);
+    }
+}
+
+void ax_evq_set_notify(ax_event_queue *q, void (*fn)(void *user), void *user)
+{
+    ax_mutex_lock(&q->notify_lock);
+    q->notify = fn;
+    q->notify_user = user;
+    ax_atomic_store_u32(&q->notify_set, fn != NULL ? 1u : 0u, AX_MO_SEQ_CST);
+    ax_mutex_unlock(&q->notify_lock);
 }
 
 static bool ring_push(ax_event_queue *q, const ax_evq_record *rec)

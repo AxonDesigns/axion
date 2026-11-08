@@ -244,6 +244,26 @@ static ax_result vt_wait_frame(void *self, ax_surface surface, bool animating, u
     return ax_gpu_surface_wait(s->gs, animating, timeout_ns, out_reason);
 }
 
+static ax_result vt_wait_frames(void *self, const ax_surface *surfaces, uint32_t count,
+                                bool animating, uint64_t timeout_ns, ax_wake_reason *out_reasons)
+{
+    ax_render_wgpu *r = (ax_render_wgpu *)self;
+    ax_gpu_surface *gs[AX_SURFACE_WAIT_MAX];
+    uint32_t i;
+    if (surfaces == NULL || count == 0 || count > AX_SURFACE_WAIT_MAX) {
+        return ax_set_error(AX_ERR_INVALID_ARGUMENT, "ax_render_wgpu: 1 to %u surfaces",
+                            (unsigned)AX_SURFACE_WAIT_MAX);
+    }
+    for (i = 0; i < count; ++i) {
+        rw_surface *s = find_surface(r, surfaces[i]);
+        if (s == NULL) {
+            return ax_set_error(AX_ERR_INVALID_HANDLE, "ax_render_wgpu: surface not attached");
+        }
+        gs[i] = s->gs;
+    }
+    return ax_gpu_surfaces_wait(gs, count, animating, timeout_ns, out_reasons);
+}
+
 static const ax_renderer_vtbl k_vtbl = {
     sizeof(ax_renderer_vtbl),
     vt_create,
@@ -253,6 +273,7 @@ static const ax_renderer_vtbl k_vtbl = {
     vt_render,
     vt_query_caps,
     vt_wait_frame,
+    vt_wait_frames,
 };
 
 const ax_renderer_vtbl *ax_render_wgpu_vtbl(void)

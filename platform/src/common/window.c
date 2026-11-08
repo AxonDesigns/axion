@@ -96,6 +96,9 @@ static ax_result create_on_main(void *p)
     ax_atomic_store_u32(&w->commit_requested, 0, AX_MO_RELAXED);
     w->presenter_acked_serial = 0;
     w->presenter_has_config = false;
+    w->presenter_commit_id = 0;
+    w->presented_commit_id = 0;
+    w->presented_commit_ns = 0;
     ax_frame_clock_init(&w->clock, 0);
 
     ax_evq_window_open(&app->events, w->index, raw);

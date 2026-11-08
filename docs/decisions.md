@@ -87,6 +87,12 @@ new entry that points back to the old one.
 | 71  | The IDL: `.axidl`, and the line between ABI and SDK      | Approved       |
 | 72  | Wayland layer-shell surfaces                             | Approved       |
 | 73  | Extension chains: the `next` header                      | Approved       |
+| 74  | Platform pieces for one render thread and the scene      | Approved       |
+| 75  | Events to the app thread, `on_presented`, the clock      | Approved       |
+| 76  | Positioning, the layer rule and incremental recording    | Approved       |
+| 77  | The runtime, the frame's order and the single thread     | Approved       |
+| 78  | The scene and render threads; vsync on the render thread | Deviation      |
+| 79  | The cooperative mode's tests in Node                     | Approved       |
 
 ---
 
@@ -2887,3 +2893,436 @@ internal renderer interface already chains `{next, type}` (`ax_renderer_chain`, 
     in.
 
 **Status.** Approved by the owner.
+
+## 74. Platform pieces for one render thread and the scene
+
+**Context.** M1's pipeline has one render thread presenting every surface, a scene thread that
+consumes the platform's events, and `ax_txn_on_presented`, which must know when a snapshot reached
+the screen. Decision 72 also requires any rework of `wl_present.c` to acknowledge configures
+through a per-role function.
+
+**Decision.**
+- **Configure acknowledgement by role.** `wl_window` holds a `wl_role_ops` table chosen at
+  creation (`ax_wl_toplevel_role` today). `prepare_commit` calls `role->ack_configure`;
+  `xdg_surface_ack_configure` appears only in the toplevel role. The other three couplings listed
+  in decision 72 are left for M3.
+- **`ax_surface_wait_frames`** (`ax_present.h`): `ax_surface_wait_frame` over up to 64 surfaces
+  of one app. It dispatches every surface's queue, applies decision 40's rules to each, and
+  returns when at least one has a reason, reporting every surface that is ready, so a frame
+  callback is never consumed without being returned. The single-surface wait is now this function
+  with one surface; the shared wake (`wake_gen`) already covers any number of surfaces.
+- **Commit ids.** Each successful `ax_surface_prepare_commit` numbers its commit from 1
+  (`ax_surface_prepared_commit`). The backend tags the presentation feedback and the frame
+  callback it requests with that id, and `ax_surface_get_presented_commit` returns the newest
+  commit shown and when (monotonic clock): measured by `wp_presentation` where the compositor has
+  it, else at the frame callback. Ids only move forward; failed and discarded commits are never
+  reported, a later commit shown covers them. The render thread maps ids to the snapshots it drew.
+- **`ax_app_set_event_notify`** (new internal SDK header `ax_event_notify.h`): a hook the main
+  thread calls after queueing events, for a consumer that sleeps on its own wait (the scene
+  thread waits for frame requests and events together). The call is made under a mutex the setter
+  also takes, so clearing the hook waits for a call in progress; when no hook is set the producer
+  pays one atomic load.
+- **Tests** (headless weston): `wayland.present.presented_commits_are_reported_by_id` (ids follow
+  the commits, the presented id only grows and never passes the last commit),
+  `wayland.present.one_presenter_waits_on_two_surfaces` (one thread keeps two windows at their
+  frame rate; argument errors), `wayland.window.event_notify_is_called_when_events_are_queued`
+  (called for RESIZED and CLOSE_REQUESTED, not after clearing).
+
+**Status.** Implementation, pending the owner's approval (part of the approved plan for the
+thread split).
+
+## 75. Events to the app thread, `on_presented`, the clock
+
+**Context.** "Queues" gives the scene-to-app direction a ring of events, and
+`ax_txn_on_presented(seq, cb)` tells the app when a change is on screen. The owner asked for:
+- the platform's events (resize, close, scale) on that ring;
+- a callback that always arrives, with a status: `PRESENTED`, `REJECTED` or `WORLD_DESTROYED`;
+- rejections staying in their own ring (`ax_world_poll_txn_error` is stable ABI), not duplicated;
+- the vsync's predicted present time on the world's clock, also when the clock is injected.
+
+**Decision.**
+- **One queue, scene thread to app thread** (`core/src/events.c`): a fixed SPSC ring of 256
+  records with a scene-side backlog when it is full, as the rings of decision 65; nothing is lost
+  but to out of memory. Three kinds of record:
+  - an `ax_world_event` (stable, `ax_world.h`): close, resize, scale, focus and occlusion of
+    **every window of the app**, with the window's handle, its root's handle (0 for a window the
+    runtime does not have) and the time on the world's clock. The type values are the platform's
+    `ax_event_type`. The scene thread (the platform's event consumer in the pipeline) forwards
+    them with `ax_world_push_event`. (Corrected after review: an earlier version of this entry
+    said only the windows whose roots the world owns.);
+  - `PRESENTED(seq, time)`: every applied transaction up to seq is on screen
+    (`ax_world_report_presented`, scene thread). Which roots must have shown it is the
+    pipeline's rule; core only carries the watermark. A newer one replaces one waiting at the end
+    of the backlog;
+  - `REJECTED(seq)`: bookkeeping only, queued by `ax_world_finish_txn` before any `PRESENTED`
+    that covers the seq. The app never receives it as an event; the rejection's details are read
+    once, from the failures ring as before.
+- **Reading** (app thread): `ax_world_poll_event` and `ax_world_wait_event`. The wait wakes for
+  an event or for a callback that became due, with the handshake of decisions 31 and 52 (a
+  counter bumped after each record, a sleeping flag, the mutex only to hand off). Without threads
+  it does not wait.
+- **`ax_txn_on_presented(world, seq, fn, user)`** (stable, `ax_txn.h`):
+  - registrations are kept sorted by sequence and called from poll, wait or destroy, **in
+    sequence order**: a rejected transaction behind one not yet on screen waits for it;
+  - a registration made after the outcome is known gets it on the next poll, never from inside
+    the registration. To know a past rejection exactly without growing memory, the app thread
+    keeps the last rejected seq per slot of a 1024-entry table indexed by seq modulo 1024. A seq
+    must therefore be one of the last 1024 committed (`AX_TXN_PRESENTED_WINDOW`), otherwise
+    `AX_ERR_INVALID_ARGUMENT`. Within the window a slot can only hold that seq or an older one,
+    so the lookup is exact;
+  - `ax_world_destroy` takes the records still queued, calls what they decided, then calls every
+    other registration with `WORLD_DESTROYED`.
+- **Clock.** The default world clock is base's monotonic clock, the one the platform's
+  `predicted_present_ns` uses (`CLOCK_MONOTONIC` on Linux, also the Wayland presentation clock
+  after `ax_wl_presentation_to_monotonic`). `ax_world_time_from_monotonic` returns the time
+  unchanged then. With an injected clock it keeps the distance from now:
+  `now_world + (t - now_monotonic)`, saturated at 0. Keeping a root's times from going backwards
+  is the caller's job (the pipeline clamps per root). `ax_host_frame` gets its target time on
+  the world's clock from the host, which injected that clock, so it needs no translation.
+- **IDL** (decision 71): `world_event` uses two constructs the draft did not have yet, `[sized]`
+  (a leading `struct_size` on an out struct) and a tagged `union ... by type`; `presented_fn` is
+  the first `callback`. Bindings turn `txn_on_presented` into a task or future completed with the
+  status.
+- **Tests** (`tests/unit/core/test_events.c`, label `core`, so under TSan too): the default clock
+  is the identity, an injected one keeps the distance and saturates; 1000 events in order across
+  the backlog; 20 000 events from a scene thread while the app thread waits (also pinned to one
+  CPU); callbacks once, in order, with their status (a rejection behind an unpresented
+  transaction waits; an older report is ignored; two registrations for one seq in call order);
+  registrations after the outcome; argument errors and the 1024 window; destruction reports
+  `REJECTED` for what was known and `WORLD_DESTROYED` for the rest; a waiting app thread wakes for
+  a callback without an event.
+
+The rules on which windows hold a transaction back (hidden, closed, visible again) belong to the
+pipeline and are tested with it.
+
+**Status.** Implementation, pending the owner's approval (part of the approved plan; the statuses,
+the window rules and keeping rejections in their own ring were the owner's adjustments).
+
+## 76. Positioning, the layer rule and incremental recording
+
+**Context.** The scene thread records the Render IR from the node store. Flex arrives in the
+fourth prompt of M1, so this step needs a stand-in positioning. The owner asked for:
+- layers for nodes with a transform, opacity or clip;
+- incremental recording driven by the dirty flags, where a COMPOSITE-only change records no
+  items, checked with counters;
+- the local transform applied about the frame's center (decision 63);
+- core reading only `ax_render_ir.h` and the mailbox, never `ax_renderer.h`, with a test.
+
+**Decision.** The internal SDK header is `core/include/axion/core/ax_frame.h` and the code is in
+`core/src/frame.c`. Every function takes only the world, so a stage never knows which thread or
+scheduler runs it.
+- **Window roots.** `ax_world_set_root_viewport(root, w, h)` attaches a parentless node to a
+  surface's logical size. The root's frame is `(0, 0, w, h)` whatever its own layout properties,
+  as the CSS viewport is. A size change marks it for layout (`ax_scene_mark_layout`, new in
+  `ax_scene.h`). `ax_world_remove_root` detaches it.
+- **Positioning (`ax_world_position`), until flex:**
+  - a node's frame is `(LEFT, TOP, WIDTH, HEIGHT)` in points, relative to its parent's top-left,
+    with AUTO as 0;
+  - it walks only the layout roots of decision 64 and skips those no longer live (decision 68's
+    stale roots). It descends only through nodes marked LAYOUT or LAYOUT_CHILD. With
+    `roots_overflowed` it walks every tree;
+  - changed frames go to the store's layout column and to the mirror through decision 69's
+    channel.
+
+  The fourth prompt replaces this stage.
+- **The layer rule.** A layer is recorded for:
+  - a window root;
+  - every node that has ever had a TRANSFORM other than the identity or an OPACITY other than 1.
+
+  The layer's transform is `translate(origin in the parent layer) · translate(c) · TRANSFORM ·
+  translate(−c)`, with c the frame's center, and its opacity is the node's. Clip, blend and
+  effects join the rule when their properties exist.
+  - **Promotion is sticky** until the node is destroyed, so animating a transform or an opacity
+    never records items again. Only the frame that promotes a node records its subtree's items
+    again, in the new space; `layers_promoted` counts it.
+  - **To do in the fourth prompt (the owner's note):** implicit animations would promote almost
+    every node, so promotion needs demotion with hysteresis there. For example, a layer without
+    composite changes for about 1 s goes back to its parent's space, at the cost of one
+    re-recording.
+- **Incremental recording.**
+  - Each node's items (for now its background: a rect, or a rounded rect when a corner has a
+    radius) are kept encoded, by slot, in the space of their layer. The cache stores the
+    generation, the layer, the origin in it and the frame's size.
+  - `ax_world_record_collect` reads the flags before `ax_scene_clear_dirty`. PAINT marks the
+    node's items stale. Any flag marks the window root above the node as changed, with the
+    newest applied transaction (for `on_presented`).
+  - `ax_world_record_root` walks the root's tree with an explicit stack, without recursion. It
+    records a node's items again only when they are stale, or when its layer, its origin in the
+    layer or its frame's size changed; otherwise it copies them (`ax_ir_item`). A LAYOUT mark
+    therefore records only when the frame really changed. A parent marked for a new child
+    records nothing, and a layer that moves only changes its layer record.
+  - Collecting is O(rows) and the walk O(the root's nodes), with copying for unchanged nodes.
+    That is acceptable for M1, like the mirror's scan (decision 70). Damage stays full.
+  - Counters (`ax_world_get_frame_counters`): frames changed, nodes and items recorded, items
+    reused, layers, layers promoted, snapshots.
+- **Dependencies.** core now links `ax_render_ir` (base only). The test
+  `core.includes.only_the_render_ir` scans core's sources and headers and fails on any
+  `axion/render/`, `axion/platform/` or `axion/gpu/` include other than `ax_render_ir.h` and
+  `ax_ir_mailbox.h`. A deliberate violation was checked to fail.
+  - **To move later (the owner's note):** `ax_renderer.h` lives in `render/ir` but includes
+    `axion/platform/ax_present.h`, so the IR's directory drags the platform module into anything
+    that includes it. It should move out of `render/ir`, for example to a `render/api` module of
+    its own. It is not moved in this PR.
+- **Tests** (`tests/unit/core/test_frame.c`):
+  - frames from the four properties and the viewport, which overrides the root's own size;
+  - nothing is repositioned without changes, and one moved node changes one frame;
+  - a destroyed layout root is skipped, and an overflow walks everything;
+  - the IR of a small tree against a golden text dump (`ax_ir_dump`). The rotated layer's matrix
+    `(0 1 -1 0 230 90)` was checked by hand;
+  - counters for each case: no change (all items copied), composite only (none recorded, still
+    a layer), paint (one), a move with a child in the same layer (two), a layer moving (none), a
+    resize (one), the first opacity promoting a node (its two items), a later opacity (none);
+  - a slot reused by a new node is recorded fresh and does not inherit the old node's
+    promotion;
+  - argument errors for window roots.
+
+**Status.** Implementation, pending the owner's approval (part of the approved plan; sticky
+promotion, its demotion note and the include test were the owner's adjustments).
+
+## 77. The runtime, the frame's order and the single thread
+
+**Context.** The architecture's frame pipeline runs on the scene and render threads. The same
+stage functions run in order on one thread through a cooperative scheduler, for hosts that call
+`ax_host_frame`, deterministic tests and the web without threads. The owner asked for:
+- one scene thread for every surface, ticking each root on its own surface's vsync;
+- the frame in a fixed order: vsync with T; `apply_pending` up to the frame's deadline;
+  positioning; recording; the mirror; clearing the flags;
+- stage functions that do not know which mode runs them;
+- deterministic tests with a manual clock.
+
+**Decision.**
+- **A new module, `runtime/`** (library `ax_runtime`, approved by the owner). It depends on core
+  and the Render IR only, so it builds everywhere, the web included. Surfaces and renderers are
+  reached through a **presenter** interface (`ax_rt_presenter_vtbl`, internal SDK
+  `ax_runtime_sdk.h`) with four entries:
+  - `attach` and `detach`;
+  - `wait`, for frames on several surfaces;
+  - `frame`, which presents the newest snapshot, runs the size handshake and asks for the next
+    frame.
+
+  The platform presenter (next step) wraps the renderer and decision 57's frame step; tests use
+  fakes.
+  - Stable ABI (`ax_runtime.h`): the `ax_runtime` handle, `ax_runtime_create` with the world and
+    a mode (`AX_RUNTIME_THREADED` by default, or `AX_RUNTIME_SINGLE_THREADED`),
+    `ax_runtime_destroy`, and `ax_host_frame(runtime, root, target_time)`.
+  - The document's `ax_host_frame(surface, target_time)` names the surface by its root: a hosted
+    surface is not an `ax_surface` until hosted backends exist.
+- **Surfaces.** `ax_rt_add_surface(root, desc)` (app thread) attaches a root the app created and
+  committed. Up to 32 surfaces; a slot is reused once the scene and render sides acknowledge its
+  removal. Each surface has:
+  - a Render IR mailbox (decision 52), written by the scene and read by the render side;
+  - a newest-wins frame request (triple buffer) from the render side to the scene;
+  - the newest snapshot shown, from the render side to the scene (an atomic sequence).
+
+  Adding and removing go through fixed SPSC command rings, one from the app thread to the scene
+  and one to the render side.
+- **The tick** (`ax_rt_scene_step`, scene side). It runs once for each surface with a new
+  request, in surface order:
+  1. **T on the world's clock** (decision 75's translation), clamped so that a surface's T never
+     goes backwards;
+  2. **`ax_world_apply_pending(world, T − refresh)`.** The deadline is the frame's latch point: a
+     commit that arrives after it waits for the next frame, even if the scene starts late, so the
+     result does not depend on when the scene thread wakes. The cost is at most one frame of
+     latency for a commit that lands just before the tick. **The queue is the world's**, so with
+     roots at different rates (60 and 120 Hz) a tick of one root applies transactions that the
+     other root sees at its own next tick (the owner's note);
+  3. the root's viewport (the surface's logical size);
+  4. the scene driver, examples only (`ax_rt_scene_driver`; it goes away with animations). It
+     gets the viewport, so geometry that depends on the window's size follows a resize in the
+     same frame;
+  then `ax_world_position`;
+  5. `ax_world_record_collect`; if the root's content changed, `ax_world_record_root` into the
+     surface's mailbox, published, remembering the newest applied transaction the snapshot
+     includes;
+  6. `ax_world_publish_mirror`, after layout (decision 69);
+  7. `ax_scene_clear_dirty`.
+
+  Until the root's own transaction applies, a tick records nothing.
+- **The presentation watermark** (decision 75's rules), computed after the ticks:
+  - a surface holds transactions back while it is visible and its newest content change is
+    newer than the newest transaction included in a snapshot it has shown;
+  - the watermark is the oldest of those, or the last applied transaction when no surface holds
+    anything back;
+  - a removed surface (a closed window) holds nothing; a hidden one
+    (`ax_rt_set_surface_visible`) holds nothing; visible again, it holds what it has not shown;
+  - the time reported is the newest present time among the surfaces.
+
+  A transaction that changes no visible surface is therefore presented at the tick that applies
+  it, unless an earlier one is still waiting: callbacks keep sequence order.
+- **Single-threaded mode.** The world's app and scene roles stay with the caller, and the job
+  system is created inline (decision 60). `ax_host_frame(root, T)`, with T on the world's clock:
+  1. queues a request for the surface's host size and refresh;
+  2. runs the scene step and the presenter's `frame`;
+  3. if the presenter asked for another size (a configure: decision 54's handshake), runs the
+     scene again and presents again, at most three times within the call;
+  4. runs a last step for what was shown.
+
+  In this mode the render side's requests are kept only for resizes: host frames set the time.
+  The threaded mode (next step) calls the same functions from its threads.
+- **Tests** (`tests/unit/runtime/test_single_thread.c`, manual clock, fake presenter):
+  - transactions committed after a frame's deadline wait for the next one;
+  - snapshots against golden text dumps;
+  - one mirror sync shows a new LEFT together with the frame layout computed from it;
+  - a configure of another size is recorded and presented within the same host frame;
+  - `on_presented`: in order with `REJECTED` between two presented ones; a change no window
+    shows comes when applied; hidden windows do not hold back, and visible again they do; a
+    closed window stops holding back;
+  - argument errors.
+
+**Status.** Implementation, pending the owner's approval (part of the approved plan; the
+deadline's note on the world-wide queue was the owner's).
+
+## 78. The scene and render threads; vsync on the render thread
+
+**Context.** The threaded mode runs decision 77's stages on a scene thread and presents every
+surface from one render thread. The owner asked for:
+- M0's render loop (wait_frame, acquire and render) moved from the example into the library,
+  with several surfaces;
+- the size handshake of decision 57 asking the scene for the new size, recorded in an off-cycle
+  tick;
+- the scene thread never waiting for the app thread;
+- tests with real threads against weston: the tree presented, the resize handshake, and no lost
+  frames with the app thread blocked for 500 ms;
+- TSan over core and the pipeline;
+- recording as a Deviation that the vsync reaches the render thread, not the main thread;
+- noting continuous frames at rest as pending, with a date.
+
+**Decision.**
+- **Threads** (`runtime/src/threads.c`). `ax_runtime_create` in threaded mode starts both
+  threads and returns once the scene thread has taken the world's scene role
+  (`ax_world_bind_scene_thread`); `ax_runtime_destroy` stops them and gives the role back to the
+  app thread.
+  - **Scene thread:** runs `ax_rt_scene_step` and sleeps until woken (a Dekker handshake on a
+    counter, as in decisions 31 and 52) or for at most 100 ms. Its wakers are the render
+    thread's requests and presentation reports, the app thread's surface commands, and the
+    platform's events (`ax_app_set_event_notify`, decision 74). It takes no lock the app thread
+    holds: commands and transactions arrive through lock-free queues.
+  - **Render thread:**
+    - takes its commands (attach and detach);
+    - waits for frames on every surface at once (`presenter->wait`), at most 50 ms at a time;
+    - runs `presenter->frame` for each surface that is due;
+    - with no surface, sleeps on its own condition until a command;
+    - when it stops, detaches every surface and destroys the presenter's resources on itself.
+  - Removing a surface waits, bounded by 1 s, for both threads to acknowledge it, so the
+    window can then be destroyed. **If they do not confirm within 1 s** (a render thread stuck
+    in the driver), `ax_rt_remove_surface` and `ax_runtime_remove_window` return
+    `AX_ERR_UNSUPPORTED`. The surface is then still in use, the render thread may still present
+    it, and its window must not be destroyed; the caller calls again until `AX_OK`. A retry
+    queues nothing new and only waits again. Both headers say so (the owner's review). Test:
+    `runtime.threads.a_removal_that_times_out_can_be_retried`, with a detach that stalls 1.5 s:
+    the first call fails with the surface still attached, the second succeeds, and the presenter
+    detaches once.
+- **The platform presenter** (`runtime/src/platform.c`, built with the platform module):
+  - **The renderer.** It defaults to `ax_render_wgpu` when the gpu module is built. It is
+    created on the render thread at the first window. Each window gets decision 57's frame step
+    (`ax_render_frame`), now split: `ax_render_frame_present` does steps 2 and 3 after a wait the
+    caller made, and `ax_render_frame_step` keeps the old behaviour as wait plus present.
+  - **Several surfaces.** The renderer vtbl gains `wait_frames`, appended so `struct_size`
+    tells. `ax_render_wgpu` implements it with the new `ax_gpu_surfaces_wait`, which polls the
+    device once and waits with `ax_surface_wait_frames` (decision 74); a DRIVER-paced surface that
+    animates is always due.
+  - **The size handshake** is decision 57's, unchanged. The frame step's request reaches the
+    scene as a resize request. The scene ticks at once (off-cycle, counted as `resize_ticks`) with
+    the new size, and the step waits for the snapshot within its bound.
+  - **Presentation reports.** Each commit that presented a snapshot is remembered with its
+    mailbox sequence (16 per surface). When the platform reports a newer commit on screen, the
+    newest snapshot at or before it goes to the scene for `ax_txn_on_presented` (decisions 74
+    and 75).
+  - **Events.** The scene thread is the app's event consumer. It forwards every window event to
+    the world (`ax_world_push_event`) with the window's root (0 for a window the runtime does not
+    have) and the time on the world's clock, and turns occlusion into the surface's visibility
+    (decision 77's watermark).
+    - **No event type goes through without its data** (the owner's review, for M2's input). The
+      payload is copied by a switch that names every `ax_event_type` and has no default, so a
+      type added to the platform without a case is a `-Wswitch` error, which `-Wall -Werror`
+      turns into a failed build on GCC and Clang. `_Static_assert`s keep the world's type values
+      equal to the platform's. Checked by adding a probe type to `ax_event.h`: both compilers
+      stop at the switch. (MSVC does not build the platform module yet; its equivalent warning,
+      C4061, is off by default and would have to be enabled when it does.)
+  - **Stable ABI** (`ax_runtime_window.h`): `ax_runtime_create_for_app`,
+    `ax_runtime_add_window` (it creates the window's root in a transaction of its own) and
+    `ax_runtime_remove_window`. The internal SDK (`ax_runtime_platform.h`) adds the options
+    (renderer, its desc, the handshake's bound, the examples' driver) and per-window counters.
+- **Deviation: the vsync reaches the render thread, not the main thread.** The document's table
+  of threads has the main thread forwarding the vsync to the scene. On Wayland the frame callback
+  and the presentation feedback are dispatched on the presenter's private queue (decision 34), so
+  the render thread is the first to know a frame is due. It asks the scene for frame N+1 with
+  its predicted present time as soon as it presents frame N (decision 57), and that request is
+  the scene's vsync. The main thread only reads the socket. Platforms whose vsync source belongs
+  to the main thread (CADisplayLink, Choreographer) will forward it to the render side the same
+  way. The owner updates the architecture document.
+- **Pending (2026-11-07): frames at rest.** The render thread presents every refresh while a
+  window lives (`animating` is always true, as in M0), even when nothing changes. Before M2 it
+  must drop to zero frames at rest: frames only while the scene has new content or something
+  animates, and a commit wakes the render side.
+- **Tests:**
+  - `tests/unit/runtime/test_threads.c` (label `runtime`, now in the TSan job): a fake
+    presenter paces surfaces like displays.
+    - Two surfaces at 60 and 144 Hz keep their rates while the app thread commits every 3 ms; 61
+      and 144 frames in a second locally (macOS runners wake timed waits late: the check only
+      asks the 144 Hz one to be clearly faster); every `on_presented` comes, in order, as
+      `PRESENTED`; the mirror shows the last change.
+    - The app thread blocked 500 ms (asleep) against 500 ms of it waiting for events: no fewer
+      frames and new snapshots (two frames of slack at the windows' edges), no more late frames
+      (one of slack). Locally 30, 30 and 0 in both.
+    - 20 surfaces added and removed while the threads run.
+    - Locally 5 runs under TSan, 2 more pinned to one CPU, clean.
+  - `tests/integration/gpu_wayland/test_pipeline.c` (headless weston, lavapipe), with the real
+    presenter and renderer:
+    - the tree is presented and `on_presented` reports it;
+    - a maximize is answered with a snapshot of the new size (locally 1280x688, `scene_late` 1,
+      no forced acknowledgement);
+    - with the app thread blocked 500 ms, no frame is lost compared with the 500 ms before it
+      unblocked: presentations, new snapshots and missed vblanks within two frames (on runners
+      that present every other refresh, a window edge moves each count by two, and missed
+      refreshes follow presentations one for one). A block that held the pipeline back would lose
+      about 30. Locally at weston's 60 Hz: 30 presentations, 30 snapshots and 0 missed in both.
+      **The criterion is relative** because GitHub's Ubuntu runners (weston 13 at 79.6 Hz,
+      lavapipe) present every other refresh in any window: 19 to 21 of 39, with the app thread
+      blocked or not, while weston 15 in CI and the local weston reach every refresh. That is the software
+      renderer's speed on those runners (the commit misses weston's repaint window), not the
+      block; the desktop check with `m1_nodes --block-ms=500` covers real hardware.
+    - **Baseline: M0's loop on the same runner** (the owner's review),
+      `gpu_wayland.pipeline.the_pipeline_presents_as_often_as_the_m0_loop`. It measures M0's
+      render loop for 500 ms: `ax_render_frame_step`, with a scene thread that records a
+      background, a card and a moving bar on each request, as `test_ir_present` does. It then
+      measures the M1 pipeline for 500 ms with the same picture, and requires the pipeline to
+      present as often and miss no more refreshes, within two frames.
+      - On GitHub's Ubuntu runner (weston 13 at 79.5 Hz, lavapipe, Clang ASan): **M0 20
+        presented, 19 missed; M1 21 presented, 21 missed.** M0 also presents every other
+        refresh, so the explanation holds: it is the runner, not the pipeline.
+      - The three other Ubuntu jobs passed the same comparison, so their M0 presented at most
+        two frames more than M1's 19 to 21: also every other refresh.
+      - Locally (weston at 60 Hz) and with weston 15 in CI, both present every refresh: 30 of 30
+        locally, with 0 missed.
+      - The test stays as a guard: a pipeline that added latency of its own would fall behind
+        M0's loop on any machine.
+
+**Status.** Deviation (the vsync), recorded as the owner asked; the rest Implementation, pending
+the owner's approval.
+
+## 79. The cooperative mode's tests in Node
+
+**Context.** core already built in the Emscripten job. The owner asked for a proof of the
+cooperative mode that runs there in CI, for example core's tests in Node.
+
+**Decision.**
+- **A new preset, `emscripten-tests`.** It inherits `emscripten` (Release, single-threaded,
+  `AX_WEB_THREADS=OFF`) and turns the tests on, with the examples off. ctest runs each test's
+  `.js` in Node through Emscripten's toolchain (`CMAKE_CROSSCOMPILING_EMULATOR`). Its test
+  preset includes the labels `core`, `render_ir` and `runtime` and excludes `death` (a death test
+  passes by catching SIGABRT, which WebAssembly does not raise).
+  - The `runtime` tests include decision 77's single-threaded pipeline with its manual clock,
+    so the cooperative scheduler, `ax_host_frame` and the inline job system run as the web will
+    run them.
+- **Tests that need threads skip** (`ax_threads_supported()` is false there). Two of core's
+  tests gained the guard the others already had: `core.events.events_cross_threads_while_the_app_waits`
+  and `core.events.waiting_for_events_returns_when_a_callback_is_due`.
+- **CI:** the `emscripten` job now configures, builds and tests with `emscripten-tests`, which
+  also builds every library the old job built.
+- **Locally** (emsdk 4.0.10, CI's version, Node 24): 98 tests, 11 skipped for lack of threads,
+  none failed.
+- base's tests stay out for now: many of them create threads without the guard. They join when
+  someone needs them on the web.
+
+**Status.** Implementation, pending the owner's approval (part of the approved plan).

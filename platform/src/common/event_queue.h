@@ -92,6 +92,12 @@ typedef struct ax_event_queue {
     ax_mutex wait_lock;
     ax_cond wait_cond;
     ax_atomic_u32 consumer_sleeping;
+
+    /* Optional hook called by the producer after it queues records (ax_app_set_event_notify). */
+    ax_mutex notify_lock;
+    ax_atomic_u32 notify_set;
+    void (*notify)(void *user);
+    void *notify_user;
 } ax_event_queue;
 
 /* capacity is rounded up to a power of two (minimum 8). wake_producer is called by the consumer
@@ -115,6 +121,10 @@ void ax_evq_push_occlusion(ax_event_queue *q, uint32_t index, bool occluded, uin
 
 /* Moves deferred events into the ring while there is room. Cheap when nothing is deferred. */
 void ax_evq_flush(ax_event_queue *q);
+
+/* Sets (fn non-NULL) or clears the producer's notification hook. Returns once no call to the
+ * previous hook is in progress. Any thread. */
+void ax_evq_set_notify(ax_event_queue *q, void (*fn)(void *user), void *user);
 
 /* ---- consumer ---- */
 

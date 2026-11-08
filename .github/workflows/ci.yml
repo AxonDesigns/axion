@@ -45,13 +45,14 @@ jobs:
             test_args: "-L \"^(gpu|render_wgpu)$\""
             coverage: wgpu-native-lavapipe
           # ThreadSanitizer over the code with cross-thread handoffs: base's primitives and jobs, the
-          # platform module's queues and triple buffers, and the Render IR's mailbox. gpu/ is not
-          # built: its suites run under ASan, and Dawn is not instrumented (decision 44).
-          - name: "Linux / Clang / TSan (base, platform, render IR, core)"
+          # platform module's queues and triple buffers, the Render IR's mailbox, core's queues and
+          # the runtime's threads (with a fake presenter). gpu/ is not built: its suites run under
+          # ASan, and Dawn is not instrumented (decision 44).
+          - name: "Linux / Clang / TSan (base, platform, render IR, core, runtime)"
             os: ubuntu-latest
             preset: clang-tsan
             configure_args: "-DAX_BUILD_GPU=OFF"
-            test_args: "-L \"^(base|platform|render_ir|core)$\""
+            test_args: "-L \"^(base|platform|render_ir|core|runtime)$\""
     steps:
       - uses: actions/checkout@v4
 
@@ -211,8 +212,11 @@ jobs:
           AX_REQUIRE_WP_FIFO: "1"
         run: tools/ci/with-weston.sh ctest --preset gcc-debug -L "^(wayland|gpu_wayland)$"
 
+  # The single-threaded web build, with core's, the Render IR's and the runtime's tests run in
+  # Node: the cooperative mode (ax_host_frame) and the inline job system as the web runs them
+  # (decision 79). Tests that need threads skip.
   emscripten:
-    name: Web / Emscripten / base only (single-threaded)
+    name: Web / Emscripten / single-threaded (core, render IR and runtime tests in Node)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -234,7 +238,10 @@ jobs:
           echo "EMSDK=$(cd "$(dirname "$(command -v emcc)")/../.." && pwd)" >> "$GITHUB_ENV"
 
       - name: Configure
-        run: cmake --preset emscripten
+        run: cmake --preset emscripten-tests
 
       - name: Build
-        run: cmake --build --preset emscripten -- -k 0
+        run: cmake --build --preset emscripten-tests -- -k 0
+
+      - name: Test (Node)
+        run: ctest --preset emscripten-tests

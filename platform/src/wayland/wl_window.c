@@ -24,6 +24,16 @@
 #include "xdg-decoration-unstable-v1-client-protocol.h"
 #include "xdg-shell-client-protocol.h"
 
+/* ---- the xdg_toplevel role --------------------------------------------------------------------
+ */
+
+static void toplevel_ack_configure(wl_window *ww, uint32_t serial)
+{
+    xdg_surface_ack_configure(ww->xdg_surface, serial);
+}
+
+const wl_role_ops ax_wl_toplevel_role = {toplevel_ack_configure};
+
 static int32_t logical_int(float v)
 {
     return v <= 0.0f ? 0 : (int32_t)ceilf(v);
@@ -271,6 +281,7 @@ ax_result ax_wl_window_create(ax_app_impl *app, ax_window_impl *w, const ax_wind
         ww->viewport = wp_viewporter_get_viewport(wl->viewporter, ww->surface);
     }
 
+    ww->role = &ax_wl_toplevel_role;
     ww->xdg_surface = xdg_wm_base_get_xdg_surface(wl->wm_base, ww->surface);
     xdg_surface_add_listener(ww->xdg_surface, &xdg_surface_listener, w);
     ww->toplevel = xdg_surface_get_toplevel(ww->xdg_surface);

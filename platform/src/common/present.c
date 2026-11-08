@@ -98,6 +98,7 @@ ax_result ax_surface_prepare_commit(ax_surface surface, const ax_frame_target *f
     frame_was_pending = w->app->ops->surface_frame_pending(w);
     r = w->app->ops->surface_prepare_commit(w, frame);
     if (r == AX_OK) {
+        w->presenter_commit_id++; /* the backend tagged its requests with this id */
         w->presenter_prepared = true;
         w->presenter_prepared_request = request;
         w->presenter_prev_target_ns = w->clock.last_target_ns;
@@ -208,77 +209,104 @@ static uint64_t frame_lost_bound(const ax_frame_clock *clock)
     return bound < 50000000u ? 50000000u : (bound > 250000000u ? 250000000u : bound);
 }
 
-ax_result ax_surface_wait_frame(ax_surface surface, uint64_t timeout_ns, ax_wake_reason *out_reason)
+/*
+ * One surface's part of a wait, after its queue was dispatched: why its presenter should start a
+ * frame now, or AX_WAKE_TIMEOUT with *sleep_until lowered to when it must look again.
+ */
+static ax_wake_reason check_surface(ax_window_impl *w, uint64_t now, uint64_t timeout_ns,
+                                    uint64_t *sleep_until)
 {
-    ax_window_impl *w = presenter_window(surface, "ax_surface_wait_frame");
+    ax_app_impl *app = w->app;
+    bool configure;
+    bool commit;
+
+    w->presenter_prepared = false; /* the caller made its commit (or never will) */
+    if (app->ops->surface_frame_due(w)) {
+        return AX_WAKE_FRAME; /* the frame drawn now also picks up any pending configure */
+    }
+    /* Only a presenter that waits relies on the callback; one polling with a zero timeout
+     * (a GPU swapchain that paces itself) is not stalled by a late one. */
+    if (timeout_ns != 0 && app->ops->surface_frame_pending(w) &&
+        w->presenter_frame_requested_ns != 0) {
+        uint64_t lost_at = w->presenter_frame_requested_ns + frame_lost_bound(&w->clock);
+        if (now >= lost_at) {
+            /* No callback: the commit never happened, or the window gets no callbacks
+             * (hidden). Draw again; a hidden window then draws at this slow rate. */
+            app->ops->surface_drop_frame(w);
+            w->presenter_frame_requested_ns = 0;
+            w->presenter_lost_frames++;
+            return AX_WAKE_FRAME;
+        }
+        if (lost_at < *sleep_until) {
+            *sleep_until = lost_at;
+        }
+    }
+    configure = ax_tb_has_new(&w->config_tb);
+    commit = ax_atomic_load_u32(&w->commit_requested, AX_MO_SEQ_CST) != 0;
+    if (configure || commit) {
+        /* Commit for it at once only if no frame is in flight. Otherwise wait for the frame
+         * callback: committing on every configure of an interactive resize outruns the display,
+         * and the compositor just discards the extra frames (decision 40). If the callback does
+         * not come within two refreshes (a hidden window gets none), commit anyway so the
+         * configure is still acknowledged. */
+        uint64_t bound = 2 * ax_frame_clock_refresh(&w->clock);
+        bound = bound < 8000000u ? 8000000u : (bound > 100000000u ? 100000000u : bound);
+        if (w->presenter_work_seen_ns == 0) {
+            w->presenter_work_seen_ns = now;
+        }
+        if (!app->ops->surface_frame_pending(w) || now - w->presenter_work_seen_ns >= bound) {
+            return configure ? AX_WAKE_CONFIGURE : AX_WAKE_COMMIT_REQUESTED;
+        }
+        if (w->presenter_work_seen_ns + bound < *sleep_until) {
+            *sleep_until = w->presenter_work_seen_ns + bound;
+        }
+    }
+    return AX_WAKE_TIMEOUT;
+}
+
+ax_result ax_surface_wait_frames(const ax_surface *surfaces, uint32_t count, uint64_t timeout_ns,
+                                 ax_wake_reason *out_reasons)
+{
+    ax_window_impl *ws[AX_SURFACE_WAIT_MAX] = {NULL};
     ax_app_impl *app;
     uint64_t deadline;
-    ax_wake_reason reason = AX_WAKE_TIMEOUT;
+    uint32_t i;
+    bool any = false;
 
-    if (w == NULL) {
-        return AX_ERR_INVALID_HANDLE;
+    if (surfaces == NULL || out_reasons == NULL || count == 0 || count > AX_SURFACE_WAIT_MAX) {
+        return ax_set_error(AX_ERR_INVALID_ARGUMENT,
+                            "ax_surface_wait_frames: 1 to %u surfaces and their reasons",
+                            (unsigned)AX_SURFACE_WAIT_MAX);
     }
-    app = w->app;
+    for (i = 0; i < count; ++i) {
+        ws[i] = presenter_window(surfaces[i], "ax_surface_wait_frames");
+        if (ws[i] == NULL) {
+            return AX_ERR_INVALID_HANDLE;
+        }
+        if (ws[i]->app != ws[0]->app) {
+            return ax_set_error(AX_ERR_INVALID_ARGUMENT,
+                                "ax_surface_wait_frames: the surfaces belong to different apps");
+        }
+        out_reasons[i] = AX_WAKE_TIMEOUT;
+    }
+    app = ws[0]->app;
     deadline = timeout_ns > UINT64_MAX - ax_time_monotonic_ns()
                    ? UINT64_MAX
                    : ax_time_monotonic_ns() + timeout_ns;
     for (;;) {
         uint64_t gen = ax_atomic_load_u64(&app->wake_gen, AX_MO_SEQ_CST);
-        uint64_t now;
+        uint64_t now = 0;
         uint64_t sleep_until = deadline;
-        bool configure;
-        bool commit;
 
-        /* Run the presenter queue's listeners (frame done, presentation feedback) here, on the
-         * presenter thread, where they were registered. */
-        app->ops->surface_dispatch(w);
-        now = ax_time_monotonic_ns();
-        w->presenter_prepared = false; /* the caller made its commit (or never will) */
-        if (app->ops->surface_frame_due(w)) {
-            reason = AX_WAKE_FRAME; /* the frame drawn now also picks up any pending configure */
-            break;
+        for (i = 0; i < count; ++i) {
+            /* Run the presenter queue's listeners (frame done, presentation feedback) here, on
+             * the presenter thread, where they were registered. */
+            app->ops->surface_dispatch(ws[i]);
+            now = ax_time_monotonic_ns();
+            out_reasons[i] = check_surface(ws[i], now, timeout_ns, &sleep_until);
+            any = any || out_reasons[i] != AX_WAKE_TIMEOUT;
         }
-        /* Only a presenter that waits relies on the callback; one polling with a zero timeout
-         * (a GPU swapchain that paces itself) is not stalled by a late one. */
-        if (timeout_ns != 0 && app->ops->surface_frame_pending(w) &&
-            w->presenter_frame_requested_ns != 0) {
-            uint64_t lost_at = w->presenter_frame_requested_ns + frame_lost_bound(&w->clock);
-            if (now >= lost_at) {
-                /* No callback: the commit never happened, or the window gets no callbacks
-                 * (hidden). Draw again; a hidden window then draws at this slow rate. */
-                app->ops->surface_drop_frame(w);
-                w->presenter_frame_requested_ns = 0;
-                w->presenter_lost_frames++;
-                reason = AX_WAKE_FRAME;
-                break;
-            }
-            if (lost_at < sleep_until) {
-                sleep_until = lost_at;
-            }
-        }
-        configure = ax_tb_has_new(&w->config_tb);
-        commit = ax_atomic_load_u32(&w->commit_requested, AX_MO_SEQ_CST) != 0;
-        if (configure || commit) {
-            /* Commit for it at once only if no frame is in flight. Otherwise wait for the frame
-             * callback: committing on every configure of an interactive resize outruns the display,
-             * and the compositor just discards the extra frames (decision 40). If the callback does
-             * not come within two refreshes (a hidden window gets none), commit anyway so the
-             * configure is still acknowledged. */
-            uint64_t bound = 2 * ax_frame_clock_refresh(&w->clock);
-            bound = bound < 8000000u ? 8000000u : (bound > 100000000u ? 100000000u : bound);
-            if (w->presenter_work_seen_ns == 0) {
-                w->presenter_work_seen_ns = now;
-            }
-            if (!app->ops->surface_frame_pending(w) || now - w->presenter_work_seen_ns >= bound) {
-                reason = configure ? AX_WAKE_CONFIGURE : AX_WAKE_COMMIT_REQUESTED;
-                break;
-            }
-            if (w->presenter_work_seen_ns + bound < sleep_until) {
-                sleep_until = w->presenter_work_seen_ns + bound;
-            }
-        }
-        if (now >= deadline) {
-            reason = AX_WAKE_TIMEOUT;
+        if (any || now >= deadline) {
             break;
         }
         /* Sleep until the main thread reads more events or publishes something (Dekker handshake
@@ -291,11 +319,53 @@ ax_result ax_surface_wait_frame(ax_surface surface, uint64_t timeout_ns, ax_wake
         ax_atomic_fetch_add_u32(&app->presenters_waiting, (uint32_t)-1, AX_MO_SEQ_CST);
         ax_mutex_unlock(&app->wake_lock);
     }
-    if (reason != AX_WAKE_TIMEOUT) {
-        w->presenter_work_seen_ns = 0; /* the frame drawn next handles what was waiting */
+    for (i = 0; i < count; ++i) {
+        if (out_reasons[i] != AX_WAKE_TIMEOUT) {
+            ws[i]->presenter_work_seen_ns = 0; /* the frame drawn next handles what was waiting */
+        }
+    }
+    return AX_OK;
+}
+
+ax_result ax_surface_wait_frame(ax_surface surface, uint64_t timeout_ns, ax_wake_reason *out_reason)
+{
+    ax_wake_reason reason = AX_WAKE_TIMEOUT;
+    ax_result r = ax_surface_wait_frames(&surface, 1, timeout_ns, &reason);
+    if (r == AX_ERR_INVALID_HANDLE) {
+        ax_set_error(AX_ERR_INVALID_HANDLE, "ax_surface_wait_frame: invalid surface");
     }
     if (out_reason != NULL) {
         *out_reason = reason;
+    }
+    return r;
+}
+
+void ax__surface_commit_presented(ax_window_impl *w, uint64_t id, uint64_t present_ns)
+{
+    if (id > w->presented_commit_id && id <= w->presenter_commit_id) {
+        w->presented_commit_id = id;
+        w->presented_commit_ns = present_ns;
+    }
+}
+
+uint64_t ax_surface_prepared_commit(ax_surface surface)
+{
+    ax_window_impl *w = presenter_window(surface, "ax_surface_prepared_commit");
+    return w != NULL ? w->presenter_commit_id : 0;
+}
+
+ax_result ax_surface_get_presented_commit(ax_surface surface, uint64_t *out_commit,
+                                          uint64_t *out_present_ns)
+{
+    ax_window_impl *w = presenter_window(surface, "ax_surface_get_presented_commit");
+    if (w == NULL) {
+        return AX_ERR_INVALID_HANDLE;
+    }
+    if (out_commit != NULL) {
+        *out_commit = w->presented_commit_id;
+    }
+    if (out_present_ns != NULL) {
+        *out_present_ns = w->presented_commit_ns;
     }
     return AX_OK;
 }

@@ -39,8 +39,24 @@ AX_API void ax_world_bind_scene_thread(ax_world world);
 /* The calling thread becomes the world's app thread. The previous one must not be using it. */
 AX_API void ax_world_bind_app_thread(ax_world world);
 
+/* True for a live world. thread: any */
+AX_API bool ax_world_is_valid(ax_world world);
+
 /* The scene, for the scene thread (NULL for a stale handle). */
 AX_API ax_scene *ax_world_scene(ax_world world);
+
+/* ---- Clock ----------------------------------------------------------------------------------- */
+
+/* True when the world uses the default clock (base's monotonic clock), the platform's. */
+AX_API bool ax_world_clock_is_monotonic(ax_world world);
+
+/*
+ * A time on base's monotonic clock (ax_time_monotonic_ns: the platform's predicted present times)
+ * on the world's clock. The same value with the default clock. With an injected clock, the
+ * distance from now is kept: now_world + (monotonic_ns - now_monotonic), at least 0. Callers that
+ * need it never to go backwards (a root's frame times) clamp it themselves. thread: any
+ */
+AX_API uint64_t ax_world_time_from_monotonic(ax_world world, uint64_t monotonic_ns);
 
 /* ---- Encoded commands ------------------------------------------------------------------------ */
 
@@ -164,6 +180,26 @@ AX_API bool ax_world_publish_mirror(ax_world world);
  * calls it for nodes whose frame changed (the mirror's channel for layout results). thread: scene
  */
 AX_API void ax_world_touch_node(ax_world world, ax_node node);
+
+/* ---- Events to the app thread (ax_world_poll_event) ------------------------------------------ */
+
+/*
+ * Queues an event for the app thread. Never waits; when the queue is full the event waits in a
+ * scene-side backlog, sent first on the next call (false only when that backlog is out of
+ * memory, and the event is lost). thread: scene
+ */
+AX_API bool ax_world_push_event(ax_world world, const ax_world_event *event);
+
+/*
+ * Every applied transaction up to through_seq is on screen (or changes nothing visible), shown at
+ * time_ns (world clock): their ax_txn_on_presented callbacks become due. Values below the last
+ * report are ignored; through_seq must not pass the last finished transaction. Rejections are
+ * reported by ax_world_finish_txn itself. thread: scene
+ */
+AX_API void ax_world_report_presented(ax_world world, uint64_t through_seq, uint64_t time_ns);
+
+/* Sends what waits in the scene-side backlog; true when nothing is left. thread: scene */
+AX_API bool ax_world_flush_events(ax_world world);
 
 AX_EXTERN_C_END
 

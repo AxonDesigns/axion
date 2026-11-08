@@ -7,6 +7,8 @@ set(_ax_core_tests
     test_abi_headers.c
     test_apply.c
     test_dirty.c
+    test_events.c
+    test_frame.c
     test_mirror.c
     test_node_store.c
     test_props.c
@@ -18,3 +20,9 @@ foreach(_t IN LISTS _ax_core_tests)
     string(REGEX REPLACE "^test_" "" _n "${_n}")
     target_link_libraries(test_core_${_n} PRIVATE ax_core)
 endforeach()
+
+# Core meets the renderers only through the Render IR (decision 76).
+add_test(NAME core.includes.only_the_render_ir
+         COMMAND "${CMAKE_COMMAND}" "-DCORE_DIR=${PROJECT_SOURCE_DIR}/core"
+                 -P "${CMAKE_CURRENT_SOURCE_DIR}/check_includes.cmake")
+set_tests_properties(core.includes.only_the_render_ir PROPERTIES LABELS core)

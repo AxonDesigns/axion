@@ -118,6 +118,10 @@ AX_API ax_result ax_scene_get(const ax_scene *scene, ax_node node, ax_prop prop,
 
 /* ---- Dirty state ----------------------------------------------------------------------------- */
 
+/* Marks the node's layout dirty, as a change of one of its layout properties would (its size or
+ * position may change): for inputs the scene owns, such as a window root's viewport. */
+AX_API void ax_scene_mark_layout(ax_scene *scene, ax_node node);
+
 AX_API bool ax_scene_is_relayout_boundary(const ax_scene *scene, ax_node node);
 
 /* The node's dirty flags (0 for a node that is not live). */

@@ -86,6 +86,11 @@ typedef struct ax_renderer_vtbl {
     void (*query_caps)(void *self, ax_renderer_caps *out_caps);
     ax_result (*wait_frame)(void *self, ax_surface surface, bool animating, uint64_t timeout_ns,
                             ax_wake_reason *out_reason);
+    /* Appended in M1 (check struct_size): wait_frame over several attached surfaces, for one
+     * render thread presenting them all (ax_surface_wait_frames). out_reasons[i] for
+     * surfaces[i]; returns once at least one is due, or after timeout_ns. */
+    ax_result (*wait_frames)(void *self, const ax_surface *surfaces, uint32_t count, bool animating,
+                             uint64_t timeout_ns, ax_wake_reason *out_reasons);
 } ax_renderer_vtbl;
 
 AX_EXTERN_C_END
