@@ -4274,6 +4274,8 @@ the `scale` and `crossfade` layout presets, gestures and the driver graph.
   per-node C callback (they write the presentation frame the recording reads), enter and exit
   transitions (an exiting ghost keeps its node alive until its track ends), and the budget that
   downgrades `resize` to `scale` (counted by `present_relayouts`).
+- **Virtualization's hooks** are decision 90's: the protocol vtable (a virtual layout is a protocol)
+  and the output destination its caller chooses, so the plan's item is covered.
 - **Determinism:** times are integers on the world's clock, the curves use only deterministic
   functions, so the same sequence gives the same bits: `core.anim` compares two runs frame by frame,
   and the goldens of decision 96 are byte-identical on Linux, macOS, Windows and the web.
@@ -4326,6 +4328,17 @@ animates, and that a commit wake it.
   `AX_WAKE_COMMIT_REQUESTED`, the frame presents and asks the scene for the next one, whose tick
   applies the commit. A change from rest therefore reaches the screen in one to two refreshes, as
   in steady state (decision 77's latch).
+- **A commit wakes every window:** the app thread cannot know which roots a transaction touches
+  (they are known once the scene applies it), so the hook wakes each surface of the runtime. A
+  window the commit did not change presents one frame and rests again.
+- **The hook for content without a commit** (recorded, not implemented): new content will also come
+  from background work that commits nothing: glyph atlas uploads (prompt 5, the first user),
+  asynchronous image decodes and font loads (M2). They will call a generic wake, callable from any
+  thread, such as `ax_world_request_frame(world, root)`: it asks the runtime for a frame of the
+  window that shows `root` (every window when `root` is null), through the presenter's `wake`
+  entry; the woken frame's tick draws what the work changed. The commit hook becomes one caller of
+  it. With it, the scene can later wake only the roots a tick changed, instead of every window on
+  each commit.
 - **A latent bug, fixed:** `ax_surface_begin_frame` marks a surface as being presented and only a
   commit cleared it, so a frame begun and not committed (nothing new at rest, content of another
   size, busy buffers) kept the window from being destroyed (an assertion). `ax_surface_end_frame`
