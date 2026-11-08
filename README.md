@@ -6,11 +6,19 @@ for the design and [docs/decisions.md](docs/decisions.md) for the decisions made
 
 **Status:** M0 is done: `base/`, the Wayland backend in `platform/`, `gpu/` (Dawn, with
 wgpu-native kept compiling in CI), the Render IR and `ax_render_wgpu`, shown by
-`examples/m0_window`. M1, the thread split, is in progress: so far the job system in `base/`, and in
-`core/` the node store, the property system with dirty propagation, transactions applied atomically
-on the scene thread, and the app thread's mirror; `runtime/` with the scene and render threads
-(`examples/m1_nodes`); `render/soft/`, the software renderer, deterministic on every platform;
-and `headless/`, which runs a world without a window or a GPU. See the milestones in
+`examples/m0_window`. M1, the thread split, is in progress. Done so far:
+
+- `base/`: the job system and deterministic math.
+- `core/`: the node store, the property system with dirty propagation, transactions applied
+  atomically on the scene thread, and the app thread's mirror. Also the layout engine with flex
+  (Yoga-compatible), clips for `overflow: hidden`, and implicit animations: springs, timing curves
+  and the `resize` layout preset.
+- `runtime/`: the scene and render threads. A window presents nothing at rest, and an app thread
+  blocked for 500 ms does not stop running animations (`examples/m1_nodes`).
+- `render/soft/`: the software renderer, deterministic on every platform.
+- `headless/`: runs a world without a window or a GPU.
+
+Still to come in M1: Latin text and the accessibility tree. See the milestones in
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Building
@@ -67,9 +75,22 @@ updates them.
 
 ## Benchmarks
 
-Reference benchmarks build with the tests but never run in CI. Run them on a Release preset, for
-example `build/gcc-release/tests/bench/bench_core` or `bench_soft [workers]`;
-[docs/decisions.md](docs/decisions.md) records the numbers (decisions 70 and 87).
+Reference benchmarks build with the tests but never run in CI. Run them on a Release preset from
+`build/<preset>/tests/bench/`; [docs/decisions.md](docs/decisions.md) records the numbers:
+
+| Benchmark              | Measures                                         | Decision |
+| ---------------------- | ------------------------------------------------ | -------- |
+| `bench_core`           | transactions, the mirror and the job system      | 70       |
+| `bench_soft [workers]` | the software renderer                            | 87       |
+| `bench_layout`         | full and incremental flex layout of 10 000 nodes | 92       |
+| `bench_anim`           | the frame's stages while 10 000 nodes animate    | 94       |
+
+## Repository checks
+
+CI's first job needs no build: every tracked text file ends in a newline
+(`tools/ci/check_final_newline.sh`), and each decision's status in the index of
+[docs/decisions.md](docs/decisions.md) agrees with its entry (`tools/ci/check_decision_status.py`).
+Both run locally from anywhere in the repository.
 
 ## License
 
