@@ -30,6 +30,7 @@ static ax_dimension pt(float v)
 
 static void box(ax_txn *t, ax_node n, float x, float y, float w, float h)
 {
+    ax_txn_set_u32(t, n, AX_PROP_POSITION, AX_POSITION_ABSOLUTE); /* placed by its insets */
     ax_txn_set_dimension(t, n, AX_PROP_LEFT, pt(x));
     ax_txn_set_dimension(t, n, AX_PROP_TOP, pt(y));
     ax_txn_set_dimension(t, n, AX_PROP_WIDTH, pt(w));
@@ -119,7 +120,7 @@ static const ax_render_ir *frame(ax_world w, ax_node root, ax_ir_builder *b, flo
 {
     const ax_render_ir *ir = NULL;
     (void)ax_world_apply_pending(w, UINT64_MAX);
-    if (ax_world_set_root_viewport(w, root, vw, vh) != AX_OK) {
+    if (ax_world_set_root_viewport(w, root, vw, vh, 1.0f) != AX_OK) {
         return NULL;
     }
     (void)ax_world_position(w);
@@ -397,13 +398,14 @@ AX_TEST(window_roots_are_checked)
     ax_ir_builder_init(&b, ax_default_allocator());
     AX_REQUIRE(build(w, &n));
     (void)ax_world_apply_pending(w, UINT64_MAX);
-    AX_CHECK_RESULT(ax_world_set_root_viewport(w, n.card, 10, 10), AX_ERR_INVALID_ARGUMENT);
-    AX_CHECK_RESULT(ax_world_set_root_viewport(w, n.root, -1, 10), AX_ERR_INVALID_ARGUMENT);
-    AX_CHECK_RESULT(ax_world_set_root_viewport(w, n.root, NAN, 10), AX_ERR_INVALID_ARGUMENT);
-    AX_CHECK_RESULT(ax_world_set_root_viewport(w, (ax_node){0}, 10, 10), AX_ERR_INVALID_HANDLE);
+    AX_CHECK_RESULT(ax_world_set_root_viewport(w, n.card, 10, 10, 1.0f), AX_ERR_INVALID_ARGUMENT);
+    AX_CHECK_RESULT(ax_world_set_root_viewport(w, n.root, -1, 10, 1.0f), AX_ERR_INVALID_ARGUMENT);
+    AX_CHECK_RESULT(ax_world_set_root_viewport(w, n.root, NAN, 10, 1.0f), AX_ERR_INVALID_ARGUMENT);
+    AX_CHECK_RESULT(ax_world_set_root_viewport(w, (ax_node){0}, 10, 10, 1.0f),
+                    AX_ERR_INVALID_HANDLE);
     ax_ir_builder_begin(&b, 10, 10, 0, ax_color_make(0, 0, 0, 1));
     AX_CHECK_RESULT(ax_world_record_root(w, n.root, &b), AX_ERR_INVALID_HANDLE); /* not a root */
-    AX_REQUIRE(ax_world_set_root_viewport(w, n.root, 10, 10) == AX_OK);
+    AX_REQUIRE(ax_world_set_root_viewport(w, n.root, 10, 10, 1.0f) == AX_OK);
     AX_CHECK(ax_world_root_changed(w, n.root, NULL)); /* true before its first record */
     ax_world_remove_root(w, n.root);
     AX_CHECK(!ax_world_root_changed(w, n.root, NULL));

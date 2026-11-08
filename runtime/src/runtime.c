@@ -549,7 +549,8 @@ static void tick(rt_impl *r, uint32_t index, const ax_rt_request *q)
         return; /* the root's transaction has not applied yet */
     }
     /* 3. The root's viewport. 4. The examples' driver, which may read it. */
-    if (ax_world_set_root_viewport(world, s->root, q->logical_width, q->logical_height) != AX_OK) {
+    if (ax_world_set_root_viewport(world, s->root, q->logical_width, q->logical_height,
+                                   q->scale > 0.0f ? q->scale : 1.0f) != AX_OK) {
         return; /* out of memory, or the root has gained a parent: nothing to record */
     }
     if (r->desc.driver != NULL) {

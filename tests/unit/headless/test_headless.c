@@ -55,6 +55,7 @@ static ax_transform2d rotation(float radians)
 static ax_node box(ax_txn *t, ax_node parent, float x, float y, float w, float h, uint32_t argb)
 {
     ax_node n = ax_txn_create(t, AX_NODE_VIEW);
+    ax_txn_set_u32(t, n, AX_PROP_POSITION, AX_POSITION_ABSOLUTE); /* placed by its insets */
     ax_txn_set_dimension(t, n, AX_PROP_LEFT, pt(x));
     ax_txn_set_dimension(t, n, AX_PROP_TOP, pt(y));
     ax_txn_set_dimension(t, n, AX_PROP_WIDTH, pt(w));

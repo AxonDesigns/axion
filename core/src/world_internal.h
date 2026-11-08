@@ -180,7 +180,8 @@ typedef struct world_impl {
     ax_node *removed; /* subtrees removed by the transaction being applied */
     uint32_t removed_capacity;
     bool scene_ready;
-    frame_state *frame; /* frame.c: window roots, the recording cache (scene thread) */
+    frame_state *frame;         /* frame.c: window roots, the recording cache (scene thread) */
+    struct ax_job_system *jobs; /* frame jobs for the scene's stages, or NULL */
 } world_impl;
 
 world_impl *ax__world_from_handle(ax_world world);

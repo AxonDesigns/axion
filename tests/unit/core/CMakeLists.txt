@@ -9,6 +9,7 @@ set(_ax_core_tests
     test_dirty.c
     test_events.c
     test_frame.c
+    test_layout.c
     test_mirror.c
     test_node_store.c
     test_props.c

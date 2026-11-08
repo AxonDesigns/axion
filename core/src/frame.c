@@ -14,11 +14,13 @@
 #include <axion/base/ax_error_set.h>
 #include <axion/base/ax_memory.h>
 #include <axion/core/ax_frame.h>
+#include <axion/core/ax_layout.h>
 
 /* A window root and its viewport. */
 typedef struct frame_root {
     ax_node node;
     float width, height;
+    float scale;          /* pixels per logical unit, for rounding layout */
     bool changed;         /* content changed since it was last recorded */
     uint64_t changed_seq; /* newest transaction applied when it changed */
 } frame_root;
@@ -146,7 +148,8 @@ static const frame_root *root_of_slot(const frame_state *f, const ax_node_store 
 
 /* ---- Window roots ---------------------------------------------------------------------------- */
 
-ax_result ax_world_set_root_viewport(ax_world world, ax_node root, float width, float height)
+ax_result ax_world_set_root_viewport(ax_world world, ax_node root, float width, float height,
+                                     float scale)
 {
     world_impl *w = scene_world(world);
     frame_state *f;
@@ -161,7 +164,8 @@ ax_result ax_world_set_root_viewport(ax_world world, ax_node root, float width, 
         return ax_set_error(AX_ERR_INVALID_ARGUMENT,
                             "ax_world_set_root_viewport: the node has a parent");
     }
-    if (!(width >= 0.0f) || !(height >= 0.0f) || !isfinite(width) || !isfinite(height)) {
+    if (!(width >= 0.0f) || !(height >= 0.0f) || !isfinite(width) || !isfinite(height) ||
+        !(scale > 0.0f) || !isfinite(scale)) {
         return ax_set_error(AX_ERR_INVALID_ARGUMENT, "ax_world_set_root_viewport: bad size");
     }
     f = state(w);
@@ -181,9 +185,10 @@ ax_result ax_world_set_root_viewport(ax_world world, ax_node root, float width, 
         r->changed = true;
         r->changed_seq = ax_atomic_load_u64(&w->applied_seq, AX_MO_RELAXED);
     }
-    if (r->width != width || r->height != height) {
+    if (r->width != width || r->height != height || r->scale != scale) {
         r->width = width;
         r->height = height;
+        r->scale = scale;
         ax_scene_mark_layout(&w->scene, root);
     }
     return AX_OK;
@@ -202,88 +207,43 @@ void ax_world_remove_root(ax_world world, ax_node root)
     }
 }
 
-/* ---- Positioning ----------------------------------------------------------------------------- */
+/* ---- Positioning: the layout engine (decision 90) -----------------------------------------------
+ */
 
-static float points_or_zero(ax_dimension d)
+static bool viewport_of(void *user, ax_node root, float *width, float *height, float *scale)
 {
-    return d.unit == AX_UNIT_POINTS ? d.value : 0.0f;
+    world_impl *w = (world_impl *)user;
+    const frame_root *r = find_root(w->frame, root);
+    if (r == NULL) {
+        return false;
+    }
+    *width = r->width;
+    *height = r->height;
+    *scale = r->scale;
+    return true;
 }
 
-static void place(world_impl *w, uint32_t row)
+static void frame_changed(void *user, uint32_t slot)
 {
-    ax_node_store *s = &w->scene.store;
-    uint32_t slot = s->slot_of_row[row];
-    const frame_root *vr = root_of_slot(w->frame, s, slot);
-    ax_rect frame;
-    if (vr != NULL) {
-        frame = ax_rect_make(0.0f, 0.0f, vr->width, vr->height);
-    } else {
-        const ax_node_style *st = &s->style[row];
-        frame = ax_rect_make(points_or_zero(st->inset[AX_EDGE_LEFT]),
-                             points_or_zero(st->inset[AX_EDGE_TOP]), points_or_zero(st->width),
-                             points_or_zero(st->height));
-    }
-    if (memcmp(&s->layout[row].frame, &frame, sizeof frame) != 0) {
-        s->layout[row].frame = frame;
-        ax__mirror_touch_slot(w, slot);
-        if (w->frame != NULL) {
-            w->frame->counters.frames_changed++;
-        }
-    }
-}
-
-/* Positions from `root_slot` down, descending through dirty nodes (or every node). */
-static void position_tree(world_impl *w, uint32_t root_slot, bool everything)
-{
-    ax_node_store *s = &w->scene.store;
-    uint32_t cur = root_slot;
-    for (;;) {
-        uint32_t row = s->slots[cur].row;
-        const ax_node_links *l = &s->links[row];
-        place(w, row);
-        if (l->first_child != AX_NODE_NONE &&
-            (everything || (s->dirty[row] & (AX_DIRTY_LAYOUT | AX_DIRTY_LAYOUT_CHILD)) != 0)) {
-            cur = l->first_child;
-            continue;
-        }
-        while (cur != root_slot && s->links[s->slots[cur].row].next_sibling == AX_NODE_NONE) {
-            cur = s->links[s->slots[cur].row].parent;
-        }
-        if (cur == root_slot) {
-            return;
-        }
-        cur = s->links[s->slots[cur].row].next_sibling;
-    }
+    world_impl *w = (world_impl *)user;
+    ax__mirror_touch_slot(w, slot);
+    w->frame->counters.frames_changed++;
 }
 
 uint32_t ax_world_position(ax_world world)
 {
     world_impl *w = scene_world(world);
-    ax_node_store *s;
-    const ax_dirty_set *d;
-    uint64_t before;
-    uint32_t i;
+    ax_layout_pass_desc desc;
     if (w == NULL || state(w) == NULL) {
         return 0;
     }
-    s = &w->scene.store;
-    d = &w->scene.dirty;
-    before = w->frame->counters.frames_changed;
-    if (d->roots_overflowed) {
-        for (i = 0; i < s->row_count; ++i) {
-            if (s->links[i].parent == AX_NODE_NONE) {
-                position_tree(w, s->slot_of_row[i], true);
-            }
-        }
-    } else {
-        for (i = 0; i < d->layout_root_count; ++i) {
-            ax_node r = d->layout_roots[i];
-            if (ax_node_store_is_live(s, r)) { /* destroyed since it was listed: skip */
-                position_tree(w, ax_handle_slot(r.h), false);
-            }
-        }
-    }
-    return (uint32_t)(w->frame->counters.frames_changed - before);
+    memset(&desc, 0, sizeof desc);
+    desc.jobs = w->jobs;
+    desc.viewport = viewport_of;
+    desc.viewport_user = w;
+    desc.frame_changed = frame_changed;
+    desc.frame_changed_user = w;
+    return ax_layout_run(&w->scene, &desc);
 }
 
 /* ---- Collecting what changed ----------------------------------------------------------------- */

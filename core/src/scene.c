@@ -22,6 +22,17 @@ void ax_scene_init(ax_scene *scene, const ax_node_store_desc *desc)
     memset(scene, 0, sizeof *scene);
     ax_node_store_init(&scene->store, desc);
     ax_prop_registry_init(&scene->props, &scene->store.allocator);
+    {
+        /* Layout's measure functions (ax_layout.h): the first component type, always. */
+        ax_component_desc cd;
+        ax_result r;
+        memset(&cd, 0, sizeof cd);
+        cd.size = sizeof(void *) * 2u;
+        cd.align = AX_ALIGNOF(void *);
+        r = ax_node_store_register_component(&scene->store, &cd, &scene->measure_component);
+        AX_ASSERT(r == AX_OK);
+        (void)r;
+    }
 }
 
 void ax_scene_deinit(ax_scene *scene)
@@ -42,11 +53,14 @@ static uint32_t row_of_slot(const ax_scene *scene, uint32_t slot)
 
 static bool is_boundary_row(const ax_node_store *s, uint32_t row)
 {
+    const ax_node_style *st = &s->style[row];
     if (s->links[row].parent == AX_NODE_NONE) {
         return true;
     }
-    return s->style[row].width.unit == AX_UNIT_POINTS &&
-           s->style[row].height.unit == AX_UNIT_POINTS;
+    /* A static node is not a containing block: its absolute descendants are laid out by an
+     * ancestor, so it cannot be laid out alone (decision 90). */
+    return st->width.unit == AX_UNIT_POINTS && st->height.unit == AX_UNIT_POINTS &&
+           st->position != AX_POSITION_STATIC && st->display != AX_DISPLAY_NONE;
 }
 
 static void add_root(ax_scene *scene, uint32_t slot)

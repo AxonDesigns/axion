@@ -182,6 +182,7 @@ static bool pipeline_start(pipeline *p)
     p->root = ax_txn_create(t, AX_NODE_VIEW);
     p->card = ax_txn_create(t, AX_NODE_VIEW);
     ax_txn_set_color(t, p->root, AX_PROP_BACKGROUND_COLOR, opaque(0, 0, 0.25f));
+    ax_txn_set_u32(t, p->card, AX_PROP_POSITION, AX_POSITION_ABSOLUTE);
     ax_txn_set_dimension(t, p->card, AX_PROP_LEFT, pt(10));
     ax_txn_set_dimension(t, p->card, AX_PROP_TOP, pt(20));
     ax_txn_set_dimension(t, p->card, AX_PROP_WIDTH, pt(100));

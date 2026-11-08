@@ -182,6 +182,8 @@ static int app_main(void *arg)
     card = ax_txn_create(t, AX_NODE_VIEW);
     bar = ax_txn_create(t, AX_NODE_VIEW);
     ax_txn_set_color(t, root, AX_PROP_BACKGROUND_COLOR, bg);
+    ax_txn_set_u32(t, card, AX_PROP_POSITION, AX_POSITION_ABSOLUTE);
+    ax_txn_set_u32(t, bar, AX_PROP_POSITION, AX_POSITION_ABSOLUTE);
     ax_txn_set_dimension(t, card, AX_PROP_LEFT, pt(16));
     ax_txn_set_dimension(t, card, AX_PROP_TOP, pt(16));
     ax_txn_set_dimension(t, card, AX_PROP_WIDTH, pt(120));

@@ -12,6 +12,8 @@ add_library(ax_core STATIC
     src/apply.c
     src/events.c
     src/frame.c
+    src/layout/layout.c
+    src/layout/layout_flex.c
     src/mirror.c
     src/node_store.c
     src/prop_registry.c

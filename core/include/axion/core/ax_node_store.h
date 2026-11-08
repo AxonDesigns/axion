@@ -143,9 +143,12 @@ typedef struct ax_node_layout {
     uint32_t line;       /* flex line of the item */
     uint32_t pass;       /* the layout pass that last visited the node */
     uint32_t basis_pass; /* the pass that computed flex_basis */
-    uint32_t laid_out;   /* nonzero once the node has been laid out (`last` is valid) */
-    /* The last layout (performed, not measured) and the containing block it had. */
+    uint32_t laid_out;   /* nonzero once the node has been laid out (`performed` is valid) */
+    uint32_t last_work;  /* nodes laid out or measured the last time it was a layout root */
+    /* The cached layout; the request of the last layout (performed, not measured) and the
+     * containing block it had, from which a relayout boundary is laid out again. */
     ax_layout_cache_entry last;
+    ax_layout_cache_entry performed;
     float owner_w, owner_h;
     ax_layout_cache_entry measures[AX_LAYOUT_MEASURE_CACHE];
     uint32_t next_measure;

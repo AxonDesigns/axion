@@ -177,6 +177,7 @@ static ax_node make_root(ax_world w, ax_node *out_root)
     ax_node root = ax_txn_create(t, AX_NODE_VIEW);
     ax_node child = ax_txn_create(t, AX_NODE_VIEW);
     ax_rgba white = {1, 1, 1, 1};
+    ax_txn_set_u32(t, child, AX_PROP_POSITION, AX_POSITION_ABSOLUTE);
     ax_txn_set_dimension(t, child, AX_PROP_WIDTH, pt(40));
     ax_txn_set_dimension(t, child, AX_PROP_HEIGHT, pt(40));
     ax_txn_set_color(t, child, AX_PROP_BACKGROUND_COLOR, white);
