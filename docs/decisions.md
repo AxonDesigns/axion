@@ -4666,7 +4666,8 @@ any difference investigated before a tolerance.
     A second capture gave the same figures. Contrast only darkens dark text, which is already at
     or above KDE's weight, so it stays 0.
 - **Measured.** Parity (`headless.text_goldens.the_gpu_renderer_draws_text_like_the_software_one`,
-  Dawn on the owner's NVIDIA): dE (OKLab) at the 99.9th percentile 0.0033 to 0.0034, mean 0.0001,
+  Dawn on the owner's NVIDIA, with the tuned correction): dE (OKLab) at the 99.9th percentile
+  0.0035 to 0.0039, mean 0.0001,
   within decision 83's 0.02 and 0.002. `bench_text`: 40 paragraphs (11 to 48 px) animating their
   width through the resize preset: about 0.7-1.0 ms median per frame for layout, animation and
   recording, the worst frame of a run 1.9-3.3 ms in either mode, under a 260 Hz refresh's 3.8 ms.
