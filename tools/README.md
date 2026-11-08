@@ -3,7 +3,8 @@ Tooling: axion CLI, IDL code generator, plugin scaffolding, asset pipeline and d
 What exists today:
 
 - `ci/`: scripts CI runs.
-  - `check_final_newline.sh` and `check_decision_status.py` are the repository checks.
+  - `check_final_newline.sh`, `check_decision_status.py` and `check_examples.py` (every example
+    defines its executable) are the repository checks.
   - `with-weston.sh` runs a command against a headless weston for the Wayland tests.
   - `compare_images.py` and `compare_ppm.py` compare images across platforms (decision 86) and
     WebGPU implementations (decision 56).
