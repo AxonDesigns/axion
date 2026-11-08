@@ -13,6 +13,12 @@ add_executable(bench_layout bench_layout.c)
 target_link_libraries(bench_layout PRIVATE ax_core)
 ax_target_defaults(bench_layout)
 
+# Implicit animations: the frame's stages while a card resizes, 1000 items fade, cards reorder
+# (decision 94).
+add_executable(bench_anim bench_anim.c)
+target_link_libraries(bench_anim PRIVATE ax_core)
+ax_target_defaults(bench_anim)
+
 # ax_render_soft on m1_nodes' scene (decision 87), recorded headless.
 add_executable(bench_soft bench_soft.c bench_soft_scene.c)
 target_link_libraries(bench_soft PRIVATE ax_headless ax_render_soft ax_core)
