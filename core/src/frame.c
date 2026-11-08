@@ -291,6 +291,7 @@ uint32_t ax_world_position(ax_world world)
     if (w == NULL || state(w) == NULL) {
         return 0;
     }
+    ax__text_prepare(w); /* the style pass and the text leaves' paragraphs (decision 99) */
     memset(&desc, 0, sizeof desc);
     desc.jobs = w->jobs;
     desc.viewport = viewport_of;

@@ -184,6 +184,11 @@ typedef struct world_impl {
     bool scene_ready;
     frame_state *frame;              /* frame.c: window roots, the recording cache (scene thread) */
     struct ax_job_system *jobs;      /* frame jobs for the scene's stages, or NULL */
+    /* Text (decision 99): the text system (fonts, caches), owned when the world made its own. */
+    struct ax_text_system *text;
+    bool text_owned;
+    struct ax_text_paragraph **text_batch; /* paragraphs to shape this frame (text_stage.c) */
+    uint32_t text_batch_capacity;
     anim_state *anim;                /* anim/animator.c: implicit animations (scene thread) */
     void (*commit_hook)(void *user); /* app thread: after each commit */
     void *commit_hook_user;
@@ -207,6 +212,11 @@ static inline uint64_t ax__world_now(const world_impl *w)
 {
     return w->clock(w->clock_user);
 }
+
+/* text_stage.c: the style pass, then paragraphs for text leaves whose content or style changed,
+ * shaped in frame jobs, with their measure functions (before layout). */
+void ax__text_prepare(world_impl *w);
+void ax__text_free(world_impl *w);
 
 /* App thread: takes back finished transactions and recycled handles from the scene thread. */
 void ax__world_reclaim(world_impl *w);

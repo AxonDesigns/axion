@@ -86,6 +86,7 @@ static void free_world(world_impl *w)
         ax_scene_deinit(&w->scene);
     }
     ax__apply_free(w);
+    ax__text_free(w); /* after the scene: its paragraphs belong to the text system */
     ax__frame_free(w);
     ax__anim_free(w);
     ax__mirror_free(w);

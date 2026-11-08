@@ -21,6 +21,7 @@ add_library(ax_core STATIC
     src/prop_registry.c
     src/scene.c
     src/text_node.c
+    src/text_stage.c
     src/txn.c
     src/world.c)
 add_library(axion::core ALIAS ax_core)

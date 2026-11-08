@@ -31,6 +31,8 @@
 
 AX_EXTERN_C_BEGIN
 
+struct ax_text_system;
+
 /* ---- Threads --------------------------------------------------------------------------------- */
 
 /* The calling thread becomes the world's scene thread (and owns its node store). The previous
@@ -48,6 +50,18 @@ AX_API void ax_world_set_commit_hook(ax_world world, void (*hook)(void *user), v
 /* The job system the scene's frame stages may use for frame jobs (layout's independent relayout
  * boundaries), or NULL (the default) for one thread. It must outlive its use. thread: scene */
 AX_API void ax_world_set_jobs(ax_world world, struct ax_job_system *jobs);
+
+/*
+ * The text system text leaves use (fonts, the shaping and glyph caches; decision 99), or NULL to
+ * go back to the world's own. Without one, the world makes its own on first use with the bundled
+ * fonts only (the headless default). A runtime sets one with the system's fonts. Set it before the
+ * first text; it must outlive the world. thread: scene
+ */
+AX_API void ax_world_set_text_system(ax_world world, struct ax_text_system *text);
+
+/* The text system in use, made on first call when none was set (NULL when out of memory).
+ * thread: scene */
+AX_API struct ax_text_system *ax_world_text_system(ax_world world);
 
 /* True for a live world. thread: any */
 AX_API bool ax_world_is_valid(ax_world world);
