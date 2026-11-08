@@ -144,7 +144,7 @@ typedef enum ax_result {
 
 **Errors.** Functions return `ax_result`, with detail from a thread-local `ax_last_error()`. No `setjmp`/`longjmp`. Debug builds assert on misuse (wrong thread, stale handle); release builds return the error. Bindings turn results into exceptions or error values.
 
-**ABI.** Opaque types only. Descriptor structs carry `struct_size` plus a `next` extension chain. Minor versions only append functions and fields; `ax_version()` reports the runtime version so bindings can check compatibility at load.
+**ABI.** Opaque types only. Descriptor structs carry `struct_size` plus a `next` extension chain. Every chained struct starts with an `ax_chain` header (`next`, a type tag and its own `struct_size`); a consumer walks the whole chain first, rejects an unknown required type with `AX_ERR_UNSUPPORTED` and skips only types marked optional (decision 73). Minor versions only append functions and fields; `ax_version()` reports the runtime version so bindings can check compatibility at load.
 
 **Thread contract.** Every function is tagged in the IDL with the thread it may run on (`any`, `app`, `scene`, `render`), and debug builds check the tag on entry.
 
@@ -187,7 +187,35 @@ In every hosted mode the host implements a small `ax_host` vtable: a clock, a "r
 
 AXION offers one windowing API across platforms, with every feature reported through capability flags, because Wayland, mobile and the browser each restrict a different part of it; apps check a flag instead of checking the OS.
 
-**Window kinds.** Normal; utility (no taskbar entry); popup (menus and tooltips: never takes focus, dismisses on outside click); dialog (owned by a parent, optionally modal); splash; overlay (transparent, click-through, always on top, for HUDs). Owned windows minimize with their owner and stay above it.
+**Window kinds.** Normal; utility (no taskbar entry); popup (menus and tooltips: never takes focus, dismisses on outside click); dialog (owned by a parent, optionally modal); splash; overlay (transparent, click-through, always on top, for HUDs); layer surface (desktop-shell surfaces: panels, docks, launchers, notifications, wallpapers and HUD overlays). Owned windows minimize with their owner and stay above it.
+
+**Layer surfaces.** A layer surface is anchored to a monitor's edges and stacked in one of four layers around normal windows, which ordinary windows cannot ask for. On Wayland it is a `zwlr_layer_shell_v1` surface; an `ext-` layer shell is preferred once one lands upstream. Other platforms leave `AX_CAP_WINDOW_LAYER_SURFACE` unset in v1, and AXION does not emulate it with ordinary windows: creating a window with a chained layer description where the capability is missing fails with `AX_ERR_UNSUPPORTED`, so the app picks its own fallback. An app asks for one by chaining an `ax_window_layer_desc` through `ax_window_desc.next`, with the chain header every extension struct uses (decision 73 in the decisions log):
+
+- `layer`: `BACKGROUND`, `BOTTOM`, `TOP` or `OVERLAY`.
+- `anchor`: any combination of the top, bottom, left and right edges.
+- `width`, `height`: the size in logical units. 0 on an axis stretches the surface between the two opposite edges of that axis, which must both be anchored.
+- `margin`: top, right, bottom and left, in logical units, from the anchored edges.
+- `exclusive_zone`: the space other surfaces must leave free along the anchored edge (a panel's height); 0 for none, -1 to ignore other surfaces' zones.
+- `keyboard`: `NONE`, `EXCLUSIVE` (takes all keyboard input while on `TOP` or `OVERLAY`, as a launcher does) or `ON_DEMAND` (focus follows normal clicks).
+- `output`: the monitor to appear on, or none to let the compositor choose.
+- `layer_namespace`: a fixed string naming the surface's purpose (`"panel"`, `"notifications"`), which compositors use for rules and effects. The field avoids the name `namespace`, which C++ reserves.
+
+```c
+ax_window_layer_desc layer = {
+    .chain = {.type = AX_STYPE_WINDOW_LAYER_DESC, .struct_size = sizeof layer},
+    .layer = AX_LAYER_TOP,
+    .anchor = AX_ANCHOR_TOP | AX_ANCHOR_LEFT | AX_ANCHOR_RIGHT,
+    .height = 32,                 /* width 0: stretched between the left and right edges */
+    .exclusive_zone = 32,
+    .keyboard = AX_LAYER_KEYBOARD_ON_DEMAND,
+    .layer_namespace = AX_STR("panel"),
+};
+ax_window_desc desc = {.struct_size = sizeof desc, .next = &layer};
+```
+
+The title, decorations, level, size, minimum size and `AX_WINDOW_RESIZABLE` do not apply to a layer surface: it is never decorated, and its size comes from the layer desc and its anchors. A width or height of 0 needs both opposite edges anchored; `ax_window_create` and `ax_window_set_layer` reject anything else with `AX_ERR_INVALID_ARGUMENT` rather than let the compositor end the connection with a protocol error. `ax_window_set_layer` changes the layer, anchors, margins, exclusive zone, keyboard mode and size after creation. These changes are double-buffered: the main thread sends them and requests a commit, and they reach the compositor with the presenter's next commit (decision 35). `output` and `layer_namespace` are fixed at creation, because the protocol cannot change them.
+
+The configure contract of decisions 34 and 54 does not change. `zwlr_layer_surface_v1.configure` publishes an `ax_surface_config` like `xdg_surface.configure`, and the presenter acknowledges it, through a per-role function, in the same commit as a buffer of that size. Caption and resize hit regions do nothing on a layer surface, since the compositor places it. Layer surfaces send no occlusion events, because the protocol has no suspended state. `closed` maps to a close request, which the app cannot cancel: the compositor has already removed the surface, and the app destroys the window. A layer surface can draw a lock screen, but it does not lock the session; that needs `ext-session-lock-v1`, a separate decision.
 
 **Decorations and custom chrome**
 
@@ -234,9 +262,10 @@ ax_txn_set_enum(t, max_btn,  AX_PROP_WINDOW_REGION, AX_REGION_MAXIMIZE);  /* Win
 | Frameless and custom title bar | Yes | Yes, native buttons kept | Yes | Yes, client-side decorations | Not applicable | Not applicable |
 | Set global window position | Yes | Yes | Yes | No, the compositor places windows | No | No |
 | System backdrop blur | Mica, Acrylic (Windows 11) | Vibrancy | Compositor-dependent | Compositor-dependent | No | No |
-| Always on top | Yes | Yes | Yes | No standard protocol | No | No |
+| Always on top | Yes | Yes | Yes | No standard protocol; a layer surface on the overlay layer, where the compositor supports layer-shell | No | No |
 | Multiple windows | Yes | Yes | Yes | Yes | iPad scenes, Android multi-window | One canvas; extra windows become in-page layers |
 | Exclude from screen capture | Yes | Yes | No | No | Android only | No |
+| Layer surfaces (panels, docks, overlays) | Not in v1 (AppBars could cover docks and panels) | Not in v1 (window levels, no reserved space) | Not in v1 (EWMH dock windows with struts could cover panels) | Compositor-dependent (KDE, wlroots compositors, Hyprland, COSMIC, niri; not GNOME) | No | No |
 
 ## Drag and drop
 
@@ -1347,7 +1376,7 @@ axion/
 1. **M0, skeleton**: base, one desktop platform backend, `ax_gpu` clearing a window, the Render IR, and rounded rects. Exit: a window resizes smoothly at the display's refresh rate. Done on Nov 7, 2026, with the Wayland backend, measured on KWin 6.8 with an NVIDIA GPU: at the refresh rate when still on 72 Hz and 260 Hz monitors; when resizing, 0–0.3 missed vblanks a second at 72 Hz and a mean of 4.8 at 260 Hz (issue #2).
 2. **M1, the thread split**: node store, transactions, the app/scene/render pipeline, flex layout, implicit animations, Latin text (shaping plus atlas), the software renderer for golden tests, the headless host, and the accessibility tree, with AccessKit's iOS and web coverage confirmed. Exit: an app thread blocked for 500 ms does not drop animation frames. Carried over from M0: the job system; resizing at 260 Hz within 1 missed vblank a second (issue #2); the blend-space decision, taken with text (issue #4); and re-measuring the resize handshake's bound with real layout and text.
 3. **M2, interaction**: pointer and keyboard input, gesture arena, the scroll engine (wheel smoothing, physics presets, overscroll) and virtualized lists, the first headless components, the C# binding, HMR for C# and stylesheets, the automation protocol with the C# testing API, and the accessibility bridge on the first platform. Exit: a styled settings screen built entirely in C# and edited live without restarting, and fully usable with a screen reader and keyboard.
-4. **M3, depth**: full text (bidi, fallback, emoji, IME, TextField), AXGL with fill and backdrop shaders, AXGL scroll physics, SVG, the full windowing API (custom chrome, hit-test regions, system backdrops, multi-window), accessibility bridges on all desktop platforms, the plugin system with the first-party platform-services plugin, native drag and drop within and between windows and apps (this milestone builds the transient overlay window that M4's cross-window heroes reuse), and the MCP server. Exit: a chat app with mixed-script text and frosted panels.
+4. **M3, depth**: full text (bidi, fallback, emoji, IME, TextField), AXGL with fill and backdrop shaders, AXGL scroll physics, SVG, the full windowing API (custom chrome, hit-test regions, system backdrops, multi-window, and layer surfaces with the Wayland pieces they depend on: `wl_output` tracking to choose an output, and `xdg_popup` for menus from a layer surface through `zwlr_layer_surface_v1.get_popup`), accessibility bridges on all desktop platforms, the plugin system with the first-party platform-services plugin, native drag and drop within and between windows and apps (this milestone builds the transient overlay window that M4's cross-window heroes reuse), and the MCP server. Exit: a chat app with mixed-script text and frosted panels.
 5. **M4, motion and reach**: layout animations, navigator with deep links and URL schemes, heroes, view transitions, Lottie playback; Android and iOS ports, each shipping with its accessibility bridge. Exit: the gallery-to-detail hero demo running on phones with an interactive back gesture.
 6. **M5, breadth**: 3D PBR, user compute, the web target with the WebGL2 renderer, TS/TSX, Lua and Python bindings with HMR, devtools, and the export tool for all six targets.
 
