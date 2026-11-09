@@ -346,6 +346,7 @@ ax_result ax_rt_add_surface(ax_runtime rt, ax_node root, const ax_rt_surface_des
     s->native = desc->native_surface;
     s->window = desc->window;
     s->host_refresh_ns = desc->refresh_ns;
+    s->a11y = desc->a11y;
     s->host_width = desc->width;
     s->host_height = desc->height;
     s->host_scale = desc->scale > 0.0f ? desc->scale : 1.0f;
@@ -538,6 +539,9 @@ static void scene_commands(rt_impl *r)
     while (ax_spsc_ring_pop(&r->scene_cmds, &c)) {
         rt_surface *s = &r->surfaces[c.surface];
         if (c.kind == RT_CMD_ADD) {
+            if (s->a11y.update != NULL) {
+                (void)ax_world_set_a11y_sink(r->desc.world, s->root, &s->a11y);
+            }
             s->scene_live = true;
             s->visible = true;
             s->last_time = 0;
@@ -550,6 +554,9 @@ static void scene_commands(rt_impl *r)
         } else {
             if (s->scene_live) {
                 ax_world_remove_root(r->desc.world, s->root);
+                if (s->a11y.update != NULL) {
+                    (void)ax_world_set_a11y_sink(r->desc.world, s->root, NULL);
+                }
             }
             s->scene_live = false;
             ax_atomic_store_u32(&s->scene_done, 1, AX_MO_RELEASE);
@@ -629,7 +636,9 @@ static void tick(rt_impl *r, uint32_t index, const ax_rt_request *q)
      * (decision 101), besides running animations (decision 95). */
     ax_atomic_store_u32(&s->animating, ax_world_root_animating(world, s->root) ? 1u : 0u,
                         AX_MO_RELEASE);
-    /* 6. The mirror, after layout. 7. The flags, consumed. */
+    /* 5. The accessibility trees (decision 108): what this cycle changed, before the flags go.
+     * 6. The mirror, after layout. 7. The flags, consumed. */
+    ax_world_a11y_flush(world);
     (void)ax_world_publish_mirror(world);
     ax_scene_clear_dirty(scene);
     /* 8. Glyphs no drawable snapshot uses may go (decision 100): the oldest resource epoch the

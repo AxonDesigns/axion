@@ -30,6 +30,7 @@ typedef struct rt_surface {
     uint64_t native;
     uint64_t window;
     uint64_t host_refresh_ns;
+    ax_a11y_sink a11y;     /* the root's accessibility sink (decision 108) */
     ax_ir_mailbox mailbox; /* scene writes, render side reads */
 
     /* Render side -> scene: the newest frame request. */
