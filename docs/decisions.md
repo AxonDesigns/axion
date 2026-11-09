@@ -110,14 +110,14 @@ new entry that points back to the old one.
 | 94  | Implicit animations, layout animations and layers        | Approved       |
 | 95  | Zero frames at rest                                      | Approved       |
 | 96  | m1_nodes animated, the driver gone, animation goldens    | Approved       |
-| 97  | Text's libraries from source; C++ for HarfBuzz only      | Implementation |
-| 98  | The bundled fonts and font sources                       | Implementation |
-| 99  | Strings, text properties, style pass, text pipeline      | Implementation |
-| 100 | Glyph rasterization, the glyph cache, frame requests     | Implementation |
-| 101 | Glyph runs, atlases, coverage correction, scaled text    | Implementation |
-| 102 | Layout animations end on the pixel grid                  | Implementation |
-| 103 | The handshake bound with text; m1_nodes builds again     | Implementation |
-| 104 | Animations keep running while a window is resized        | Implementation |
+| 97  | Text's libraries from source; C++ for HarfBuzz only      | Approved       |
+| 98  | The bundled fonts and font sources                       | Approved       |
+| 99  | Strings, text properties, style pass, text pipeline      | Approved       |
+| 100 | Glyph rasterization, the glyph cache, frame requests     | Approved       |
+| 101 | Glyph runs, atlases, coverage correction, scaled text    | Approved       |
+| 102 | Layout animations end on the pixel grid                  | Approved       |
+| 103 | The handshake bound with text; m1_nodes builds again     | Approved       |
+| 104 | Animations keep running while a window is resized        | Approved       |
 
 ---
 
@@ -4453,7 +4453,7 @@ and the operating system's font APIs.
 - **text/ depends on base only** (and its libraries and fontconfig): `text.includes.only_base`
   scans its sources.
 
-**Status.** Implementation, pending the owner's approval.
+**Status.** Approved by the owner.
 
 ## 98. The bundled fonts and font sources
 
@@ -4489,7 +4489,7 @@ file; fontconfig Linux-only and optional, the bundled set the headless default.
   the repository, `liga`, `kern`, `tnum`, `smcp`, `zero` and `frac`, both axes, Latin coverage,
   "fi" forming one glyph; and the embedded bytes are those files.
 
-**Status.** Implementation, pending the owner's approval.
+**Status.** Approved by the owner.
 
 ## 99. Strings, text properties, the style pass and the text pipeline
 
@@ -4560,7 +4560,7 @@ without shaping where HarfBuzz marks glyphs safe to break; the measure function 
   re-wrapping 40 widths with one shaping, an unsafe break after "A-" shaped in fragments, four
   threads measuring at once), `text.features`. Text runs under TSan and in Node.
 
-**Status.** Implementation, pending the owner's approval.
+**Status.** Approved by the owner.
 
 ## 100. Glyph rasterization, the glyph cache, and frame requests
 
@@ -4610,7 +4610,7 @@ upload needs because it commits nothing.
   `core.text_layout.background_glyphs_ask_for_a_frame_and_record_whole_runs`,
   `runtime.threads.a_frame_request_wakes_the_surfaces_that_show_its_root`.
 
-**Status.** Implementation, pending the owner's approval.
+**Status.** Approved by the owner.
 
 ## 101. Glyph runs in the Render IR, the atlases, the coverage correction, scaled text
 
@@ -4699,7 +4699,7 @@ any difference investigated before a tolerance.
   scales 1 and 1.325; 14 px at three widths; 28 and 48 px. **Byte-identical on Linux, macOS,
   Windows and the web** (the determinism job: 29 identical images).
 
-**Status.** Implementation, pending the owner's approval.
+**Status.** Approved by the owner.
 
 ## 102. Layout animations end on the pixel grid
 
@@ -4728,7 +4728,7 @@ node at rest, so the interface does not jump when it stops.
   the default spring at scale 1.325 ends with its child on its rounded frame, the last animated
   frame within the spring's last step (under 0.1 device px; 0.33 px before the change).
 
-**Status.** Implementation, pending the owner's approval.
+**Status.** Approved by the owner.
 
 ## 103. The size handshake's bound with real layout and text; m1_nodes builds again
 
@@ -4764,7 +4764,7 @@ measurement on their desktop.
   so the example has not been built since; a build tree kept the older binary. Restored with
   `m1_cards.c` (and `ax_text`).
 
-**Status.** Implementation, pending the owner's approval.
+**Status.** Approved by the owner.
 
 ## 104. Animations keep running while a window is resized
 
@@ -4800,4 +4800,4 @@ Under a continuous resize every cycle has a new viewport, so every animation fro
   window narrows mid-way, its width following at once; a move committed while the window changes
   size every cycle animates. Both fail with the previous behavior.
 
-**Status.** Implementation, pending the owner's approval.
+**Status.** Approved by the owner.
