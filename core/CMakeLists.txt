@@ -11,6 +11,7 @@
 add_library(ax_core STATIC
     src/anim/animator.c
     src/anim/curves.c
+    src/a11y.c
     src/apply.c
     src/events.c
     src/frame.c

@@ -269,6 +269,7 @@ static void frame_changed(void *user, uint32_t slot)
 {
     world_impl *w = (world_impl *)user;
     ax__mirror_touch_slot(w, slot);
+    ax__a11y_touch(w, slot, 0);
     ax__anim_on_frame_changed(w, slot);
     w->frame->counters.frames_changed++;
 }

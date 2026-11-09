@@ -8,6 +8,7 @@ set(_ax_core_tests
     test_anim_resize.c
     test_anim_curves.c
     test_abi_headers.c
+    test_a11y.c
     test_apply.c
     test_dirty.c
     test_events.c

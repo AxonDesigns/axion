@@ -28,3 +28,6 @@ target_link_libraries(test_text_lines PRIVATE ax_text)
 
 ax_add_unit_test(text test_glyphs.c)
 target_link_libraries(test_text_glyphs PRIVATE ax_text)
+
+ax_add_unit_test(text test_chars.c)
+target_link_libraries(test_text_chars PRIVATE ax_text)

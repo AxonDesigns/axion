@@ -190,6 +190,7 @@ static bool apply_create(apply_state *st, const ax_txn_cmd_create *c)
     }
     push_undo(st, UNDO_CREATE, c->node);
     ax__mirror_touch_slot(st->w, ax_handle_slot(c->node.h));
+    ax__a11y_touch(st->w, ax_handle_slot(c->node.h), AX__A11Y_STRUCT);
     return true;
 }
 
@@ -253,6 +254,7 @@ static bool apply_set_str(apply_state *st, const ax_txn_cmd_set_str *c)
         return false;
     }
     ax__mirror_touch_slot(st->w, ax_handle_slot(c->node.h));
+    ax__a11y_touch_prop(st->w, ax_handle_slot(c->node.h), c->prop);
     return true;
 }
 
@@ -283,6 +285,7 @@ static bool apply_set(apply_state *st, const ax_txn_cmd_set *c)
         return false;
     }
     ax__mirror_touch_slot(st->w, ax_handle_slot(c->node.h));
+    ax__a11y_touch_prop(st->w, ax_handle_slot(c->node.h), c->prop);
     return true;
 }
 
@@ -304,6 +307,7 @@ static bool apply_insert(apply_state *st, const ax_txn_cmd_insert *c)
         return false;
     }
     ax__mirror_touch_slot(st->w, ax_handle_slot(c->child.h)); /* its parent changed */
+    ax__a11y_touch(st->w, ax_handle_slot(c->child.h), AX__A11Y_STRUCT);
     return true;
 }
 
@@ -315,6 +319,7 @@ static bool apply_remove(apply_state *st, const ax_txn_cmd_remove *c)
     push_undo_move(st, c->node);
     (void)ax_scene_detach(st->scene, c->node);
     ax__mirror_touch_slot(st->w, ax_handle_slot(c->node.h));
+    ax__a11y_touch(st->w, ax_handle_slot(c->node.h), AX__A11Y_STRUCT);
     st->removed[st->removed_count++] = c->node;
     return true;
 }

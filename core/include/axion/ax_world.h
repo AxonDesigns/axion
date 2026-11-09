@@ -75,7 +75,7 @@ AX_API uint64_t ax_world_now(ax_world world);
  * What the scene thread tells the app thread, in order: the windowing system's events for every
  * window of the app (the scene thread consumes the platform's events and forwards them), with the
  * window's root, or 0 for a window the runtime does not have, and times on the world's clock.
- * Values match the platform's ax_event_type.
+ * Values below 0x100 match the platform's ax_event_type.
  * Delivery: nothing is dropped (resizes are already coalesced per window by the platform).
  */
 typedef enum ax_world_event_type {
@@ -84,7 +84,10 @@ typedef enum ax_world_event_type {
     AX_WORLD_EVENT_RESIZED = 2,         /* the window has a new size (and scale) */
     AX_WORLD_EVENT_SCALE_CHANGED = 3,
     AX_WORLD_EVENT_FOCUS = 4,
-    AX_WORLD_EVENT_OCCLUSION = 5
+    AX_WORLD_EVENT_OCCLUSION = 5,
+    /* From 0x100: events of the scene itself, not the platform's (whose values stay below). */
+    /* An assistive technology asked for an action on a node (decision 108); window is 0. */
+    AX_WORLD_EVENT_A11Y_ACTION = 0x100
 } ax_world_event_type;
 
 typedef struct ax_world_event {
@@ -108,6 +111,11 @@ typedef struct ax_world_event {
         struct {
             bool occluded;
         } occlusion;
+        struct {
+            uint64_t node;   /* the node's handle */
+            uint32_t action; /* one AX_ACTION_* bit (ax_prop.h) */
+            float value;     /* SET_VALUE */
+        } a11y_action;
         uint64_t reserved[8];
     } data;
 } ax_world_event;

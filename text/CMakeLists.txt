@@ -37,6 +37,7 @@ add_library(ax_text STATIC
     src/cache.c
     src/glyphs.c
     src/layout.c
+    src/chars.c
     src/paragraph.c
     src/source_bundled.c
     src/system.c
