@@ -5149,7 +5149,8 @@ standard library's crates too, and to record the static Rust library's risks.
   (all platforms, 68 MB, SHA-256 `c7fa84f8...3681`), fetched and verified by `ax_fetch_prebuilt`
   (`cmake/AxionAccessKit.cmake`), linked as the static `libaccesskit.a`. AXION's builds need no Rust
   toolchain. `AX_ACCESSKIT`: AUTO (on where the release has a binary and AXION a bridge, Linux
-  x86_64 in M1, off under TSan, whose instrumentation cannot see the Rust code's synchronization),
+  x86_64 in M1, off under TSan, whose instrumentation cannot see the Rust code's synchronization,
+  and with `AX_WEBGPU=wgpu-native`, another Rust static library),
   ON (required) or OFF; `AX_ACCESSKIT_ROOT` for offline builds. CI's GCC Release job builds with
   OFF; everything works the same without it.
 - **Interfaces.** platform's `ax_a11y_adapter` (`axion/platform/ax_a11y_adapter.h`): created per
@@ -5184,8 +5185,10 @@ standard library's crates too, and to record the static Rust library's risks.
   - two Rust static libraries linked into one binary (AccessKit, and a future one such as
     wgpu-native if it were ever shipped) each carry a copy of the standard library and their
     shared crates, whose unmangled symbols (`rust_eh_personality`, the allocator shims) can clash
-    at link time. The answer, when it comes, is one Rust staticlib that re-exports both C APIs,
-    built by us from pinned sources;
+    at link time. CI's wgpu-native job showed it at once (`rust_eh_personality` defined twice), so
+    AUTO leaves AccessKit out with `AX_WEBGPU=wgpu-native` (CI-only, never shipped) and ON refuses
+    the combination. The answer, if two Rust libraries ever ship together, is one Rust staticlib
+    that re-exports both C APIs, built by us from pinned sources;
   - its code is outside our sanitizers (TSan is off for it; ASan sees its allocations only).
 - **Costs** (Ryzen 5 3400G): m1_nodes stripped grows by 1.95 MB (17.81 to 19.76 MB; 21.1 to 44.3 MB
   unstripped, the archive's debug info); the archive is a 68 MB download, cached by CI. Building it

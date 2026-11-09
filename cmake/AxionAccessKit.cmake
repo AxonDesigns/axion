@@ -7,7 +7,8 @@
 #
 #   AX_ACCESSKIT  AUTO (default): ON where the release has a binary for the target and the
 #                 platform module builds (Linux x86_64 for now; the other desktop bridges are M3),
-#                 except under ThreadSanitizer (the Rust code is not instrumented);
+#                 except under ThreadSanitizer (the Rust code is not instrumented) and with
+#                 AX_WEBGPU=wgpu-native (another Rust static library: duplicate symbols);
 #                 ON: required (a configure error where it cannot be used); OFF: never.
 #   AX_ACCESSKIT_ROOT  an unpacked accesskit-c release to use instead of downloading (offline).
 #
@@ -53,6 +54,11 @@ function(ax_add_accesskit)
         set(_why "the platform module is off")
     elseif("thread" IN_LIST AX_SANITIZE AND AX_ACCESSKIT STREQUAL "AUTO")
         set(_why "ThreadSanitizer cannot see the Rust code's synchronization")
+    elseif(AX_BUILD_GPU AND AX_WEBGPU STREQUAL "wgpu-native")
+        # Two Rust static libraries carry a standard library each: rust_eh_personality and the
+        # allocator shims are defined twice and the link fails (decision 110). wgpu-native is the
+        # CI-only alternative, never shipped.
+        set(_why "wgpu-native is Rust too: two Rust static libraries cannot be linked together")
     endif()
     if(NOT _why STREQUAL "")
         if(AX_ACCESSKIT STREQUAL "ON")
