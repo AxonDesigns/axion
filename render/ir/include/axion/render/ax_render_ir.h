@@ -208,6 +208,9 @@ typedef struct ax_ir_glyph_source {
 typedef struct ax_ir_text_lut_params {
     float contrast; /* 0..1: thicker stems for dark text */
     float gamma;    /* the space whose blend it imitates: 1 linear light, ~2.2 the sRGB space */
+    /* The destination assumed (the blend cannot read it): 0 the opposite luminance (Skia's), 1
+     * black under light text and white under dark text (a UI's usual backgrounds), or between. */
+    float destination;
 } ax_ir_text_lut_params;
 
 /* AXION's defaults (decision 101). */

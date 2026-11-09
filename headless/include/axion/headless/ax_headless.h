@@ -69,6 +69,9 @@ typedef struct ax_headless_desc {
     /* The font set text uses (decision 85's hook). NULL: the bundled set, which arrives with
      * text later in M1; nothing reads it yet. */
     const void *fonts;
+    /* How the software renderer blends (ax_render_blend, issue #4's comparison; 0: the default).
+     * AX_HEADLESS_RENDER_WGPU draws the default. */
+    uint32_t blend;
 } ax_headless_desc;
 
 AX_API ax_headless_desc ax_headless_default_desc(void);

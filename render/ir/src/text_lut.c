@@ -6,7 +6,8 @@
  * renderer. Skia's mask gamma, with AXION's parameters:
  *
  *   For a text luminance L (one of AX_IR_TEXT_LUT_BUCKETS, from black to white), the destination is
- *   assumed to be the opposite luminance 1 - L (the blend cannot read it). For each coverage c:
+ *   assumed (the blend cannot read it): the opposite luminance 1 - L, or with `destination` toward
+ *   1, black under light text and white under dark text. For each coverage c:
  *     c' = c + (1 - c) * contrast * (1 - L) * c       contrast, stronger for dark text
  *     the blend a space of exponent `gamma` gives (values v = linear^(1/gamma)):
  *         out = (L^(1/g) c' + (1 - L)^(1/g) (1 - c'))^g
@@ -49,16 +50,20 @@ ax_ir_text_lut_params ax_ir_lut_default(ax_ir_lut_table table)
         return g_override[table];
     }
     if (table == AX_IR_LUT_SHAPE_SRGB) {
-        /* Shapes (option 1 of issue #4): the blend linear light gives, so lines do not rope. */
+        /* Shapes (option 1 of issue #4): the blend linear light gives, against black or white (the
+         * roping of light lines on dark halves again over the opposite luminance's). */
         p.contrast = 0.0f;
         p.gamma = 1.0f;
+        p.destination = 1.0f;
         return p;
     }
     if (table == AX_IR_LUT_TEXT_LINEAR) {
         /* Text blended in linear light keeps the weight it has in sRGB space (KDE's, decision
-         * 101): the same imitated space. */
-        p.contrast = 0.0f;
-        p.gamma = 2.3f;
+         * 101), within 0.4 % in both polarities at scales 1 and 1.325 (tools/diag/blend_measure
+         * --tune-linear-text): a gamma space against black or white backgrounds. */
+        p.contrast = 0.05f;
+        p.gamma = 1.85f;
+        p.destination = 1.0f;
         return p;
     }
     /* Tuned against KDE's text on both of the owner's monitors and in both polarities
@@ -66,6 +71,7 @@ ax_ir_text_lut_params ax_ir_lut_default(ax_ir_lut_table table)
      * in sRGB space with almost no correction. */
     p.contrast = 0.0f;
     p.gamma = 2.3f;
+    p.destination = 0.0f;
     return p;
 }
 
@@ -98,7 +104,9 @@ static void build(const ax_ir_text_lut_params *params, bool linear,
     uint32_t bucket, i;
     for (bucket = 0; bucket < AX_IR_TEXT_LUT_BUCKETS; ++bucket) {
         const float lin_src = (float)bucket / (float)(AX_IR_TEXT_LUT_BUCKETS - 1u);
-        const float lin_dst = 1.0f - lin_src;
+        const float extreme = lin_src > 0.5f ? 0.0f : 1.0f;
+        const float dest = clamp01(params->destination);
+        const float lin_dst = (1.0f - dest) * (1.0f - lin_src) + dest * extreme;
         const float s = linear ? lin_src : ax_linear_to_srgb(lin_src);
         const float d = linear ? lin_dst : ax_linear_to_srgb(lin_dst);
         const float contrast = params->contrast * lin_dst;

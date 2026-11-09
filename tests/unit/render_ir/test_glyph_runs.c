@@ -274,6 +274,7 @@ AX_TEST(the_coverage_correction_is_monotonic_and_pinned_at_the_ends)
     /* Gamma 1 without contrast imitates linear light in the sRGB space: half coverage of white
      * on black gives 188 (the issue's 50 % white over black), of black on white 255 - 188. */
     none.contrast = 0.0f;
+    none.destination = 0.0f;
     none.gamma = 1.0f;
     ax_ir_text_lut_build(&none, lut);
     AX_CHECK(lut[AX_IR_TEXT_LUT_BUCKETS - 1u][128] >= 187u &&
