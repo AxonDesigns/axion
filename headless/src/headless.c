@@ -35,6 +35,7 @@ typedef struct hl_config {
     ax_node root;
     uint32_t index; /* the runtime's surface index */
     ax_headless_surface_desc desc;
+    hl_tree *tree; /* its semantic tree (decision 108), or NULL with AX_HEADLESS_NO_SEMANTICS */
 } hl_config;
 
 /* Render side: what the presenter keeps per surface (indexed by the runtime's surface index). */
@@ -441,6 +442,9 @@ void ax_headless_destroy(ax_headless *h)
         release(&h->allocator, &s->ir_blob, &s->ir_cap);
     }
     (void)ax_world_destroy(h->world);
+    for (i = 0; i < HL_MAX; ++i) {
+        ax__hl_tree_destroy(h->cfg[i].tree);
+    }
     ax_mutex_deinit(&h->lock);
     a = h->allocator;
     ax_mem_free(&a, h, sizeof *h);
@@ -462,6 +466,12 @@ static hl_config *config_of(ax_headless *h, ax_node root)
         }
     }
     return NULL;
+}
+
+hl_tree *ax__hl_tree_of(ax_headless *h, ax_node root)
+{
+    hl_config *c = h != NULL ? config_of(h, root) : NULL;
+    return c != NULL ? c->tree : NULL;
 }
 
 static bool valid_size(float w, float ht, float scale)
@@ -503,6 +513,12 @@ ax_result ax_headless_add_surface(ax_headless *h, const ax_headless_surface_desc
     if (r != AX_OK) {
         return r;
     }
+    if ((h->desc.flags & AX_HEADLESS_NO_SEMANTICS) == 0 && c->tree == NULL) {
+        c->tree = ax__hl_tree_create(&h->allocator, &h->lock);
+        if (c->tree == NULL) {
+            return ax_set_error(AX_ERR_OUT_OF_MEMORY, "ax_headless_add_surface: out of memory");
+        }
+    }
     ax_mutex_lock(&h->lock);
     c->desc = *desc;
     c->root = root;
@@ -513,11 +529,19 @@ ax_result ax_headless_add_surface(ax_headless *h, const ax_headless_surface_desc
     sd.scale = desc->scale;
     sd.refresh_ns = h->desc.refresh_ns;
     sd.native_surface = (uint64_t)(uintptr_t)c;
+    if (c->tree != NULL) {
+        sd.a11y.update = ax__hl_tree_update;
+        sd.a11y.user = c->tree;
+    }
     r = ax_rt_add_surface(h->rt, root, &sd, &c->index);
     if (r != AX_OK) {
         return r;
     }
     c->used = true;
+    if (c->tree != NULL) {
+        /* An assistive technology reads every headless surface: the testing API's queries. */
+        ax_world_a11y_activate(h->world, root, true);
+    }
     *out_root = root;
     return AX_OK;
 }
@@ -532,6 +556,8 @@ ax_result ax_headless_remove_surface(ax_headless *h, ax_node root)
     r = ax_rt_remove_surface(h->rt, c->index);
     if (r == AX_OK) {
         c->used = false;
+        ax__hl_tree_destroy(c->tree); /* the scene let its sink go with the surface */
+        c->tree = NULL;
     }
     return r;
 }
@@ -686,6 +712,10 @@ static bool settled(ax_headless *h)
 {
     uint32_t i;
     if (ax_world_last_applied_seq(h->world) < ax_world_last_committed_seq(h->world)) {
+        return false;
+    }
+    /* The semantic trees: activations and actions handled, applied changes sent (decision 108). */
+    if (!ax_world_a11y_caught_up(h->world)) {
         return false;
     }
     /* Every surface drew the newest snapshot recorded for it. */

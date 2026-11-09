@@ -205,9 +205,14 @@ typedef struct world_impl {
     ax_mutex a11y_lock; /* any thread: activations and actions waiting for the scene */
     ax_atomic_u32 a11y_pending;
     ax_atomic_u32 a11y_dropped;
+    ax_atomic_u64 a11y_posted;      /* activations and actions posted (under a11y_lock) */
+    ax_atomic_u64 a11y_handled;     /* of those, how many a finished flush has handled */
+    ax_atomic_u64 a11y_flushed_seq; /* the applied transactions a finished flush covered */
+    ax_atomic_u32 a11y_active;      /* a copy of a11y_enabled for other threads */
     struct {
         ax_node root;
         bool active;
+        uint32_t age; /* flushes it waited for its root's sink */
     } a11y_activations[AX_A11Y_MAX_ACTIVATIONS];
     uint32_t a11y_activation_count;
     ax_a11y_action a11y_actions[AX_A11Y_ACTION_QUEUE];

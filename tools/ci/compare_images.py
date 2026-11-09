@@ -3,7 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Checks that the same headless tests give byte-identical images on every platform (decision 86).
 
-Each argument is a directory of <suite>__<name>.png files written by the golden-image tests with
+Each argument is a directory of <suite>__<name>.png files (and <suite>__<name>.txt text goldens,
+such as the semantic tree of decision 108) written by the golden tests with
 AX_TEST_IMAGE_DIR set, one directory per platform (Linux, macOS, Windows, the web). Every directory
 must hold the same files with the same bytes: AXION's PNG encoder depends only on the pixels, so
 equal files mean equal pixels. For a file that differs, the first differing pixel is reported.
@@ -65,13 +66,26 @@ def first_difference(left, right):
     return "same pixels, different bytes"
 
 
+def first_text_difference(left, right):
+    with open(left, "rb") as f:
+        a = f.read().split(b"\n")
+    with open(right, "rb") as f:
+        b = f.read().split(b"\n")
+    for i, (x, y) in enumerate(zip(a, b)):
+        if x != y:
+            return "line %d: %r and %r" % (i + 1, x.decode("utf-8", "replace"),
+                                           y.decode("utf-8", "replace"))
+    return "%d and %d lines" % (len(a), len(b))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("dirs", nargs="+")
     args = parser.parse_args()
     if len(args.dirs) < 2:
         sys.exit("compare_images.py: need at least two directories")
-    files = {d: sorted(f for f in os.listdir(d) if f.endswith(".png")) for d in args.dirs}
+    files = {d: sorted(f for f in os.listdir(d) if f.endswith((".png", ".txt")))
+             for d in args.dirs}
     reference = args.dirs[0]
     failed = False
     if not files[reference]:
@@ -91,9 +105,10 @@ def main():
                 same += 1
                 continue
             failed = True
-            print("%s: %s and %s differ: %s" % (name, reference, other, first_difference(
+            compare = first_text_difference if name.endswith(".txt") else first_difference
+            print("%s: %s and %s differ: %s" % (name, reference, other, compare(
                 os.path.join(reference, name), os.path.join(other, name))))
-        print("%s against %s: %d identical images" % (other, reference, same))
+        print("%s against %s: %d identical files" % (other, reference, same))
     sys.exit(1 if failed else 0)
 
 

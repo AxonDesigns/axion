@@ -58,7 +58,8 @@ typedef struct a11y_state {
     a11y_root *roots;
     uint32_t root_count;
     uint32_t root_capacity;
-    uint64_t focus; /* the assistive technology's focus (a handle), or 0 */
+    uint64_t focus;   /* the assistive technology's focus (a handle), or 0 */
+    uint64_t handled; /* requests posted up to here are handled once this flush ends */
     /* One flush's output. */
     ax_arena arena; /* children, computed names, text runs' arrays */
     ax_a11y_node *out;
@@ -134,6 +135,18 @@ static ax_str shared_view(const ax_shared_str *s)
     return ax_shared_str_view(s);
 }
 
+const char *ax_role_name(uint32_t role)
+{
+    static const char *const NAMES[] = {
+        "none",      "generic",     "window",   "group",     "label",      "heading",
+        "paragraph", "button",      "link",     "image",     "checkbox",   "switch",
+        "radio",     "slider",      "progress", "text_input", "list",      "list_item",
+        "article",   "dialog",      "toolbar",  "tab_list",  "tab",        "tab_panel",
+        "menu",      "menu_item",   "scroll_view", "separator", "text_run"};
+    AX_STATIC_ASSERT(sizeof NAMES / sizeof NAMES[0] == AX_ROLE_LAST + 1, "a name per role");
+    return role <= AX_ROLE_LAST ? NAMES[role] : "unknown";
+}
+
 /* ---- State ----------------------------------------------------------------------------------- */
 
 static a11y_state *state(world_impl *w)
@@ -176,6 +189,10 @@ void ax__a11y_init(world_impl *w)
     ax_mutex_init(&w->a11y_lock);
     ax_atomic_init_u32(&w->a11y_pending, 0);
     ax_atomic_init_u32(&w->a11y_dropped, 0);
+    ax_atomic_init_u64(&w->a11y_posted, 0);
+    ax_atomic_init_u64(&w->a11y_handled, 0);
+    ax_atomic_init_u64(&w->a11y_flushed_seq, 0);
+    ax_atomic_init_u32(&w->a11y_active, 0);
 }
 
 /* ---- Change points --------------------------------------------------------------------------- */
@@ -782,6 +799,7 @@ static void update_enabled(world_impl *w, a11y_state *st)
         st->epoch++;
     }
     w->a11y_enabled = any;
+    ax_atomic_store_u32(&w->a11y_active, any ? 1u : 0u, AX_MO_RELEASE);
 }
 
 ax_result ax_world_set_a11y_sink(ax_world world, ax_node root, const ax_a11y_sink *sink)
@@ -845,10 +863,12 @@ void ax_world_a11y_activate(ax_world world, ax_node root, bool active)
     if (i < AX_A11Y_MAX_ACTIVATIONS) {
         w->a11y_activations[i].root = root;
         w->a11y_activations[i].active = active;
+        w->a11y_activations[i].age = 0;
         if (i == w->a11y_activation_count) {
             w->a11y_activation_count++;
         }
     }
+    (void)ax_atomic_fetch_add_u64(&w->a11y_posted, 1u, AX_MO_RELAXED);
     ax_atomic_store_u32(&w->a11y_pending, 1u, AX_MO_RELEASE);
     ax_mutex_unlock(&w->a11y_lock);
     ax__world_wake(w, root);
@@ -864,6 +884,7 @@ bool ax_world_post_a11y_action(ax_world world, const ax_a11y_action *action)
     ax_mutex_lock(&w->a11y_lock);
     if (w->a11y_action_count < AX_A11Y_ACTION_QUEUE) {
         w->a11y_actions[w->a11y_action_count++] = *action;
+        (void)ax_atomic_fetch_add_u64(&w->a11y_posted, 1u, AX_MO_RELAXED);
         queued = true;
         ax_atomic_store_u32(&w->a11y_pending, 1u, AX_MO_RELEASE);
     }
@@ -920,19 +941,27 @@ static void run_action(world_impl *w, a11y_state *st, const ax_a11y_action *a)
     st->counters.actions++;
 }
 
+/* An activation may come before the scene thread has its root's sink (the surface is picked up
+ * at the next scene step): it waits for it this many flushes. */
+#define ACTIVATION_PATIENCE 64u
+
 static void take_pending(world_impl *w, a11y_state *st)
 {
     struct {
         ax_node root;
         bool active;
+        uint32_t age;
     } acts[AX_A11Y_MAX_ACTIVATIONS];
     ax_a11y_action actions[AX_A11Y_ACTION_QUEUE];
-    uint32_t nacts, nactions, i;
+    uint32_t nacts, nactions, i, waiting = 0;
+    uint64_t posted;
     ax_mutex_lock(&w->a11y_lock);
+    posted = ax_atomic_load_u64(&w->a11y_posted, AX_MO_RELAXED);
     nacts = w->a11y_activation_count;
     for (i = 0; i < nacts; ++i) {
         acts[i].root = w->a11y_activations[i].root;
         acts[i].active = w->a11y_activations[i].active;
+        acts[i].age = w->a11y_activations[i].age;
     }
     nactions = w->a11y_action_count;
     memcpy(actions, w->a11y_actions, sizeof(ax_a11y_action) * nactions);
@@ -943,15 +972,43 @@ static void take_pending(world_impl *w, a11y_state *st)
     for (i = 0; i < nacts; ++i) {
         const int r = find_root(st, acts[i].root.h);
         if (r < 0) {
-            continue; /* no sink for it (yet) */
+            /* No sink for it yet: it waits (unless a newer activation of the root came). */
+            if (acts[i].age + 1u < ACTIVATION_PATIENCE) {
+                acts[waiting] = acts[i];
+                acts[waiting].age++;
+                waiting++;
+            }
+            continue;
         }
-        if (acts[i].active && !st->roots[r].active && r >= 0) {
+        if (acts[i].active && !st->roots[r].active) {
             st->roots[r].wants_full = true;
         }
         st->roots[r].active = acts[i].active;
         if (!acts[i].active) {
             st->roots[r].sent_focus = 0;
         }
+    }
+    if (waiting > 0) {
+        ax_mutex_lock(&w->a11y_lock);
+        for (i = 0; i < waiting && w->a11y_activation_count < AX_A11Y_MAX_ACTIVATIONS; ++i) {
+            uint32_t k;
+            for (k = 0; k < w->a11y_activation_count; ++k) {
+                if (w->a11y_activations[k].root.h == acts[i].root.h) {
+                    break; /* a newer one replaced it */
+                }
+            }
+            if (k == w->a11y_activation_count) {
+                w->a11y_activations[k].root = acts[i].root;
+                w->a11y_activations[k].active = acts[i].active;
+                w->a11y_activations[k].age = acts[i].age;
+                w->a11y_activation_count++;
+            }
+        }
+        ax_atomic_store_u32(&w->a11y_pending, 1u, AX_MO_RELEASE);
+        ax_mutex_unlock(&w->a11y_lock);
+    }
+    if (waiting == 0) {
+        st->handled = posted; /* every request taken is handled by the end of this flush */
     }
     update_enabled(w, st);
     for (i = 0; i < nactions; ++i) {
@@ -1035,6 +1092,7 @@ void ax_world_a11y_flush(ax_world world)
         }
     }
     if (!w->a11y_enabled) {
+        ax_atomic_store_u64(&w->a11y_handled, st->handled, AX_MO_RELEASE);
         return; /* nothing reads the tree: nothing to do (decision 108) */
     }
     ax_arena_reset(&st->arena);
@@ -1076,12 +1134,29 @@ void ax_world_a11y_flush(ax_world world)
             send(w, st, i, full_root[i]);
         }
     }
+    ax_atomic_store_u64(&w->a11y_flushed_seq, ax_world_last_applied_seq(world), AX_MO_RELEASE);
+    ax_atomic_store_u64(&w->a11y_handled, st->handled, AX_MO_RELEASE);
 }
 
 bool ax_world_a11y_enabled(ax_world world)
 {
     world_impl *w = ax__world_from_handle(world);
     return w != NULL && w->a11y_enabled;
+}
+
+bool ax_world_a11y_caught_up(ax_world world)
+{
+    world_impl *w = ax__world_from_handle(world);
+    if (w == NULL) {
+        return true;
+    }
+    if (ax_atomic_load_u64(&w->a11y_handled, AX_MO_ACQUIRE) <
+        ax_atomic_load_u64(&w->a11y_posted, AX_MO_RELAXED)) {
+        return false;
+    }
+    return ax_atomic_load_u32(&w->a11y_active, AX_MO_ACQUIRE) == 0 ||
+           ax_atomic_load_u64(&w->a11y_flushed_seq, AX_MO_ACQUIRE) >=
+               ax_world_last_applied_seq(world);
 }
 
 void ax_world_get_a11y_counters(ax_world world, ax_a11y_counters *out, bool reset)

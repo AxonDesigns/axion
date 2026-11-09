@@ -15,6 +15,10 @@
  *     <suite>__<name>.png, for CI to compare platforms byte for byte.
  * Images are premultiplied RGBA8, converted to PNG's straight alpha before anything is compared,
  * so a golden always holds exactly what the comparison saw.
+ *
+ * Text goldens (decision 108: the semantic tree as text) work the same way with
+ * tests/goldens/<suite>/<name>.txt, compared byte for byte; a mismatch writes <name>.actual.txt,
+ * and AX_TEST_IMAGE_DIR gets <suite>__<name>.txt for the determinism job.
  */
 #ifndef AXT_GOLDEN_H
 #define AXT_GOLDEN_H
@@ -26,6 +30,12 @@
 bool axt_golden_check(const char *file, int line, const char *suite, const char *name,
                       const uint8_t *rgba, uint32_t width, uint32_t height, size_t stride,
                       uint32_t tolerance);
+
+bool axt_golden_check_text(const char *file, int line, const char *suite, const char *name,
+                           const char *text, size_t length);
+
+#define AXT_CHECK_GOLDEN_TEXT(suite, name, text, length) \
+    axt_golden_check_text(__FILE__, __LINE__, (suite), (name), (text), (length))
 
 #define AXT_CHECK_GOLDEN(suite, name, rgba, width, height, stride) \
     axt_golden_check(__FILE__, __LINE__, (suite), (name), (rgba), (width), (height), (stride), 0)

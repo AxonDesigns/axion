@@ -5,7 +5,7 @@
 # platform module: it builds everywhere, the web included, and runs any app without a window or a
 # GPU. With the gpu module it can also draw with ax_render_wgpu offscreen.
 
-add_library(ax_headless STATIC src/png.c src/headless.c)
+add_library(ax_headless STATIC src/png.c src/headless.c src/semantics.c)
 add_library(axion::headless ALIAS ax_headless)
 target_include_directories(ax_headless
     PUBLIC  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"

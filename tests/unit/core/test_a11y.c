@@ -360,7 +360,7 @@ static void build_tree(fixture *f, tree *n)
 
 AX_TEST(an_inactive_tree_costs_nothing_and_activation_builds_it_once)
 {
-    fixture f;
+    static fixture f;
     tree n;
     ax_a11y_counters c;
     uint32_t i, wakes;
@@ -413,7 +413,7 @@ AX_TEST(an_inactive_tree_costs_nothing_and_activation_builds_it_once)
 
 AX_TEST(a_change_to_one_node_sends_that_node_only)
 {
-    fixture f;
+    static fixture f;
     tree n;
     ax_txn *t;
     ax_a11y_counters c;
@@ -475,7 +475,7 @@ AX_TEST(a_change_to_one_node_sends_that_node_only)
 
 AX_TEST(removed_hidden_and_new_subtrees_update_their_parent)
 {
-    fixture f;
+    static fixture f;
     tree n;
     ax_txn *t;
     ax_node fresh, fresh_kid;
@@ -547,7 +547,7 @@ AX_TEST(removed_hidden_and_new_subtrees_update_their_parent)
 
 AX_TEST(text_leaves_have_lines_with_characters_and_words)
 {
-    fixture f;
+    static fixture f;
     ax_txn *t;
     ax_node para, button, caption;
     c_node *p;
@@ -611,7 +611,7 @@ AX_TEST(text_leaves_have_lines_with_characters_and_words)
 
 AX_TEST(geometry_is_the_target_frame_and_transform)
 {
-    fixture f;
+    static fixture f;
     ax_txn *t;
     ax_node spinner;
     c_node *s;
@@ -691,7 +691,7 @@ static int post_from_thread(void *arg)
 
 AX_TEST(actions_from_another_thread_reach_the_app_and_move_the_focus)
 {
-    fixture f;
+    static fixture f;
     tree n;
     ax_txn *t;
     poster p;
@@ -714,8 +714,12 @@ AX_TEST(actions_from_another_thread_reach_the_app_and_move_the_focus)
     p.root = f.root;
     p.target = n.a;
     wakes = f.wakes;
-    AX_REQUIRE(ax_thread_create(&th, post_from_thread, &p) == AX_OK);
-    (void)ax_thread_join(&th);
+    if (ax_threads_supported()) {
+        AX_REQUIRE(ax_thread_create(&th, post_from_thread, &p) == AX_OK);
+        (void)ax_thread_join(&th);
+    } else {
+        (void)post_from_thread(&p); /* the single-threaded web build */
+    }
     AX_CHECK(f.wakes >= wakes + 3u); /* each asked for a frame */
     frame(&f);
     c = counters(&f);
@@ -754,7 +758,7 @@ AX_TEST(actions_from_another_thread_reach_the_app_and_move_the_focus)
 
 AX_TEST(a_semantics_only_change_records_no_items)
 {
-    fixture f;
+    static fixture f;
     tree n;
     ax_txn *t;
     ax_frame_counters fc;

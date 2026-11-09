@@ -8,9 +8,14 @@
  * lays its content out at each interpolated height (the resize preset) behind its rounded clip
  * (decision 93), a color eases, and a narrower list re-wraps the paragraphs at each interpolated
  * width.
+ *
+ * Semantics (decision 108): each card is an article named by its title, with a heading, its
+ * paragraphs, and a progress bar; the avatar is decorative (hidden). A card's default action grows
+ * or shrinks it (m1_nodes answers AX_WORLD_EVENT_A11Y_ACTION with m1_cards_toggle).
  */
 #include "m1_cards.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #include "axion/ax_error.h"
@@ -100,6 +105,15 @@ static void build_card(ax_txn *t, m1_cards *c, uint32_t i)
     char initial[2] = {0, 0};
     k->color = (uint32_t)i % PALETTE_N;
     k->card = box(t, c->list, PALETTE[k->color], 14.0f);
+    {
+        char id[16];
+        (void)snprintf(id, sizeof id, "card-%u", (unsigned)i);
+        ax_txn_set_u32(t, k->card, AX_PROP_ROLE, AX_ROLE_ARTICLE);
+        ax_txn_set_str(t, k->card, AX_PROP_LABEL, TITLES[i], strlen(TITLES[i]));
+        ax_txn_set_str(t, k->card, AX_PROP_TEST_ID, id, strlen(id));
+        ax_txn_set_u32(t, k->card, AX_PROP_EXPANDED, AX_EXPANDED_COLLAPSED);
+        ax_txn_set_u32(t, k->card, AX_PROP_ACTIONS, AX_ACTION_FOCUS | AX_ACTION_DEFAULT);
+    }
     ax_txn_set_u32(t, k->card, AX_PROP_FLEX_DIRECTION, AX_FLEX_DIRECTION_ROW);
     ax_txn_set_u32(t, k->card, AX_PROP_ALIGN_ITEMS, AX_ALIGN_FLEX_START);
     ax_txn_set_u32(t, k->card, AX_PROP_OVERFLOW, AX_OVERFLOW_HIDDEN); /* its content clipped */
@@ -115,6 +129,7 @@ static void build_card(ax_txn *t, m1_cards *c, uint32_t i)
     ax_txn_set_f32(t, k->avatar, AX_PROP_FLEX_SHRINK, 0.0f);
     ax_txn_set_u32(t, k->avatar, AX_PROP_ALIGN_ITEMS, AX_ALIGN_CENTER);
     ax_txn_set_u32(t, k->avatar, AX_PROP_JUSTIFY_CONTENT, AX_JUSTIFY_CENTER);
+    ax_txn_set_bool(t, k->avatar, AX_PROP_HIDDEN, true); /* decorative: the title names the card */
     initial[0] = TITLES[i][0];
     letter = label(t, k->avatar, initial, 28.0f, 600.0f, 0);
 
@@ -124,7 +139,11 @@ static void build_card(ax_txn *t, m1_cards *c, uint32_t i)
     ax_txn_set_dimension(t, lines, AX_PROP_GAP, pt(4));
     ax_txn_set_dimension(t, lines, AX_PROP_MIN_WIDTH, pt(0));
     ax_txn_append_child(t, k->card, lines);
-    (void)label(t, lines, TITLES[i], 20.0f, 600.0f, 0);
+    {
+        ax_node title = label(t, lines, TITLES[i], 20.0f, 600.0f, 0);
+        ax_txn_set_u32(t, title, AX_PROP_ROLE, AX_ROLE_HEADING);
+        ax_txn_set_u32(t, title, AX_PROP_LEVEL, 2);
+    }
     (void)label(t, lines, PARAGRAPHS[i], 14.0f, 400.0f, COLOR_DIM);
     /* Below the fold: shown when the card grows. */
     k->detail = label(t, lines, DETAILS[i], 13.0f, 400.0f, COLOR_DIM);
@@ -140,7 +159,21 @@ static void build_card(ax_txn *t, m1_cards *c, uint32_t i)
     ax_txn_set_dimension(t, k->progress, AX_PROP_BOTTOM, pt(0));
     ax_txn_set_dimension(t, k->progress, AX_PROP_HEIGHT, pt(4));
     ax_txn_set_dimension(t, k->progress, AX_PROP_WIDTH, pct(20.0f + 13.0f * (float)i));
+    ax_txn_set_u32(t, k->progress, AX_PROP_ROLE, AX_ROLE_PROGRESS);
+    ax_txn_set_str(t, k->progress, AX_PROP_LABEL, "Progress", 8);
+    ax_txn_set_f32(t, k->progress, AX_PROP_VALUE, 20.0f + 13.0f * (float)i);
+    ax_txn_set_f32(t, k->progress, AX_PROP_VALUE_MIN, 0.0f);
+    ax_txn_set_f32(t, k->progress, AX_PROP_VALUE_MAX, 100.0f);
     c->order[i] = k->card;
+}
+
+/* Grows or shrinks a card: its detail paragraph in or out of view. */
+static void toggle(ax_txn *t, m1_card *card)
+{
+    card->grown = !card->grown;
+    ax_txn_set_u32(t, card->detail, AX_PROP_DISPLAY, card->grown ? AX_DISPLAY_FLEX : AX_DISPLAY_NONE);
+    ax_txn_set_u32(t, card->card, AX_PROP_EXPANDED,
+                   card->grown ? AX_EXPANDED_EXPANDED : AX_EXPANDED_COLLAPSED);
 }
 
 ax_result m1_cards_build(ax_world world, ax_node root, m1_cards *c, bool csd, uint64_t *out_seq)
@@ -155,6 +188,7 @@ ax_result m1_cards_build(ax_world world, ax_node root, m1_cards *c, bool csd, ui
     c->root = root;
     ax_txn_set_color(t, root, AX_PROP_BACKGROUND_COLOR, m1_c8(COLOR_BG));
     ax_txn_set_color(t, root, AX_PROP_COLOR, m1_c8(COLOR_LINE)); /* inherited by every text */
+    ax_txn_set_str(t, root, AX_PROP_LABEL, "m1_nodes", 8);
     if (csd) {
         ax_node caption = box(t, root, COLOR_CAPTION, 0.0f);
         ax_txn_set_dimension(t, caption, AX_PROP_HEIGHT, pt(M1_CAPTION_HEIGHT));
@@ -173,7 +207,9 @@ ax_result m1_cards_build(ax_world world, ax_node root, m1_cards *c, bool csd, ui
         ax_node head = ax_txn_create(t, AX_NODE_VIEW);
         ax_txn_set_f32(t, head, AX_PROP_FLEX_SHRINK, 0.0f);
         ax_txn_append_child(t, c->list, head);
-        (void)label(t, head, "AXION text", 48.0f, 700.0f, 0);
+        ax_node title = label(t, head, "AXION text", 48.0f, 700.0f, 0);
+        ax_txn_set_u32(t, title, AX_PROP_ROLE, AX_ROLE_HEADING);
+        ax_txn_set_u32(t, title, AX_PROP_LEVEL, 1);
         (void)label(t, head,
                     "Noto Sans, shaped by HarfBuzz, from 11 to 48 px. Every change below is one "
                     "transaction; the scene animates it.",
@@ -208,9 +244,7 @@ ax_result m1_cards_step(ax_world world, m1_cards *c, uint32_t k, uint64_t *out_s
     case 1: { /* a card grows (or shrinks back): its detail paragraph comes into view as the
                * card's height animates */
         m1_card *card = &c->cards[(k / 4u) % M1_CARDS];
-        card->grown = !card->grown;
-        ax_txn_set_u32(t, card->detail, AX_PROP_DISPLAY,
-                       card->grown ? AX_DISPLAY_FLEX : AX_DISPLAY_NONE);
+        toggle(t, card);
         break;
     }
     case 3: /* the list narrows (or widens back): every paragraph re-wraps as the cards' width
@@ -225,5 +259,22 @@ ax_result m1_cards_step(ax_world world, m1_cards *c, uint32_t k, uint64_t *out_s
         break;
     }
     }
+    return ax_txn_commit(t, out_seq);
+}
+
+ax_result m1_cards_toggle(ax_world world, m1_cards *c, ax_node card, uint64_t *out_seq)
+{
+    ax_txn *t;
+    uint32_t i;
+    for (i = 0; i < M1_CARDS && c->cards[i].card.h != card.h; ++i) {
+    }
+    if (i == M1_CARDS) {
+        return AX_ERR_INVALID_ARGUMENT;
+    }
+    t = ax_txn_begin(world);
+    if (t == NULL) {
+        return ax_last_error()->code;
+    }
+    toggle(t, &c->cards[i]);
     return ax_txn_commit(t, out_seq);
 }

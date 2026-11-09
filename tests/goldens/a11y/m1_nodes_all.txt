@@ -1,0 +1,83 @@
+window "m1_nodes" @0,0 320x420
+  generic @0,0 320x420
+    generic @20,20 280x114
+      heading "AXION text" level=1 @20,20 280x66
+        text_run text="AXION text" @20,20 270.624x65.376
+      label "Noto Sans, shaped by HarfBuzz, from 11 to 48 px. Every change below is one transaction; the scene animates it." @20,85 280x50
+        text_run text="Noto Sans, shaped by HarfBuzz, from 11 to 48 px. " @20,85 277.932x16.344
+        text_run text="Every change below is one transaction; the scene " @20,101.344 275.64x16.344
+        text_run text="animates it." @20,117.688 65.808x16.344
+    article "Shaping" collapsed actions=focus,default test-id="card-0" @20,146 280x151
+      generic @92,158 196x123
+        heading "Shaping" level=2 @92,158 196x28
+          text_run text="Shaping" @92,158 78.92x27.24
+        label "HarfBuzz shapes each run once, in font units, so one result serves every size." @92,189 196x58
+          text_run text="HarfBuzz shapes each run " @92,189 171.29x19.068
+          text_run text="once, in font units, so one " @92,208.068 169.568x19.068
+          text_run text="result serves every size." @92,227.136 154.532x19.068
+        label "Updated by a transaction · animated by the scene" @92,250 196x31
+          text_run text="Updated by a transaction · animated " @92,250 187.704x14.982
+          text_run text="by the scene" @92,264.982 64.603x14.982
+      progress "Progress" value=20 range=0..100 @20,292 56x4
+    article "Line breaking" collapsed actions=focus,default test-id="card-1" @20,309 280x169
+      generic @92,321 196x141
+        heading "Line breaking" level=2 @92,321 196x29
+          text_run text="Line breaking" @92,321 133.14x27.24
+        label "Lines break at UAX #14 opportunities and wrap again without shaping when the card narrows." @92,352 196x77
+          text_run text="Lines break at UAX #14 " @92,352 151.312x19.068
+          text_run text="opportunities and wrap again " @92,371.068 194.768x19.068
+          text_run text="without shaping when the " @92,390.136 171.92x19.068
+          text_run text="card narrows." @92,409.204 89.768x19.068
+        label "Updated by a transaction · animated by the scene" @92,432 196x31
+          text_run text="Updated by a transaction · animated " @92,432 187.704x14.982
+          text_run text="by the scene" @92,446.982 64.603x14.982
+      progress "Progress" value=33 range=0..100 @20,474 92x4
+    article "Glyph atlas" collapsed actions=focus,default test-id="card-2" @20,490 280x151
+      generic @92,502 196x123
+        heading "Glyph atlas" level=2 @92,502 196x28
+          text_run text="Glyph atlas" @92,502 108.66x27.24
+        label "Coverage glyphs at the exact size, four subpixel positions, rasterized on the workers." @92,533 196x58
+          text_run text="Coverage glyphs at the exact " @92,533 188.958x19.068
+          text_run text="size, four subpixel positions, " @92,552.068 185.654x19.068
+          text_run text="rasterized on the workers." @92,571.136 172.004x19.068
+        label "Updated by a transaction · animated by the scene" @92,594 196x31
+          text_run text="Updated by a transaction · animated " @92,594 187.704x14.982
+          text_run text="by the scene" @92,608.982 64.603x14.982
+      progress "Progress" value=46 range=0..100 @20,636 129x4
+    article "Layout" collapsed actions=focus,default test-id="card-3" @20,653 280x169
+      generic @92,665 196x141
+        heading "Layout" level=2 @92,665 196x28
+          text_run text="Layout" @92,665 66.8x27.24
+        label "Flex measures every paragraph through its measure function, in parallel when it pays." @92,696 196x78
+          text_run text="Flex measures every " @92,696 133.028x19.068
+          text_run text="paragraph through its " @92,715.068 145.292x19.068
+          text_run text="measure function, in parallel " @92,734.136 187.712x19.068
+          text_run text="when it pays." @92,753.204 86.212x19.068
+        label "Updated by a transaction · animated by the scene" @92,776 196x31
+          text_run text="Updated by a transaction · animated " @92,776 187.704x14.982
+          text_run text="by the scene" @92,790.982 64.603x14.982
+      progress "Progress" value=59 range=0..100 @20,818 165x4
+    article "Animation" collapsed actions=focus,default test-id="card-4" @20,834 280x151
+      generic @92,846 196x123
+        heading "Animation" level=2 @92,846 196x28
+          text_run text="Animation" @92,846 101.64x27.24
+        label "Moves, sizes and colors spring or ease from wherever they are when they change." @92,877 196x58
+          text_run text="Moves, sizes and colors " @92,877 153.65x19.068
+          text_run text="spring or ease from wherever " @92,896.068 194.474x19.068
+          text_run text="they are when they change." @92,915.136 181.076x19.068
+        label "Updated by a transaction · animated by the scene" @92,938 196x31
+          text_run text="Updated by a transaction · animated " @92,938 187.704x14.982
+          text_run text="by the scene" @92,952.982 64.603x14.982
+      progress "Progress" value=72 range=0..100 @20,980 202x4
+    article "Rendering" collapsed actions=focus,default test-id="card-5" @20,997 280x150
+      generic @92,1009 196x122
+        heading "Rendering" level=2 @92,1009 196x28
+          text_run text="Rendering" @92,1009 101.16x27.24
+        label "The same snapshot draws on the GPU and in software, within a perceptual tolerance." @92,1040 196x59
+          text_run text="The same snapshot draws on " @92,1040 191.94x19.068
+          text_run text="the GPU and in software, " @92,1059.07 163.492x19.068
+          text_run text="within a perceptual tolerance." @92,1078.14 195.174x19.068
+        label "Updated by a transaction · animated by the scene" @92,1101 196x30
+          text_run text="Updated by a transaction · animated " @92,1101 187.704x14.9821
+          text_run text="by the scene" @92,1115.98 64.603x14.9819
+      progress "Progress" value=85 range=0..100 @20,1143 238x4

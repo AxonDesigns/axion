@@ -74,6 +74,10 @@ typedef struct ax_node_semantics {
 /* The node's semantics component, or NULL (a node that never set a semantic property). */
 AX_API ax_node_semantics *ax_scene_semantics(const struct ax_scene *scene, ax_node node);
 
+/* A role's name in the dumps and the testing API ("list_item"); "unknown" for no role. Any
+ * thread. */
+AX_API const char *ax_role_name(uint32_t role);
+
 /* ---- The tree's updates ---------------------------------------------------------------------- */
 
 /* ax_a11y_node.flags */
@@ -164,6 +168,11 @@ AX_API void ax_world_a11y_flush(ax_world world);
 
 /* Whether any root's tree is active. */
 AX_API bool ax_world_a11y_enabled(ax_world world);
+
+/* Any thread: whether the trees are up to date, as of a finished flush: every activation and action
+ * posted so far handled (an activation waiting for its root's sink is not), and, while a tree is
+ * active, every applied transaction sent. The headless host's settle waits for it. */
+AX_API bool ax_world_a11y_caught_up(ax_world world);
 
 typedef struct ax_a11y_counters {
     uint64_t touched;        /* nodes the change points queued */

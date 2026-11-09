@@ -51,4 +51,8 @@ ax_result m1_cards_build(ax_world world, ax_node root, m1_cards *c, bool csd, ui
  * paragraph re-wraps as the width animates). One animated transaction. App thread. */
 ax_result m1_cards_step(ax_world world, m1_cards *c, uint32_t k, uint64_t *out_seq);
 
+/* Grows or shrinks one card (its default action, decision 108). One animated transaction.
+ * AX_ERR_INVALID_ARGUMENT when `card` is not one of the cards. App thread. */
+ax_result m1_cards_toggle(ax_world world, m1_cards *c, ax_node card, uint64_t *out_seq);
+
 #endif /* M1_CARDS_H */
