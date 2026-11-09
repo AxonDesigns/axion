@@ -7,8 +7,9 @@
 #
 #   AX_ACCESSKIT  AUTO (default): ON where the release has a binary for the target and the
 #                 platform module builds (Linux x86_64 for now; the other desktop bridges are M3),
-#                 except under ThreadSanitizer (the Rust code is not instrumented) and with
-#                 AX_WEBGPU=wgpu-native (another Rust static library: duplicate symbols);
+#                 except under ThreadSanitizer (the Rust code is not instrumented). With
+#                 AX_WEBGPU=wgpu-native (another Rust static library) it links the release's
+#                 shared library instead of the static one;
 #                 ON: required (a configure error where it cannot be used); OFF: never.
 #   AX_ACCESSKIT_ROOT  an unpacked accesskit-c release to use instead of downloading (offline).
 #
@@ -54,11 +55,6 @@ function(ax_add_accesskit)
         set(_why "the platform module is off")
     elseif("thread" IN_LIST AX_SANITIZE AND AX_ACCESSKIT STREQUAL "AUTO")
         set(_why "ThreadSanitizer cannot see the Rust code's synchronization")
-    elseif(AX_BUILD_GPU AND AX_WEBGPU STREQUAL "wgpu-native")
-        # Two Rust static libraries carry a standard library each: rust_eh_personality and the
-        # allocator shims are defined twice and the link fails (decision 110). wgpu-native is the
-        # CI-only alternative, never shipped.
-        set(_why "wgpu-native is Rust too: two Rust static libraries cannot be linked together")
     endif()
     if(NOT _why STREQUAL "")
         if(AX_ACCESSKIT STREQUAL "ON")
@@ -74,17 +70,33 @@ function(ax_add_accesskit)
         ax_fetch_prebuilt(_root "accesskit-c-${AX_ACCESSKIT_VERSION}" "${AX_ACCESSKIT_URL}"
                           "${AX_ACCESSKIT_SHA256}")
     endif()
-    set(_lib "${_root}/lib/${_os}/${_arch}/static/libaccesskit.a")
+    # With wgpu-native (another Rust static library) the static archive cannot be linked: both carry
+    # a standard library and rust_eh_personality is defined twice (decision 110). The release's
+    # shared library (a cdylib) exports only accesskit-c's C symbols, so it links beside it.
+    set(_kind "static")
+    set(_file "libaccesskit.a")
+    if(AX_BUILD_GPU AND AX_WEBGPU STREQUAL "wgpu-native")
+        set(_kind "shared")
+        set(_file "libaccesskit.so")
+    endif()
+    set(_lib "${_root}/lib/${_os}/${_arch}/${_kind}/${_file}")
     if(NOT EXISTS "${_lib}" OR NOT EXISTS "${_root}/include/accesskit.h")
         message(FATAL_ERROR "AccessKit: ${_root} is not an accesskit-c release (no ${_lib})")
     endif()
-    add_library(ax_accesskit STATIC IMPORTED GLOBAL)
-    set_target_properties(ax_accesskit PROPERTIES IMPORTED_LOCATION "${_lib}")
+    if(_kind STREQUAL "shared")
+        add_library(ax_accesskit SHARED IMPORTED GLOBAL)
+        # The release's library has no SONAME: link it by path; the build tree's RPATH finds it.
+        set_target_properties(ax_accesskit PROPERTIES IMPORTED_LOCATION "${_lib}"
+                                                      IMPORTED_NO_SONAME TRUE)
+    else()
+        add_library(ax_accesskit STATIC IMPORTED GLOBAL)
+        set_target_properties(ax_accesskit PROPERTIES IMPORTED_LOCATION "${_lib}")
+    endif()
     # Its header as a system header: AXION's warnings stay on its own code.
     target_include_directories(ax_accesskit SYSTEM INTERFACE "${_root}/include")
     # What the release's own CMake package links on Linux; threads and dlopen live in glibc.
     find_package(Threads REQUIRED)
     target_link_libraries(ax_accesskit INTERFACE Threads::Threads ${CMAKE_DL_LIBS} m)
-    message(STATUS "AccessKit: ${AX_ACCESSKIT_VERSION} (${_lib})")
+    message(STATUS "AccessKit: ${AX_ACCESSKIT_VERSION}, ${_kind} (${_lib})")
     set(AX_HAVE_ACCESSKIT ON PARENT_SCOPE)
 endfunction()

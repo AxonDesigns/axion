@@ -5073,8 +5073,13 @@ semantics-only change records no item and presents nothing.
   touched or built) and with an active tree (0.023 ms median); activation builds and sends the
   whole tree (12 101 nodes and runs) in 9.8 ms; the flush sends 1 changed node in under 1 µs, 100 in
   0.03 ms, 1000 in 0.37 ms. A resize that changes every frame sends everything: 5.8 ms. That is over a
-  260 Hz refresh while an assistive technology is active; coalescing geometry-only changes during
-  an interactive resize is left for M2, measured first with the full bridge.
+  260 Hz refresh while an assistive technology is active.
+- **Pending for M2 (the owner's, on review): no geometry on every frame of a resize or an
+  animation.** Animations already send only their targets; a window resize still sends every
+  changed frame each frame. M2's full bridge groups geometry-only changes and sends them once the
+  geometry settles (a resize that stops, as text's re-raster after a stable scale, decision 100) or
+  at a bounded rate meanwhile, keeping structure, names and states immediate; measured again with
+  `bench_a11y`'s resize case.
 - **Tests:** `core.semantics.*` (storage, rejections, undo), `core.a11y.*` (inactive costs nothing
   and activation builds once; one change sends one node; paint only sends nothing; a reorder sends
   the parent; removal, hiding and new subtrees; the tree rebuilt from diffs equals a full build;
@@ -5149,8 +5154,8 @@ standard library's crates too, and to record the static Rust library's risks.
   (all platforms, 68 MB, SHA-256 `c7fa84f8...3681`), fetched and verified by `ax_fetch_prebuilt`
   (`cmake/AxionAccessKit.cmake`), linked as the static `libaccesskit.a`. AXION's builds need no Rust
   toolchain. `AX_ACCESSKIT`: AUTO (on where the release has a binary and AXION a bridge, Linux
-  x86_64 in M1, off under TSan, whose instrumentation cannot see the Rust code's synchronization,
-  and with `AX_WEBGPU=wgpu-native`, another Rust static library),
+  x86_64 in M1, off under TSan, whose instrumentation cannot see the Rust code's synchronization;
+  the shared library with `AX_WEBGPU=wgpu-native`, another Rust static library),
   ON (required) or OFF; `AX_ACCESSKIT_ROOT` for offline builds. CI's GCC Release job builds with
   OFF; everything works the same without it.
 - **Interfaces.** platform's `ax_a11y_adapter` (`axion/platform/ax_a11y_adapter.h`): created per
@@ -5185,10 +5190,13 @@ standard library's crates too, and to record the static Rust library's risks.
   - two Rust static libraries linked into one binary (AccessKit, and a future one such as
     wgpu-native if it were ever shipped) each carry a copy of the standard library and their
     shared crates, whose unmangled symbols (`rust_eh_personality`, the allocator shims) can clash
-    at link time. CI's wgpu-native job showed it at once (`rust_eh_personality` defined twice), so
-    AUTO leaves AccessKit out with `AX_WEBGPU=wgpu-native` (CI-only, never shipped) and ON refuses
-    the combination. The answer, if two Rust libraries ever ship together, is one Rust staticlib
-    that re-exports both C APIs, built by us from pinned sources;
+    at link time. CI's wgpu-native job showed it at once (`rust_eh_personality` defined twice).
+    With `AX_WEBGPU=wgpu-native` the build therefore links the release's **shared** library
+    (a cdylib: it exports only accesskit-c's 444 C functions and `ACCESSKIT_TREE_ID_ROOT`, no
+    SONAME, found through the build tree's RPATH), which links beside wgpu-native's archive
+    (checked locally and in CI's wgpu-native job). The owner suggested it on review. A shipped
+    app with two Rust libraries would do the same, or link one Rust staticlib re-exporting both
+    C APIs, built by us from pinned sources;
   - its code is outside our sanitizers (TSan is off for it; ASan sees its allocations only).
 - **Costs** (Ryzen 5 3400G): m1_nodes stripped grows by 1.95 MB (17.81 to 19.76 MB; 21.1 to 44.3 MB
   unstripped, the archive's debug info); the archive is a 68 MB download, cached by CI. Building it
@@ -5199,7 +5207,12 @@ standard library's crates too, and to record the static Rust library's risks.
   title with its heading, labels and progress bar; AT-SPI's `click` on a card reaches the app,
   which grows it, and the detail paragraph appears. AccessKit registers only while
   `org.a11y.Status.IsEnabled` is true (an assistive technology running sets it).
-- **Open for M2's full bridge:** AT-SPI shows no `expanded` state for an article; window coordinates
+- **Pending for M2 (the owner's, on review): the `expanded` state on AT-SPI.** AT-SPI shows none for
+  m1_nodes' articles. The cause is AccessKit's AT-SPI adapter: `accesskit_atspi_common` 0.21.1 maps
+  no node to AT-SPI's `expandable`/`expanded` states at all (its consumer knows `is_expanded`, and the
+  Windows adapter exposes it through UI Automation's ExpandCollapse pattern), so no role would show
+  it on Linux today. M2 checks a newer AccessKit, or reports it upstream.
+- **Open for M2's full bridge:** window coordinates
   stay window-relative under Wayland (a client cannot know its position); focus follows the
   assistive technology's requests only (keyboard focus is M2).
 
