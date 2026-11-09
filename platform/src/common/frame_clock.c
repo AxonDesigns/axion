@@ -21,8 +21,14 @@ uint64_t ax_frame_clock_refresh(const ax_frame_clock *clock)
 }
 
 void ax_frame_clock_presented(ax_frame_clock *clock, uint64_t present_ns, uint64_t refresh_ns,
-                              uint64_t msc, bool msc_valid, uint64_t configure_ns)
+                              uint64_t msc, bool msc_valid, uint64_t configure_ns,
+                              uint64_t commit_id)
 {
+    /* The presenter rested between the last present and this one: the commits it made before the
+     * rest end at rest_commit, and this one comes after. */
+    const bool after_rest = clock->rest_commit != 0 && commit_id != 0 &&
+                            clock->last_commit <= clock->rest_commit &&
+                            commit_id > clock->rest_commit;
     if (refresh_ns >= AX_MIN_REFRESH_NS && refresh_ns <= AX_MAX_REFRESH_NS) {
         clock->nominal_refresh_ns = refresh_ns;
         clock->nominal_from_system = true;
@@ -38,7 +44,10 @@ void ax_frame_clock_presented(ax_frame_clock *clock, uint64_t present_ns, uint64
         }
     }
 
-    if (clock->interval_valid && present_ns > clock->last_present_ns) {
+    if (after_rest && clock->interval_valid && present_ns > clock->last_present_ns) {
+        clock->rests++;
+        clock->rest_ns += present_ns - clock->last_present_ns;
+    } else if (clock->interval_valid && present_ns > clock->last_present_ns) {
         uint64_t dt = present_ns - clock->last_present_ns;
         uint64_t vblanks;
 
@@ -85,6 +94,19 @@ void ax_frame_clock_presented(ax_frame_clock *clock, uint64_t present_ns, uint64
     clock->interval_valid = true;
     clock->last_msc = msc;
     clock->have_msc = msc_valid;
+    if (commit_id != 0) {
+        clock->last_commit = commit_id;
+    }
+    if (after_rest) {
+        clock->rest_commit = 0;
+    }
+}
+
+void ax_frame_clock_rest(ax_frame_clock *clock, uint64_t last_commit)
+{
+    if (last_commit > clock->rest_commit) {
+        clock->rest_commit = last_commit;
+    }
 }
 
 void ax_frame_clock_discarded(ax_frame_clock *clock)
@@ -135,6 +157,8 @@ void ax_frame_clock_reset_stats(ax_frame_clock *clock)
     clock->latency_sum_ns = 0;
     clock->latency_count = 0;
     clock->latency_max_ns = 0;
+    clock->rests = 0;
+    clock->rest_ns = 0;
     /* A gap across an idle period is neither a miss nor a refresh sample; predictions keep
      * their anchor. */
     clock->interval_valid = false;

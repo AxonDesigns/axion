@@ -126,6 +126,14 @@ ax_result ax_surface_prepare_commit(ax_surface surface, const ax_frame_target *f
     return r;
 }
 
+void ax_surface_rest(ax_surface surface)
+{
+    ax_window_impl *w = presenter_window(surface, "ax_surface_rest");
+    if (w != NULL) {
+        ax_frame_clock_rest(&w->clock, w->presenter_commit_id);
+    }
+}
+
 void ax_surface_end_frame(ax_surface surface)
 {
     ax_window_impl *w = ax__window_from_handle(surface.h);
@@ -409,6 +417,8 @@ ax_result ax_surface_get_present_stats(ax_surface surface, ax_present_stats *out
     out->mean_latency_ns = c->latency_count != 0 ? c->latency_sum_ns / c->latency_count : 0;
     out->max_latency_ns = c->latency_max_ns;
     out->lost_frames = w->presenter_lost_frames;
+    out->rests = c->rests;
+    out->rest_ns = c->rest_ns;
     if (reset) {
         ax_frame_clock_reset_stats(&w->clock);
         w->presenter_lost_frames = 0;

@@ -53,6 +53,7 @@ typedef struct plat_surface {
     /* counters, read from any thread */
     uint64_t window_handle; /* set by the app thread before the surface is added */
     ax_atomic_u64 frames, shown, presented, missed, scene_late, forced, hidden, refresh;
+    ax_atomic_u64 rests, rest_ns;
     ax_atomic_u32 shown_w, shown_h; /* float bits */
 } plat_surface;
 
@@ -290,6 +291,8 @@ static ax_result pl_frame(void *self, uint32_t i)
     if (ax_surface_get_present_stats(ps->surface, &st, false) == AX_OK) {
         ax_atomic_store_u64(&ps->presented, st.presented, AX_MO_RELAXED);
         ax_atomic_store_u64(&ps->missed, st.missed_vblanks, AX_MO_RELAXED);
+        ax_atomic_store_u64(&ps->rests, st.rests, AX_MO_RELAXED);
+        ax_atomic_store_u64(&ps->rest_ns, st.rest_ns, AX_MO_RELAXED);
         ax_atomic_store_u64(&ps->refresh, st.refresh_interval_ns, AX_MO_RELAXED);
     }
     report_presented(p, ps);
@@ -489,6 +492,8 @@ ax_result ax_rt_create_for_app(const ax_runtime_desc *desc, const ax_rt_platform
         ax_atomic_init_u64(&ps->shown, 0);
         ax_atomic_init_u64(&ps->presented, 0);
         ax_atomic_init_u64(&ps->missed, 0);
+        ax_atomic_init_u64(&ps->rests, 0);
+        ax_atomic_init_u64(&ps->rest_ns, 0);
         ax_atomic_init_u64(&ps->scene_late, 0);
         ax_atomic_init_u64(&ps->forced, 0);
         ax_atomic_init_u64(&ps->hidden, 0);
@@ -619,6 +624,8 @@ ax_result ax_rt_get_window_counters(ax_runtime rt, ax_window window, ax_rt_windo
     out->snapshots_shown = ax_atomic_load_u64(&ps->shown, AX_MO_RELAXED);
     out->presented = ax_atomic_load_u64(&ps->presented, AX_MO_RELAXED);
     out->missed_vblanks = ax_atomic_load_u64(&ps->missed, AX_MO_RELAXED);
+    out->rests = ax_atomic_load_u64(&ps->rests, AX_MO_RELAXED);
+    out->rest_ns = ax_atomic_load_u64(&ps->rest_ns, AX_MO_RELAXED);
     out->scene_late = ax_atomic_load_u64(&ps->scene_late, AX_MO_RELAXED);
     out->forced_acks = ax_atomic_load_u64(&ps->forced, AX_MO_RELAXED);
     out->hidden_acks = ax_atomic_load_u64(&ps->hidden, AX_MO_RELAXED);

@@ -353,6 +353,7 @@ ax_result ax_gpu_surface_begin_frame(ax_gpu_surface *s, ax_gpu_frame *frame)
     }
     if (frame->only_if_required && !frame->target.acks_configure &&
         !frame->target.commit_requested) {
+        ax_surface_rest(s->surface); /* nothing to draw: frames stop (decision 95) */
         return AX_OK;
     }
     /* A configure is acknowledged only with content recorded for its logical size, so content

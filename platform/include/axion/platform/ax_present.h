@@ -118,6 +118,14 @@ typedef enum ax_wake_reason {
 AX_API ax_result ax_surface_wait_frame(ax_surface surface, uint64_t timeout_ns,
                                        ax_wake_reason *out_reason);
 
+/*
+ * The presenter rests: it began a frame and drew nothing, because nothing changed and nothing
+ * asked for a commit (decision 95), so it stops presenting a frame per refresh. The gap from the
+ * last commit it made to the next one shown is then rest time (ax_present_stats.rest_ns), not
+ * missed refreshes. Calling it while it keeps presenting would hide misses. thread: presenter
+ */
+AX_API void ax_surface_rest(ax_surface surface);
+
 /* Asks the presenter for a frame although nothing on the surface asked for one: the surface's
  * content is about to change while it rests without frames (a transaction was committed; decision
  * 95). Its waits then return AX_WAKE_COMMIT_REQUESTED, as for commit-time state. A stale surface
@@ -155,13 +163,16 @@ typedef struct ax_present_stats {
     uint32_t struct_size;         /* set by the caller: sizeof(ax_present_stats) */
     uint64_t presented;           /* frames reported on screen */
     uint64_t discarded;           /* frames the system dropped without showing */
-    uint64_t missed_vblanks;      /* refresh cycles skipped between consecutive presented frames */
+    uint64_t missed_vblanks;      /* refresh cycles skipped between consecutive presented frames,
+                                   * except across a rest */
     uint64_t refresh_interval_ns; /* measured */
     uint64_t mean_interval_ns;    /* mean time between consecutive presented frames */
     uint64_t latency_samples;     /* presented frames that acknowledged a configure */
     uint64_t mean_latency_ns;     /* configure received -> that size on screen */
     uint64_t max_latency_ns;
     uint64_t lost_frames; /* commits reported failed, plus frame callbacks that never came */
+    uint64_t rests;       /* gaps between presented frames that spanned a rest (ax_surface_rest) */
+    uint64_t rest_ns;     /* their total length, left out of missed_vblanks and the intervals */
 } ax_present_stats;
 
 /* Statistics since the last reset. thread: presenter */

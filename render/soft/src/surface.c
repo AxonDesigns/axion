@@ -147,6 +147,7 @@ static ax_result render_frame(void *self, ax_surface surface, const ax_render_ir
         return res;
     }
     if ((info.flags & AX_FRAME_ONLY_IF_REQUIRED) != 0 && !t.acks_configure && !t.commit_requested) {
+        ax_surface_rest(surface); /* nothing to draw: frames stop (decision 95) */
         return AX_OK;
     }
     /* A configure is acknowledged only with content recorded for its logical size, so content

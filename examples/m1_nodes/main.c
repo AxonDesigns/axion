@@ -28,7 +28,9 @@
  *
  * --block-ms blocks the app thread that long every --block-every seconds (default 2).
  * --stats prints, once a second, what the window presented and how long the last change took from
- * commit to screen (ax_txn_on_presented).
+ * commit to screen (ax_txn_on_presented). "missed" counts refreshes skipped while the window
+ * presents (animating or resizing); "at rest" is the time it presented nothing because nothing
+ * changed (decision 95), which is not missed.
  */
 #include <math.h>
 #include <stdio.h>
@@ -203,7 +205,7 @@ static void print_stats(shared *s, ax_runtime rt, ax_rt_window_counters *prev, l
     printf(
         "stats: %s | presented %llu | missed %llu | frames %llu | snapshots shown %llu | refresh "
         "%.3f ms | scene late %llu | forced %llu | change -> screen %.2f ms (max %.2f) "
-        "| app blocked %.0f ms\n",
+        "| app blocked %.0f ms | at rest %.0f ms (%llu rests)\n",
         ax_rt_renderer_vtbl(rt) == ax_render_soft_vtbl() ? "soft" : "gpu",
         (unsigned long long)(c.presented - prev->presented),
         (unsigned long long)(c.missed_vblanks - prev->missed_vblanks),
@@ -211,7 +213,8 @@ static void print_stats(shared *s, ax_runtime rt, ax_rt_window_counters *prev, l
         (unsigned long long)(c.snapshots_shown - prev->snapshots_shown), (double)c.refresh_ns / 1e6,
         (unsigned long long)(c.scene_late - prev->scene_late),
         (unsigned long long)(c.forced_acks - prev->forced_acks), (double)l->last_ns / 1e6,
-        (double)l->max_ns / 1e6, blocked_ms);
+        (double)l->max_ns / 1e6, blocked_ms, (double)(c.rest_ns - prev->rest_ns) / 1e6,
+        (unsigned long long)(c.rests - prev->rests));
     fflush(stdout);
     *prev = c;
     l->max_ns = 0;

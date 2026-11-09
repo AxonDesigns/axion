@@ -43,7 +43,7 @@ static void frame_done(void *data, struct wl_callback *cb, uint32_t time_ms)
         /* No presentation-time: the callback is the best estimate of when the last frame was
          * shown (it fires when the compositor is ready for the next one). */
         uint64_t now = ax_time_monotonic_ns();
-        ax_frame_clock_presented(&w->clock, now, 0, 0, false, 0);
+        ax_frame_clock_presented(&w->clock, now, 0, 0, false, 0, ww->frame_callback_commit);
         ax__surface_commit_presented(w, ww->frame_callback_commit, now);
     }
 }
@@ -79,7 +79,8 @@ static void feedback_presented(void *data, struct wp_presentation_feedback *fb, 
     (void)fb;
     (void)flags;
     /* A zero counter means the output has none (the protocol's convention). */
-    ax_frame_clock_presented(&w->clock, t, refresh, msc, msc != 0, rec->configure_ns);
+    ax_frame_clock_presented(&w->clock, t, refresh, msc, msc != 0, rec->configure_ns,
+                             rec->commit_id);
     ax__surface_commit_presented(w, rec->commit_id, t);
     release_record(rec);
 }
