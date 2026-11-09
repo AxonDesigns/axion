@@ -4857,4 +4857,4 @@ while animating.
   commit is reported late, rest time and no misses, misses counted again once animating, unknown
   commits measured); the Wayland and GPU presentation tests unchanged.
 
-**Status.** Implementation, pending the owner's approval.
+**Status.** Approved by the owner.
