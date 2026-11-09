@@ -73,7 +73,10 @@ function(ax_add_text_deps)
     # ---- FreeType ------------------------------------------------------------------------------
     ax_fetch_prebuilt(_ft "freetype-${AX_FREETYPE_VERSION}"
         "https://download.savannah.gnu.org/releases/freetype/freetype-${AX_FREETYPE_VERSION}.tar.xz"
-        "${AX_FREETYPE_SHA256}")
+        "${AX_FREETYPE_SHA256}"
+        # Mirrors, for when Savannah answers with an HTTP error (seen twice in CI, 2026-11-08/09).
+        "https://download-mirror.savannah.gnu.org/releases/freetype/freetype-${AX_FREETYPE_VERSION}.tar.xz"
+        "https://downloads.sourceforge.net/project/freetype/freetype2/${AX_FREETYPE_VERSION}/freetype-${AX_FREETYPE_VERSION}.tar.xz")
     add_library(ax_freetype STATIC
         "${_ft}/src/base/ftsystem.c"
         "${_ft}/src/base/ftinit.c"
