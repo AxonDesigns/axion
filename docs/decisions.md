@@ -119,8 +119,8 @@ new entry that points back to the old one.
 | 103 | The handshake bound with text; m1_nodes builds again     | Approved       |
 | 104 | Animations keep running while a window is resized        | Approved       |
 | 105 | A rest is not a missed refresh (issue #15)               | Approved       |
-| 106 | Issue #4: the blending options, measured; a recommendation | Implementation |
-| 107 | Text leaves round as Yoga's text nodes                   | Implementation |
+| 106 | Issue #4: the blending options, measured; a recommendation | Approved       |
+| 107 | Text leaves round as Yoga's text nodes                   | Approved       |
 
 ---
 
@@ -4975,7 +4975,7 @@ monitors, and a recommendation, without changing the default.
   layer draws through the sRGB view and matches ax_render_soft; without the view it is counted);
   `render_ir` (the tables at the ends and monotonic, as before).
 
-**Status.** Implementation, pending the owner's approval.
+**Status.** Approved by the owner.
 
 ## 107. Text leaves round as Yoga's text nodes
 
@@ -4997,4 +4997,4 @@ the frame, wrapped.
   1.325 and 2; a box without a measure function still rounds to nearest); it fails before the
   change.
 
-**Status.** Implementation, pending the owner's approval.
+**Status.** Approved by the owner.
