@@ -247,6 +247,53 @@ AX_TEST(a_leaf_with_a_measure_function_wraps_to_its_width_and_is_cached)
     AX_CHECK_EQ_U(fixture_deinit(&f), 0);
 }
 
+static void measure_fraction(void *user, ax_node n, float width, ax_layout_mode wm, float height,
+                             ax_layout_mode hm, float *out_w, float *out_h)
+{
+    (void)user;
+    (void)n;
+    (void)width;
+    (void)wm;
+    (void)height;
+    (void)hm;
+    *out_w = 33.3f; /* a line of text, a fraction of a pixel past 33 */
+    *out_h = 12.6f;
+}
+
+/* Yoga's text rounding: a leaf with a measure function never gets a frame narrower than what it
+ * measured (a paragraph laid out again in a narrower box wraps its last word), at any scale; its
+ * top-left edge rounds down. A box without one rounds to nearest. */
+AX_TEST(a_measured_leaf_is_never_rounded_narrower_than_it_measured)
+{
+    static const float scales[3] = {1.0f, 1.325f, 2.0f};
+    int k;
+    for (k = 0; k < 3; ++k) {
+        fixture f;
+        ax_node root, leaf, box;
+        ax_rect r;
+        fixture_init(&f);
+        root = node(&f, (ax_node)AX_HANDLE_NULL_INIT);
+        pts(&f, root, AX_PROP_WIDTH, 200);
+        pts(&f, root, AX_PROP_HEIGHT, 100);
+        set_u32(&f, root, AX_PROP_ALIGN_ITEMS, AX_ALIGN_FLEX_START);
+        leaf = node(&f, root);
+        set_u32(&f, leaf, AX_PROP_POSITION, AX_POSITION_ABSOLUTE);
+        pts(&f, leaf, AX_PROP_LEFT, 16.4f);
+        pts(&f, leaf, AX_PROP_TOP, 10.4f);
+        AX_CHECK_RESULT(ax_layout_set_measure(&f.scene, leaf, measure_fraction, NULL), AX_OK);
+        box = node(&f, root);
+        pts(&f, box, AX_PROP_WIDTH, 33.3f);
+        ax_layout_tree(&f.scene, root, NAN, NAN, scales[k]);
+        r = frame_of(&f, leaf);
+        AX_CHECK(r.w >= 33.3f);
+        AX_CHECK(r.h >= 12.6f);
+        AX_CHECK_NEAR_F(r.x * scales[k], floorf(16.4f * scales[k]), 1e-3);
+        AX_CHECK_NEAR_F(r.w * scales[k], roundf(r.w * scales[k]), 1e-3);
+        AX_CHECK_NEAR_F(frame_of(&f, box).w * scales[k], roundf(33.3f * scales[k]), 1e-3);
+        AX_CHECK_EQ_U(fixture_deinit(&f), 0);
+    }
+}
+
 static bool one_viewport(void *user, ax_node root, float *w, float *h, float *scale)
 {
     const ax_node *window = (const ax_node *)user;
