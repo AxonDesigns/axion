@@ -118,6 +118,7 @@ new entry that points back to the old one.
 | 102 | Layout animations end on the pixel grid                  | Approved       |
 | 103 | The handshake bound with text; m1_nodes builds again     | Approved       |
 | 104 | Animations keep running while a window is resized        | Approved       |
+| 105 | A rest is not a missed refresh (issue #15)               | Implementation |
 
 ---
 
@@ -4337,6 +4338,8 @@ the `scale` and `crossfade` layout presets, gestures and the driver graph.
 > Resolves decision 78's pending item ("frames at rest", 2026-11-07).
 > Amended by decision 100: the generic wake exists (`ax_world_request_frame`); the commit hook is
 > one caller of the world's wake hook.
+> Amended by decision 105: the presenter reports its rests (`ax_surface_rest`), which are not
+> counted as missed refreshes.
 
 **Context.** Decision 78 left the render thread presenting every refresh while a window lived. The
 owner asked, before M2, that it present only while the scene has new content or something
@@ -4732,6 +4735,9 @@ node at rest, so the interface does not jump when it stops.
 
 ## 103. The size handshake's bound with real layout and text; m1_nodes builds again
 
+> Amended by decision 105: the missed refreshes of this table's quiet rows were rests counted as
+> misses; issue #15 is answered there, with the table measured again.
+
 **Context.** M0's commitment (decision 57, confirmed by decision 59): re-measure the size
 handshake's bound (half a refresh, within 2-8 ms) with real layout and text. The owner allowed the
 measurement on their desktop.
@@ -4801,3 +4807,54 @@ Under a continuous resize every cycle has a new viewport, so every animation fro
   size every cycle animates. Both fail with the previous behavior.
 
 **Status.** Approved by the owner.
+
+## 105. A rest is not a missed refresh (issue #15)
+
+> Amends decision 95 (the presenter reports its rests) and answers decision 103's pending item.
+
+**Context.** Issue #15, M1's exit criterion: decision 103 measured many missed refreshes at 260 Hz
+in the seconds the cards of `m1_nodes` animate, on `main` too. The owner asked to measure the
+animating seconds and the resting ones apart, to check whether the counter counts refreshes at rest
+as missed since decision 95, and to bisect between 3b9c43c and the merge of #12 if losses remained
+while animating.
+
+**Decision.**
+- **The counter counted rests as misses.** The frame clock counts, between two presented frames,
+  the refreshes in between minus one, assuming a frame each refresh (its own contract said "reset
+  the stats when idling"). Since decision 95 a window at rest presents nothing and nothing told the
+  clock, so the gap across each rest was counted as missed: about 200 per 0.8 s rest of
+  `m1_nodes`' 1.2 s cycle at 260 Hz, the figures of decision 103's quiet rows.
+- **The presenter reports its rests:** `ax_surface_rest` (`ax_present.h`), called where the GPU
+  surface (`gpu/src/surface.c`) and the soft renderer skip a frame because nothing changed and
+  nothing asked for a commit. The frame clock ties the rest to the last commit made before it
+  (`ax_frame_clock_rest`), so a presentation report for that commit arriving after the skip does
+  not undo it; the gap from it to the next commit shown is **rest time**
+  (`ax_present_stats.rests` and `rest_ns`, through `ax_rt_window_counters`), neither misses nor a
+  refresh sample. Presents without a known commit (0) are measured as before. A rest is reported
+  only at rest (no animation, `AX_FRAME_ONLY_IF_REQUIRED`), so a frame the scene is late for while
+  animating still counts as missed.
+- **Measured again** (`tools/diag/measure_m1_handshake.py`, which now separates animating time,
+  each second's time not at rest, and gives the misses per animating second; clang-release, Dawn
+  on the owner's NVIDIA, KWin; 7 s per run after a 2 s warm-up, and 29 s quiet on DP-2):
+
+  | Output | State | Presented/s | Missed/s | Animating s/s | Missed per animating s | Scene late/s | Forced/s |
+  | --- | --- | --- | --- | --- | --- | --- | --- |
+  | HDMI-A-1 (72 Hz) | quiet | 38.9 | 0 | 0.57 | 0 | 0 | 0 |
+  | HDMI-A-1 (72 Hz) | resize | 71.7 | 0 | 0.99 | 0 | 71.7 | 0 |
+  | DP-2 (260 Hz) | quiet | 134.4 | 0.29 | 0.56 | 0.51 | 0 | 0 |
+  | DP-2 (260 Hz) | quiet, 29 s | 139.6 | **0** | 0.54 | **0** | 0 | 0 |
+  | DP-2 (260 Hz) | resize | 187.7 | 70.9 | 0.99 | 71.6 | 122.7 | 0 |
+
+  The 7 s quiet run on DP-2 had 2 misses, in one second; the 29 s run none, and its frames match
+  its animating time (139.6 presented a second against 0.54 s x 260 Hz = 140.4). Rest is
+  attributed to the second in which it ends, so a single second can show more than 1000 ms; the
+  averages are exact up to the last rest of a run, which has not ended.
+- **No losses while animating: no bisect.** The exit criterion holds at 72 and 260 Hz.
+- **Resizing at 260 Hz still misses refreshes** (71 a second, 126 before decision 104): that is
+  issue #2 (the swapchain recreated for every new size, decision 49), whose option (b) is still to
+  be implemented with M1's criterion (at most 1 missed refresh a second); not this issue's.
+- **Tests:** `platform.frame_clock.a_rest_is_not_counted_as_missed_vblanks` (a rest whose last
+  commit is reported late, rest time and no misses, misses counted again once animating, unknown
+  commits measured); the Wayland and GPU presentation tests unchanged.
+
+**Status.** Implementation, pending the owner's approval.

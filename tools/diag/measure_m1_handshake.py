@@ -102,6 +102,7 @@ def main():
     ap.add_argument("--seconds", type=int, default=8)
     ap.add_argument("--outputs", default="HDMI-A-1,DP-2")
     ap.add_argument("--per-second", action="store_true")
+    ap.add_argument("--states", default="quiet,resize")
     args = ap.parse_args()
     print("| Output | State | Refresh | Presented/s | Missed/s | Animating s/s | "
           "Missed per animating s | Scene late/s | Forced/s | Change -> screen (mean, max) |")
@@ -109,7 +110,7 @@ def main():
     n = 0
     with tempfile.TemporaryDirectory() as tmp:
         for output in args.outputs.split(","):
-            for resize in (False, True):
+            for resize in [st == "resize" for st in args.states.split(",")]:
                 n += 1
                 r = run_case(args.binary, output, resize, args.seconds, n, tmp, args.per_second)
                 if r is None:
