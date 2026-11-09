@@ -12,8 +12,8 @@
  *
  * The main thread pumps events and the app thread publishes hit regions, as for shm.c.
  *
- * AX_RW_LINEAR_BLEND=1 sets the renderer's unsupported diagnostic option that blends in linear
- * light, to compare with the default sRGB-space blending (decision 58).
+ * AX_RW_LINEAR_BLEND=1 makes the renderer blend in linear light (AX_RENDER_BLEND_LINEAR, issue #4's
+ * option 2), to compare with the default sRGB-space blending (decision 58).
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -176,9 +176,9 @@ int m0_ir_draw_thread(void *arg)
     wd.adapter = (ax_gpu_adapter_kind)s->opt.adapter;
     wd.pacing = s->opt.pacing;
     wd.present_mode = s->opt.present_mode;
-    /* Diagnostic only (unsupported, decision 58): compare with blending in linear light. */
+    /* For comparisons (issue #4): blend in linear light. */
     if (getenv("AX_RW_LINEAR_BLEND") != NULL && strcmp(getenv("AX_RW_LINEAR_BLEND"), "1") == 0) {
-        wd.diagnostic_flags = AX_RENDER_WGPU_DIAG_LINEAR_BLEND;
+        wd.blend = AX_RENDER_BLEND_LINEAR;
     }
     memset(&rd, 0, sizeof rd);
     rd.struct_size = sizeof rd;
