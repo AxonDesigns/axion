@@ -100,7 +100,7 @@ static bool ensure_textures(ax_render_wgpu *r)
     a->view = a->texture != NULL ? wgpuTextureCreateView(a->texture, &vd) : NULL;
 
     td.size.width = 256;
-    td.size.height = AX_IR_TEXT_LUT_BUCKETS;
+    td.size.height = AX_IR_LUT_TABLES * AX_IR_TEXT_LUT_BUCKETS;
     td.size.depthOrArrayLayers = 1;
     a->lut = wgpuDeviceCreateTexture(device, &td);
     vd.dimension = WGPUTextureViewDimension_2D;
@@ -120,16 +120,20 @@ static bool ensure_textures(ax_render_wgpu *r)
         return false;
     }
     {
-        /* The coverage correction, the same table as ax_render_soft's. */
-        uint8_t lut[AX_IR_TEXT_LUT_BUCKETS][256];
-        const ax_ir_text_lut_params lp = ax_ir_text_lut_default();
+        /* The coverage corrections, the same tables as ax_render_soft's: row
+         * table * AX_IR_TEXT_LUT_BUCKETS + bucket (RW_LUT_ROW). */
+        uint8_t lut[AX_IR_LUT_TABLES][AX_IR_TEXT_LUT_BUCKETS][256];
         WGPUTexelCopyTextureInfo dst = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
         WGPUTexelCopyBufferLayout layout = WGPU_TEXEL_COPY_BUFFER_LAYOUT_INIT;
-        WGPUExtent3D extent = {256, AX_IR_TEXT_LUT_BUCKETS, 1};
-        ax_ir_text_lut_build(&lp, lut);
+        WGPUExtent3D extent = {256, AX_IR_LUT_TABLES * AX_IR_TEXT_LUT_BUCKETS, 1};
+        uint32_t t;
+        for (t = 0; t < AX_IR_LUT_TABLES; ++t) {
+            const ax_ir_text_lut_params lp = ax_ir_lut_default((ax_ir_lut_table)t);
+            ax_ir_lut_build((ax_ir_lut_table)t, &lp, lut[t]);
+        }
         dst.texture = a->lut;
         layout.bytesPerRow = 256;
-        layout.rowsPerImage = AX_IR_TEXT_LUT_BUCKETS;
+        layout.rowsPerImage = AX_IR_LUT_TABLES * AX_IR_TEXT_LUT_BUCKETS;
         wgpuQueueWriteTexture(ax_gpu_queue(r->gpu), &dst, lut, sizeof lut, &layout, &extent);
     }
     return true;

@@ -30,6 +30,8 @@ const FLAG_ROUNDED: u32 = 1u;
 const FLAG_FOOTPRINT_FROM_DERIVATIVES: u32 = 2u;
 const FLAG_GLYPH: u32 = 4u; // radii = the glyph's texels x0, y0, x1, y1; page and LUT row in the
                             // flags' bits 8-15 and 16-23
+const FLAG_SHAPE_LUT: u32 = 8u; // a shape's coverage corrected through the LUT row in bits 16-23
+                                // (AX_RENDER_BLEND_SRGB_CORRECTED, issue #4)
 const MAX_CLIPS: u32 = 5u; // RW_MAX_CLIP_CHAIN complex clips and one device rect
 
 struct Clip {
@@ -40,7 +42,8 @@ struct Clip {
 };
 
 @group(0) @binding(0) var<storage, read> clips: array<Clip>;
-// Glyphs (decision 101): the atlas pages, the coverage correction (256 x 8) and the sampler.
+// Glyphs (decision 101): the atlas pages, the coverage corrections (256 x 24: three tables of 8
+// luminances, ax_ir_lut_table) and the sampler.
 @group(0) @binding(1) var atlas: texture_2d_array<f32>;
 @group(0) @binding(2) var text_lut: texture_2d<f32>;
 @group(0) @binding(3) var atlas_sampler: sampler;
@@ -194,6 +197,11 @@ fn fs(in: VOut) -> @location(0) vec4f {
         cov = textureLoad(text_lut, vec2u(index, (in.flags >> 16u) & 0xFFu), 0).r;
     } else {
         cov = shape_coverage(in.local, in.rect, in.radii, (in.flags & FLAG_ROUNDED) != 0u, inv);
+        if ((in.flags & FLAG_SHAPE_LUT) != 0u) {
+            // As glyphs: quantized to the table's 256 entries, before the clips (ax_render_soft).
+            let index = u32(clamp(cov * 255.0 + 0.5, 0.0, 255.0));
+            cov = textureLoad(text_lut, vec2u(index, (in.flags >> 16u) & 0xFFu), 0).r;
+        }
     }
 
     // The clips, innermost first, each in its own space (the pixel centre is in.pos.xy).

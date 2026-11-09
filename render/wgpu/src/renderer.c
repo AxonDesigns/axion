@@ -41,7 +41,11 @@ ax_result ax_render_wgpu_create(const ax_allocator *allocator, const ax_render_w
     if (desc != NULL) {
         r->pacing = desc->pacing;
         r->present_mode = desc->present_mode;
-        r->linear_blend = (desc->diagnostic_flags & AX_RENDER_WGPU_DIAG_LINEAR_BLEND) != 0;
+        r->blend = desc->blend;
+        if ((desc->diagnostic_flags & AX_RENDER_WGPU_DIAG_LINEAR_BLEND) != 0) {
+            r->blend = AX_RENDER_BLEND_LINEAR;
+        }
+        r->linear_blend = r->blend == AX_RENDER_BLEND_LINEAR;
     }
     if (desc != NULL && desc->gpu != NULL) {
         r->gpu = desc->gpu;
@@ -313,7 +317,15 @@ typedef struct rw_layer_state {
     bool has_box;
     float box[4];  /* device pixels: x0, y0, x1, y1 */
     uint32_t head; /* what the layer's items name: the box's record, else the chain */
+    bool linear;   /* its content blends in linear light (decision 58, issue #4) */
 } rw_layer_state;
+
+/* Instances drawn into one view (issue #4's per-layer option): `alt` runs draw into the target's
+ * sRGB view, where the blend happens in linear light. */
+typedef struct rw_run {
+    uint32_t first, count;
+    bool alt;
+} rw_run;
 
 /* Applies a layer's clip to its state. False when the clip hides everything. */
 static bool apply_clip(rw_layer_state *s, const ax_ir_clip *clip, rw_clip *records,
@@ -429,7 +441,7 @@ static uint32_t encode_glyphs(ax_render_wgpu *r, const ax_render_ir *ir,
         return 0;
     }
     enc = ax_color_scale(run.color, s->opacity);
-    if (!r->linear_blend) {
+    if (!s->linear) {
         enc = ax_color_to_srgb_premultiplied(enc);
     }
     enc.a = clampf(enc.a, 0.0f, 1.0f);
@@ -439,7 +451,8 @@ static uint32_t encode_glyphs(ax_render_wgpu *r, const ax_render_ir *ir,
     if (enc.a <= 0.0f) {
         return 0;
     }
-    bucket = ax_ir_text_lut_bucket(run.color);
+    bucket = RW_LUT_ROW(s->linear ? AX_IR_LUT_TEXT_LINEAR : AX_IR_LUT_TEXT_SRGB,
+                        ax_ir_text_lut_bucket(run.color));
     inv_scale = 1.0f / run.raster_scale;
     for (k = 0; k < run.glyph_count; ++k) {
         ax_ir_glyph gl;
@@ -479,10 +492,16 @@ static uint32_t encode_glyphs(ax_render_wgpu *r, const ax_render_ir *ir,
     return n;
 }
 
+/* `alt_ok`: linear layers can draw into the target's sRGB view; `lut_ok`: the correction tables
+ * exist (shapes are drawn uncorrected without them). */
 static ax_result encode(ax_render_wgpu *r, const ax_render_ir *ir, uint32_t width, uint32_t height,
-                        float scale, rw_instance **out, uint32_t *out_count, rw_clip **out_clips,
-                        uint32_t *out_clip_count, ax_render_counts *counts)
+                        float scale, bool alt_ok, bool lut_ok, rw_instance **out,
+                        uint32_t *out_count, rw_clip **out_clips, uint32_t *out_clip_count,
+                        rw_run **out_runs, uint32_t *out_run_count, ax_render_counts *counts)
 {
+    const bool correct_shapes = lut_ok && r->blend == AX_RENDER_BLEND_SRGB_CORRECTED;
+    rw_run *runs;
+    uint32_t run_count = 0;
     const ax_affine2 to_device = ax_affine2_scale(scale, scale);
     const ax_affine2 to_clip =
         ax_affine2_make(2.0f / (float)width, 0.0f, 0.0f, -2.0f / (float)height, -1.0f, 1.0f);
@@ -501,7 +520,8 @@ static ax_result encode(ax_render_wgpu *r, const ax_render_ir *ir, uint32_t widt
     /* At most two records per layer (its clip and the box), and one so the buffer is never
      * empty. */
     clips = AX_ARENA_NEW_ARRAY(&r->scratch, rw_clip, 2u * ir->layer_count + 1u);
-    if (ls == NULL || inst == NULL || clips == NULL) {
+    runs = AX_ARENA_NEW_ARRAY(&r->scratch, rw_run, ir->layer_count + 1u);
+    if (ls == NULL || inst == NULL || clips == NULL || runs == NULL) {
         return ax_set_error(AX_ERR_OUT_OF_MEMORY, "ax_render_wgpu: out of memory");
     }
 
@@ -546,6 +566,29 @@ static ax_result encode(ax_render_wgpu *r, const ax_render_ir *ir, uint32_t widt
         }
         if (l->opacity < 1.0f && l->item_count + (l->subtree_end - i - 1u) > 1u) {
             counts->approximated++; /* group opacity needs an offscreen layer (render graph) */
+        }
+        s->linear = r->linear_blend || (parent != NULL && parent->linear);
+        if ((l->flags & AX_IR_LAYER_LINEAR_BLEND) != 0) {
+            if (r->linear_blend || alt_ok) {
+                s->linear = true;
+                counts->linear_layers++;
+            } else if (!s->linear) {
+                counts->linear_layers_unsupported++; /* no sRGB view: blended in sRGB space */
+            }
+        }
+        {
+            /* A layer drawn into the other view starts a run. */
+            const bool alt = s->linear && !r->linear_blend;
+            if (run_count == 0 || runs[run_count - 1u].alt != alt) {
+                if (run_count != 0 && runs[run_count - 1u].first == n) {
+                    runs[run_count - 1u].alt = alt; /* still empty: reuse it */
+                } else {
+                    runs[run_count].first = n;
+                    runs[run_count].count = 0;
+                    runs[run_count].alt = alt;
+                    run_count++;
+                }
+            }
         }
         s->clip = ax_affine2_mul(to_clip, s->world);
         s->invertible =
@@ -593,8 +636,12 @@ static ax_result encode(ax_render_wgpu *r, const ax_render_ir *ir, uint32_t widt
                 continue;
             }
             enc = ax_color_scale(color, s->opacity);
-            if (!r->linear_blend) {
+            if (!s->linear) {
                 enc = ax_color_to_srgb_premultiplied(enc);
+            }
+            if (correct_shapes && !s->linear) {
+                flags |= RW_FLAG_SHAPE_LUT |
+                         (RW_LUT_ROW(AX_IR_LUT_SHAPE_SRGB, ax_ir_text_lut_bucket(color)) << 16);
             }
             enc.a = clampf(enc.a, 0.0f, 1.0f);
             enc.r = clampf(enc.r, 0.0f, enc.a);
@@ -637,6 +684,11 @@ static ax_result encode(ax_render_wgpu *r, const ax_render_ir *ir, uint32_t widt
         clip_count = 1;
     }
     counts->instances = n;
+    for (i = 0; i < run_count; ++i) {
+        runs[i].count = (i + 1u < run_count ? runs[i + 1u].first : n) - runs[i].first;
+    }
+    *out_runs = runs;
+    *out_run_count = run_count;
     *out = inst;
     *out_count = n;
     *out_clips = clips;
@@ -647,39 +699,77 @@ static ax_result encode(ax_render_wgpu *r, const ax_render_ir *ir, uint32_t widt
 /* ---- drawing ----------------------------------------------------------------------------------
  */
 
+/* The bind group for a pipeline's layout: clips, atlas, LUT, sampler. */
+static WGPUBindGroup make_group(ax_render_wgpu *r, WGPURenderPipeline pipeline,
+                                const ax_gpu_upload_slice *clip_slice)
+{
+    WGPUBindGroupLayout bgl = wgpuRenderPipelineGetBindGroupLayout(pipeline, 0);
+    WGPUBindGroupEntry entries[4] = {WGPU_BIND_GROUP_ENTRY_INIT, WGPU_BIND_GROUP_ENTRY_INIT,
+                                     WGPU_BIND_GROUP_ENTRY_INIT, WGPU_BIND_GROUP_ENTRY_INIT};
+    WGPUBindGroupDescriptor bgd = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+    WGPUBindGroup group;
+    entries[0].binding = 0;
+    entries[0].buffer = clip_slice->buffer;
+    entries[0].offset = clip_slice->offset;
+    entries[0].size = clip_slice->size;
+    entries[1].binding = 1;
+    entries[1].textureView = r->atlas.view;
+    entries[2].binding = 2;
+    entries[2].textureView = r->atlas.lut_view;
+    entries[3].binding = 3;
+    entries[3].sampler = r->atlas.sampler;
+    bgd.layout = bgl;
+    bgd.entryCount = 4;
+    bgd.entries = entries;
+    group = wgpuDeviceCreateBindGroup(ax_gpu_device(r->gpu), &bgd);
+    wgpuBindGroupLayoutRelease(bgl);
+    return group;
+}
+
 ax_result ax_render_wgpu_draw_ir(ax_render_wgpu *r, const ax_render_wgpu_draw *draw,
                                  const ax_render_ir *ir, ax_frame_status *out_status,
                                  ax_render_counts *out_counts)
 {
     WGPUDevice device = ax_gpu_device(r->gpu);
-    WGPURenderPassColorAttachment color = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
-    WGPURenderPassDescriptor pass_desc = WGPU_RENDER_PASS_DESCRIPTOR_INIT;
     WGPUCommandEncoder encoder;
-    WGPURenderPassEncoder pass;
     WGPUCommandBuffer commands;
     ax_render_counts counts;
     ax_color bg;
     rw_instance *inst = NULL;
     rw_clip *clips = NULL;
-    uint32_t count = 0, clip_count = 0;
-    bool ready;
+    rw_run *runs = NULL;
+    uint32_t count = 0, clip_count = 0, run_count = 0, i;
+    /* The target's sRGB view, for layers that blend in linear light (issue #4's option 3). */
+    const bool has_alt = draw->struct_size >= offsetof(ax_render_wgpu_draw, srgb_format) +
+                                                  sizeof(WGPUTextureFormat) &&
+                         draw->srgb_target != NULL && !r->linear_blend;
+    bool ready, alt_ready = false;
     ax_result res;
+    ax_gpu_upload_slice slice, clip_slice;
+    WGPUBindGroup groups[2] = {NULL, NULL};
 
-    AX_ASSERT(draw != NULL && draw->struct_size >= sizeof(ax_render_wgpu_draw));
+    AX_ASSERT(draw != NULL && draw->struct_size >= offsetof(ax_render_wgpu_draw, srgb_target));
     memset(&counts, 0, sizeof counts);
+    memset(&slice, 0, sizeof slice);
+    memset(&clip_slice, 0, sizeof clip_slice);
     if (ir != NULL && ir->version_major != AX_IR_VERSION_MAJOR) {
         return ax_set_error(AX_ERR_ABI_MISMATCH, "ax_render_wgpu: Render IR %u.%u, reads %u.x",
                             ir->version_major, ir->version_minor, AX_IR_VERSION_MAJOR);
     }
     ax_render_wgpu_prepare(r, draw->format);
     ready = ax_render_wgpu_ready(r, draw->format);
+    if (has_alt) {
+        ax_render_wgpu_prepare(r, draw->srgb_format);
+        alt_ready = ax_render_wgpu_ready(r, draw->srgb_format);
+    }
 
     if (ready && ir != NULL) {
         const uint64_t t0 = ax_time_monotonic_ns();
         uint64_t dt;
-        (void)ax__rw_atlas_begin(r); /* without its textures, glyph runs are skipped */
-        res = encode(r, ir, draw->width, draw->height, draw->scale, &inst, &count, &clips,
-                     &clip_count, &counts);
+        /* Without its textures, glyph runs are skipped and shapes are not corrected. */
+        const bool lut_ok = ax__rw_atlas_begin(r);
+        res = encode(r, ir, draw->width, draw->height, draw->scale, alt_ready, lut_ok, &inst,
+                     &count, &clips, &clip_count, &runs, &run_count, &counts);
         if (res != AX_OK) {
             return res;
         }
@@ -690,25 +780,7 @@ ax_result ax_render_wgpu_draw_ir(ax_render_wgpu *r, const ax_render_wgpu_draw *d
         }
     }
 
-    bg = ir != NULL ? ir->background : draw->background;
-    if (!r->linear_blend) {
-        bg = ax_color_to_srgb_premultiplied(bg);
-    }
-    color.view = draw->target;
-    color.loadOp = WGPULoadOp_Clear;
-    color.storeOp = WGPUStoreOp_Store;
-    color.clearValue.r = clampf(bg.r, 0.0f, 1.0f);
-    color.clearValue.g = clampf(bg.g, 0.0f, 1.0f);
-    color.clearValue.b = clampf(bg.b, 0.0f, 1.0f);
-    color.clearValue.a = clampf(bg.a, 0.0f, 1.0f);
-    pass_desc.colorAttachmentCount = 1;
-    pass_desc.colorAttachments = &color;
-
-    encoder = wgpuDeviceCreateCommandEncoder(device, NULL);
-    pass = wgpuCommandEncoderBeginRenderPass(encoder, &pass_desc);
     if (count != 0) {
-        ax_gpu_upload_slice slice, clip_slice;
-        WGPUBindGroup group = NULL;
         /* Each draw is submitted before the next one writes, so the ring restarts per draw. */
         res = ax_gpu_upload_ring_begin_frame(r->ring);
         if (res == AX_OK) {
@@ -720,38 +792,65 @@ ax_result ax_render_wgpu_draw_ir(ax_render_wgpu *r, const ax_render_wgpu_draw *d
             res = ax_gpu_upload_ring_push(r->ring, clips, (uint64_t)clip_count * sizeof(rw_clip),
                                           256, &clip_slice);
         }
-        if (res == AX_OK) {
-            WGPURenderPipeline pipeline = find_pipeline(r, draw->format)->pipeline;
-            WGPUBindGroupLayout bgl = wgpuRenderPipelineGetBindGroupLayout(pipeline, 0);
-            WGPUBindGroupEntry entries[4] = {WGPU_BIND_GROUP_ENTRY_INIT, WGPU_BIND_GROUP_ENTRY_INIT,
-                                             WGPU_BIND_GROUP_ENTRY_INIT, WGPU_BIND_GROUP_ENTRY_INIT};
-            WGPUBindGroupDescriptor bgd = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-            entries[0].binding = 0;
-            entries[0].buffer = clip_slice.buffer;
-            entries[0].offset = clip_slice.offset;
-            entries[0].size = clip_slice.size;
-            entries[1].binding = 1;
-            entries[1].textureView = r->atlas.view;
-            entries[2].binding = 2;
-            entries[2].textureView = r->atlas.lut_view;
-            entries[3].binding = 3;
-            entries[3].sampler = r->atlas.sampler;
-            bgd.layout = bgl;
-            bgd.entryCount = 4;
-            bgd.entries = entries;
-            group = wgpuDeviceCreateBindGroup(device, &bgd);
-            wgpuBindGroupLayoutRelease(bgl);
-            wgpuRenderPassEncoderSetPipeline(pass, pipeline);
-            wgpuRenderPassEncoderSetBindGroup(pass, 0, group, 0, NULL);
-            wgpuRenderPassEncoderSetVertexBuffer(pass, 0, slice.buffer, slice.offset, slice.size);
-            wgpuRenderPassEncoderDraw(pass, 4, count, 0, 0);
-            wgpuBindGroupRelease(group);
-        } else {
+        if (res != AX_OK) {
             count = 0;
+            run_count = 0;
         }
     }
-    wgpuRenderPassEncoderEnd(pass);
-    wgpuRenderPassEncoderRelease(pass);
+    if (count == 0) {
+        run_count = 0;
+    }
+
+    bg = ir != NULL ? ir->background : draw->background;
+    if (!r->linear_blend) {
+        bg = ax_color_to_srgb_premultiplied(bg);
+    }
+    encoder = wgpuDeviceCreateCommandEncoder(device, NULL);
+    /* One pass per run (a run's instances share a view), the first clearing the target; at least
+     * one pass, for the clear. */
+    for (i = 0; i == 0 || i < run_count; ++i) {
+        const bool alt = i < run_count && runs[i].alt;
+        WGPURenderPassColorAttachment color = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
+        WGPURenderPassDescriptor pass_desc = WGPU_RENDER_PASS_DESCRIPTOR_INIT;
+        WGPURenderPassEncoder pass;
+        color.view = alt ? draw->srgb_target : draw->target;
+        color.loadOp = i == 0 ? WGPULoadOp_Clear : WGPULoadOp_Load;
+        color.storeOp = WGPUStoreOp_Store;
+        if (i == 0 && alt) {
+            /* The sRGB view decodes what it clears to: the background in linear light. */
+            const ax_color lin = ir != NULL ? ir->background : draw->background;
+            color.clearValue.r = clampf(lin.r, 0.0f, 1.0f);
+            color.clearValue.g = clampf(lin.g, 0.0f, 1.0f);
+            color.clearValue.b = clampf(lin.b, 0.0f, 1.0f);
+            color.clearValue.a = clampf(lin.a, 0.0f, 1.0f);
+        } else {
+            color.clearValue.r = clampf(bg.r, 0.0f, 1.0f);
+            color.clearValue.g = clampf(bg.g, 0.0f, 1.0f);
+            color.clearValue.b = clampf(bg.b, 0.0f, 1.0f);
+            color.clearValue.a = clampf(bg.a, 0.0f, 1.0f);
+        }
+        pass_desc.colorAttachmentCount = 1;
+        pass_desc.colorAttachments = &color;
+        pass = wgpuCommandEncoderBeginRenderPass(encoder, &pass_desc);
+        if (i < run_count && runs[i].count != 0) {
+            WGPURenderPipeline pipeline =
+                find_pipeline(r, alt ? draw->srgb_format : draw->format)->pipeline;
+            if (groups[alt ? 1 : 0] == NULL) {
+                groups[alt ? 1 : 0] = make_group(r, pipeline, &clip_slice);
+            }
+            wgpuRenderPassEncoderSetPipeline(pass, pipeline);
+            wgpuRenderPassEncoderSetBindGroup(pass, 0, groups[alt ? 1 : 0], 0, NULL);
+            wgpuRenderPassEncoderSetVertexBuffer(pass, 0, slice.buffer, slice.offset, slice.size);
+            wgpuRenderPassEncoderDraw(pass, 4, runs[i].count, 0, runs[i].first);
+        }
+        wgpuRenderPassEncoderEnd(pass);
+        wgpuRenderPassEncoderRelease(pass);
+    }
+    for (i = 0; i < 2; ++i) {
+        if (groups[i] != NULL) {
+            wgpuBindGroupRelease(groups[i]);
+        }
+    }
     commands = wgpuCommandEncoderFinish(encoder, NULL);
     wgpuQueueSubmit(ax_gpu_queue(r->gpu), 1, &commands);
     wgpuCommandBufferRelease(commands);
