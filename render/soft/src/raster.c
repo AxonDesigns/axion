@@ -169,6 +169,10 @@ static void draw_item(const soft_frame *f, const soft_cmd *cmd, float *planes, i
             const float px = (float)(ox + x) + 0.5f;
             float cov = ax__soft_shape_coverage(&cmd->shape, px, py);
             uint32_t c = cmd->clip;
+            if (cmd->shape_lut != NULL) {
+                /* Corrected before the clips, as glyphs are: the shape's own edge. */
+                cov = ax__soft_lut_coverage(cmd->shape_lut, cov);
+            }
             /* Clips multiply in, innermost first. Coverage only shrinks, so stopping once it is
              * below the threshold gives what the full product would. */
             while (c != AX_IR_NO_INDEX && cov >= SOFT_MIN_COVERAGE) {
@@ -344,7 +348,8 @@ void ax__soft_draw_tile(const soft_frame *f, soft_tile_ctx *ctx, uint32_t tx, ui
         r.y1 = cmd->box.y1 - oy < h ? cmd->box.y1 - oy : h;
         if (cmd->kind == SOFT_CMD_ITEM) {
             if (r.x0 < r.x1 && r.y0 < r.y1) {
-                if (f->simd) {
+                if (f->simd && cmd->shape_lut == NULL) {
+                    /* Corrected shapes take the scalar path, which gives the same coverage. */
                     ax__soft_draw_item_simd(f, cmd, ctx->planes + depth * group_stride, ox, oy,
                                             r.x0, r.y0, r.x1, r.y1);
                 } else {

@@ -105,6 +105,7 @@ typedef struct soft_cmd {
                        * the group's opacity */
     soft_shape shape; /* ITEM */
     soft_glyph glyph; /* GLYPH */
+    const uint8_t *shape_lut; /* ITEM: coverage correction (AX_RENDER_BLEND_SRGB_CORRECTED), or NULL */
 } soft_cmd;
 
 /* A prepared frame: everything tiles read, never written while they run. */
@@ -122,10 +123,23 @@ typedef struct soft_frame {
     bool simd;
 } soft_frame;
 
+/* How a frame blends (issue #4): the mode and the renderer's correction tables. */
+typedef struct soft_blend {
+    uint32_t mode; /* ax_render_blend */
+    const uint8_t (*luts)[AX_IR_TEXT_LUT_BUCKETS][256]; /* AX_IR_LUT_TABLES tables */
+} soft_blend;
+
 /* Turns a snapshot into the frame's commands (prepare.c), in `arena`. */
 ax_result ax__soft_prepare(const ax_render_ir *ir, uint32_t width, uint32_t height, float scale,
-                           bool linear_default, const uint8_t (*lut)[256], ax_arena *arena,
-                           soft_frame *out, ax_render_counts *counts);
+                           const soft_blend *blend, ax_arena *arena, soft_frame *out,
+                           ax_render_counts *counts);
+
+/* A coverage through a correction table (the same quantization as glyphs: wgpu's too). */
+static inline float ax__soft_lut_coverage(const uint8_t *lut, float cov)
+{
+    const int32_t i = (int32_t)(cov * 255.0f + 0.5f);
+    return (float)lut[i < 0 ? 0 : (i > 255 ? 255 : i)] * (1.0f / 255.0f);
+}
 
 /* State another part of the renderer (surface.c) keeps with it, freed by ax_render_soft_destroy.
  * One allocation per renderer. */

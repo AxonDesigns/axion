@@ -345,9 +345,11 @@ static bool place_glyph(soft_affine m, float bx, float by, const ax_ir_glyph_bit
 }
 
 ax_result ax__soft_prepare(const ax_render_ir *ir, uint32_t width, uint32_t height, float scale,
-                           bool linear_default, const uint8_t (*lut)[256], ax_arena *arena,
-                           soft_frame *out, ax_render_counts *counts)
+                           const soft_blend *blend, ax_arena *arena, soft_frame *out,
+                           ax_render_counts *counts)
 {
+    const bool linear_default = blend->mode == AX_RENDER_BLEND_LINEAR;
+    const bool correct_shapes = blend->mode == AX_RENDER_BLEND_SRGB_CORRECTED;
     const ax_ir_glyph_source *glyphs =
         ir->struct_size >= offsetof(ax_render_ir, glyphs) + sizeof(void *) ? ir->glyphs : NULL;
     const soft_box target = {0, 0, (int32_t)width, (int32_t)height};
@@ -405,6 +407,9 @@ ax_result ax__soft_prepare(const ax_render_ir *ir, uint32_t width, uint32_t heig
         s->world = ax__soft_affine_mul(p != NULL ? p->world : to_device, to_soft(l->transform));
         s->linear = (p != NULL && p->linear) || (l->flags & AX_IR_LAYER_LINEAR_BLEND) != 0 ||
                     linear_default;
+        if ((l->flags & AX_IR_LAYER_LINEAR_BLEND) != 0) {
+            counts->linear_layers++;
+        }
         s->clip = p != NULL ? p->clip : AX_IR_NO_INDEX;
         s->clip_box = p != NULL ? p->clip_box : target;
         if (l->blend_mode != AX_IR_BLEND_NORMAL || l->effects != AX_IR_NO_INDEX) {
@@ -491,7 +496,9 @@ ax_result ax__soft_prepare(const ax_render_ir *ir, uint32_t width, uint32_t heig
                     /* Raster pixels -> device pixels: the layer's transform after 1/scale. */
                     const float inv_scale = 1.0f / run.raster_scale;
                     soft_affine m = s->world;
-                    const uint8_t *row_lut = lut[ax_ir_text_lut_bucket(run.color)];
+                    const uint8_t *row_lut =
+                        blend->luts[s->linear ? AX_IR_LUT_TEXT_LINEAR : AX_IR_LUT_TEXT_SRGB]
+                                   [ax_ir_text_lut_bucket(run.color)];
                     m.a = s->world.a * inv_scale;
                     m.b = s->world.b * inv_scale;
                     m.c = s->world.c * inv_scale;
@@ -579,6 +586,9 @@ ax_result ax__soft_prepare(const ax_render_ir *ir, uint32_t width, uint32_t heig
             cmd->kind = SOFT_CMD_ITEM;
             cmd->clip = s->clip;
             cmd->linear = s->linear ? 1u : 0u;
+            cmd->shape_lut = correct_shapes && !s->linear
+                                 ? blend->luts[AX_IR_LUT_SHAPE_SRGB][ax_ir_text_lut_bucket(color)]
+                                 : NULL;
             cmd->end = 0;
             cmd->box = box;
             add_item_box(&b, box);

@@ -127,6 +127,67 @@ AX_TEST(a_linear_layer_blends_in_linear_light)
     env_deinit(&e);
 }
 
+/* Issue #4's option 1 (AX_RENDER_BLEND_SRGB_CORRECTED): translucency stays in sRGB space (50%
+ * white over black is 128, as CSS), and a shape's edge is corrected for its color's luminance so
+ * a half-covered pixel shows what linear light gives against the opposite luminance: 188 for
+ * white on black, and 188 for black on white (half of the light taken away). The default blends
+ * the same edges to 128 and 128 (the roping of decision 58). */
+static void edges(ax_ir_builder *b)
+{
+    ax_ir_rect(b, ax_rect_make(0, 0, 16, 16), ax_color_from_srgb8(0x80FFFFFFu));
+    ax_ir_rect(b, ax_rect_make(16.5f, 0, 4, 16), white()); /* half of column 16 */
+    ax_ir_rect(b, ax_rect_make(32, 0, 32, 16), white());
+    ax_ir_rect(b, ax_rect_make(40.5f, 4, 4, 8), ax_color_make(0, 0, 0, 1)); /* half of col. 40 */
+}
+
+static uint8_t *draw_edges(uint32_t blend)
+{
+    ax_render_soft_desc d;
+    ax_render_soft *r = NULL;
+    ax_ir_builder b;
+    const ax_render_ir *ir = NULL;
+    uint8_t *got;
+    memset(&d, 0, sizeof d);
+    d.blend = blend;
+    if (ax_render_soft_create(NULL, &d, &r) != AX_OK) {
+        return NULL;
+    }
+    ax_ir_builder_init(&b, ax_default_allocator());
+    ax_ir_builder_begin(&b, 64, 16, 0, ax_color_make(0, 0, 0, 1));
+    edges(&b);
+    got = ax_ir_builder_end(&b, &ir) == AX_OK ? axt_soft_draw(r, ir, 64, 16, 1.0f, NULL) : NULL;
+    ax_ir_builder_deinit(&b);
+    ax_render_soft_destroy(r);
+    return got;
+}
+
+AX_TEST(corrected_srgb_blending_corrects_edges_and_keeps_translucency)
+{
+    uint8_t *def = draw_edges(AX_RENDER_BLEND_SRGB);
+    uint8_t *cor = draw_edges(AX_RENDER_BLEND_SRGB_CORRECTED);
+    AX_REQUIRE(def != NULL && cor != NULL);
+    CHECK_PX(def, 64, 8, 8, 128, 128, 128);
+    CHECK_NEAR_U8(px(def, 64, 16, 8)[0], 128);
+    CHECK_NEAR_U8(px(def, 64, 40, 8)[0], 128);
+    CHECK_PX(cor, 64, 8, 8, 128, 128, 128); /* translucency: as CSS */
+    CHECK_NEAR_U8(px(cor, 64, 16, 8)[0], 188); /* white edge on black */
+    CHECK_NEAR_U8(px(cor, 64, 40, 8)[0], 188); /* black edge on white */
+    CHECK_PX(cor, 64, 18, 8, 255, 255, 255);   /* full coverage unchanged */
+    CHECK_PX(cor, 64, 42, 8, 0, 0, 0);
+    free(def);
+    free(cor);
+}
+
+AX_TEST(linear_blending_by_desc_is_the_diagnostic)
+{
+    uint8_t *lin = draw_edges(AX_RENDER_BLEND_LINEAR);
+    AX_REQUIRE(lin != NULL);
+    CHECK_NEAR_U8(px(lin, 64, 8, 8)[0], 188); /* translucency in linear light */
+    CHECK_NEAR_U8(px(lin, 64, 16, 8)[0], 188);
+    CHECK_NEAR_U8(px(lin, 64, 40, 8)[0], 188);
+    free(lin);
+}
+
 AX_TEST(the_linear_blend_diagnostic_mixes_every_layer_in_linear_light)
 {
     env e;
