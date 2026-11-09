@@ -121,9 +121,9 @@ new entry that points back to the old one.
 | 105 | A rest is not a missed refresh (issue #15)               | Approved       |
 | 106 | Issue #4: the blending options, measured; a recommendation | Approved       |
 | 107 | Text leaves round as Yoga's text nodes                   | Approved       |
-| 108 | The accessibility tree: semantic properties, diffs, actions | Implementation |
-| 109 | The headless host's semantic tree and queries            | Implementation |
-| 110 | AccessKit: the prebuilt release, the platform adapter, licenses | Implementation |
+| 108 | The accessibility tree: semantic properties, diffs, actions | Approved       |
+| 109 | The headless host's semantic tree and queries            | Approved       |
+| 110 | AccessKit: the prebuilt release, the platform adapter, licenses | Approved       |
 
 ---
 
@@ -5089,7 +5089,7 @@ semantics-only change records no item and presents nothing.
   `runtime.single_thread.each_tick_flushes_the_tree_and_a_semantics_only_change_presents_nothing`.
   Under ASan, TSan (three runs) and in Node.
 
-**Status.** Implementation, pending the owner's approval.
+**Status.** Approved by the owner.
 
 ## 109. The headless host's semantic tree and queries
 
@@ -5127,7 +5127,7 @@ queries, the dump, and the tree's golden in decision 86's determinism job.
   change records no item and draws no new snapshot; the queries with the host's threads, and none
   without semantics.
 
-**Status.** Implementation, pending the owner's approval.
+**Status.** Approved by the owner.
 
 ## 110. AccessKit: the prebuilt release, the platform adapter, licenses
 
@@ -5216,4 +5216,4 @@ standard library's crates too, and to record the static Rust library's risks.
   stay window-relative under Wayland (a client cannot know its position); focus follows the
   assistive technology's requests only (keyboard focus is M2).
 
-**Status.** Implementation, pending the owner's approval.
+**Status.** Approved by the owner.
