@@ -30,6 +30,7 @@
 #include <axion/ax_types.h>
 #include <axion/base/ax_compiler.h>
 #include <axion/base/ax_math.h>
+#include <axion/base/ax_shared_str.h>
 
 AX_EXTERN_C_BEGIN
 
@@ -42,6 +43,9 @@ typedef union ax_value {
     ax_affine2 transform2d;
     uint32_t u32;
     bool boolean;
+    /* AX_VALUE_STRING: a reference the holder owns or borrows, as each function says; NULL is
+     * the empty string (decision 99). */
+    const ax_shared_str *str;
 } ax_value;
 
 /* Where a property's value lives. */
@@ -50,7 +54,9 @@ typedef enum ax_prop_storage {
     AX_PROP_IN_PAINT = 2,     /* ax_node_store.paint */
     AX_PROP_IN_COMPOSITE = 3, /* ax_node_store.composite */
     AX_PROP_IN_COMPONENT = 4, /* a side component holding one ax_value */
-    AX_PROP_EXPANDS = 5       /* a shorthand: no storage, sets its longhands */
+    AX_PROP_EXPANDS = 5,      /* a shorthand: no storage, sets its longhands */
+    AX_PROP_IN_TEXT = 6       /* the scene's text component (ax_node_text), at `offset`; a node
+                               * gets it when it first sets a text property (decision 99) */
 } ax_prop_storage;
 
 #define AX_PROP_MAX_LONGHANDS 4u
@@ -103,6 +109,13 @@ AX_API const ax_prop_desc *ax_prop_builtin(ax_prop id);
  */
 AX_API ax_result ax_prop_check_value(const ax_prop_desc *desc, ax_value_type type,
                                      const ax_value *value);
+
+/*
+ * Checks a string value: the property must take strings, the bytes be valid UTF-8 of at most
+ * AX_PROP_MAX_STRING bytes, and FONT_FEATURES must parse (ax_text_parse_features).
+ * AX_ERR_INVALID_ARGUMENT, with ax_last_error. Pure: callable from any thread.
+ */
+AX_API ax_result ax_prop_check_string(const ax_prop_desc *desc, ax_str value);
 
 /* The built-in descriptors, sorted by id (for tests and tools). */
 AX_API const ax_prop_desc *ax_prop_registry_builtins(uint32_t *out_count);

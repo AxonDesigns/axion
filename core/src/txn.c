@@ -25,6 +25,7 @@ AX_STATIC_ASSERT(sizeof(ax_txn_cmd_set) % 8 == 0, "commands are 8-byte multiples
 AX_STATIC_ASSERT(sizeof(ax_txn_cmd_insert) % 8 == 0, "commands are 8-byte multiples");
 AX_STATIC_ASSERT(sizeof(ax_txn_cmd_remove) % 8 == 0, "commands are 8-byte multiples");
 AX_STATIC_ASSERT(sizeof(ax_txn_cmd_transition) % 8 == 0, "commands are 8-byte multiples");
+AX_STATIC_ASSERT(sizeof(ax_txn_cmd_set_str) % 8 == 0, "commands are 8-byte multiples");
 
 /* ---- Colors ---------------------------------------------------------------------------------- */
 
@@ -279,6 +280,53 @@ void ax_txn_set_bool(ax_txn *t, ax_node node, ax_prop prop, bool value)
     record_set(t, node, prop, AX_VALUE_BOOL, &v);
 }
 
+void ax_txn_set_str(ax_txn *t, ax_node node, ax_prop prop, const char *utf8, size_t length)
+{
+    ax_txn_cmd_set_str *cmd;
+    size_t size;
+    ax_str v;
+    if (!can_record(t)) {
+        return;
+    }
+    if (AX_HANDLE_IS_NULL(node)) {
+        fail(t, AX_ERR_INVALID_HANDLE, "set of property 0x%x on a null node", (unsigned)prop);
+        return;
+    }
+    if (utf8 == NULL && length > 0) {
+        fail(t, AX_ERR_INVALID_ARGUMENT, "property 0x%x: NULL string with %zu bytes",
+             (unsigned)prop, length);
+        return;
+    }
+    v.ptr = utf8;
+    v.len = length;
+    if (prop < AX_PROP_FIRST_IDL) {
+        const ax_prop_desc *d = ax_prop_builtin(prop);
+        ax_result r;
+        if (d == NULL) {
+            fail(t, AX_ERR_INVALID_ARGUMENT, "unknown property 0x%x", (unsigned)prop);
+            return;
+        }
+        r = ax_prop_check_string(d, v);
+        if (r != AX_OK) {
+            fail_with_last_error(t, r);
+            return;
+        }
+    } else if (length > AX_PROP_MAX_STRING) {
+        fail(t, AX_ERR_INVALID_ARGUMENT, "property 0x%x: string too long", (unsigned)prop);
+        return;
+    }
+    size = (sizeof(ax_txn_cmd_set_str) + length + 7u) & ~(size_t)7u;
+    cmd = (ax_txn_cmd_set_str *)emit(t, AX_TXN_OP_SET_STR, (uint32_t)size);
+    if (cmd != NULL) {
+        cmd->prop = prop;
+        cmd->length = (uint32_t)length;
+        cmd->node = node;
+        if (length > 0) {
+            memcpy(cmd + 1, utf8, length);
+        }
+    }
+}
+
 void ax_txn_insert_before(ax_txn *t, ax_node parent, ax_node child, ax_node before)
 {
     ax_txn_cmd_insert *cmd;
@@ -456,8 +504,9 @@ ax_result ax_txn_commit(ax_txn *t, uint64_t *out_seq)
     if (out_seq != NULL) {
         *out_seq = t->seq;
     }
-    if (w->commit_hook != NULL) {
-        w->commit_hook(w->commit_hook_user);
+    {
+        const ax_node every = AX_HANDLE_NULL_INIT;
+        ax__world_wake(w, every); /* a commit is one frame request (decision 95) */
     }
     return AX_OK;
 }
@@ -522,6 +571,16 @@ bool ax_txn_cmd_valid(const ax_txn_info *info, const ax_txn_cmd *cmd)
     uint32_t expected;
     if (offset + sizeof(ax_txn_cmd) > info->size) {
         return false;
+    }
+    if (cmd->op == AX_TXN_OP_SET_STR) {
+        const ax_txn_cmd_set_str *c;
+        size_t want;
+        if (cmd->size < sizeof(ax_txn_cmd_set_str) || offset + cmd->size > info->size) {
+            return false;
+        }
+        c = (const ax_txn_cmd_set_str *)(const void *)cmd;
+        want = (sizeof(ax_txn_cmd_set_str) + (size_t)c->length + 7u) & ~(size_t)7u;
+        return cmd->size == want;
     }
     expected = op_size(cmd->op);
     return expected != 0 && cmd->size == expected && offset + cmd->size <= info->size;

@@ -13,6 +13,8 @@
 #include <axion/base/ax_error_set.h>
 #include <axion/base/ax_memory.h>
 #include <axion/core/ax_prop_registry.h>
+#include <axion/core/ax_text_node.h>
+#include <axion/text/ax_text.h>
 
 #define ANIM AX_PROP_ANIMATABLE
 
@@ -94,6 +96,30 @@
      .offset = (uint32_t)(offsetof(ax_node_paint, corner_radius) + sizeof(float) * (corner_)), \
      .min_value = 0.0f,                                                                        \
      .max_value = FLT_MAX}
+
+/* Text properties, in the text component (ax_node_text). */
+#define TEXT_AT(field_) ((uint32_t)offsetof(ax_node_text, field_))
+#define TEXT_F32(id_, name_, field_, def_, min_, max_) \
+    {.id = (id_),                                       \
+     .name = (name_),                                   \
+     .type = AX_VALUE_F32,                              \
+     .flags = AX_PROP_INHERITED,                        \
+     .effect = AX_EFFECT_LAYOUT,                        \
+     .storage = AX_PROP_IN_TEXT,                        \
+     .offset = TEXT_AT(field_),                         \
+     .default_value = {.f32 = (def_)},                  \
+     .min_value = (min_),                               \
+     .max_value = (max_)}
+#define TEXT_ENUM(id_, name_, field_, effect_, max_) \
+    {.id = (id_),                                     \
+     .name = (name_),                                 \
+     .type = AX_VALUE_U32,                            \
+     .flags = AX_PROP_INHERITED,                      \
+     .effect = (effect_),                             \
+     .storage = AX_PROP_IN_TEXT,                      \
+     .offset = TEXT_AT(field_),                       \
+     .min_value = 0.0f,                               \
+     .max_value = (float)(max_)}
 
 #define BORDER_AT(edge_) ((uint32_t)(offsetof(ax_node_style, border) + sizeof(float) * (edge_)))
 
@@ -199,12 +225,48 @@ static const ax_prop_desc BUILTINS[] = {
      .storage = AX_PROP_IN_COMPOSITE,
      .offset = (uint32_t)offsetof(ax_node_composite, transform),
      .default_value = {.transform2d = {1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f}}},
+    /* Text (decision 99): in the text component. */
+    {.id = AX_PROP_TEXT,
+     .name = "text",
+     .type = AX_VALUE_STRING,
+     .effect = AX_EFFECT_LAYOUT,
+     .storage = AX_PROP_IN_TEXT,
+     .offset = TEXT_AT(content)},
+    {.id = AX_PROP_FONT_FAMILY,
+     .name = "font-family",
+     .type = AX_VALUE_STRING,
+     .flags = AX_PROP_INHERITED,
+     .effect = AX_EFFECT_LAYOUT,
+     .storage = AX_PROP_IN_TEXT,
+     .offset = TEXT_AT(family)},
+    TEXT_F32(AX_PROP_FONT_SIZE, "font-size", size, 14.0f, 0.01f, 10000.0f),
+    TEXT_F32(AX_PROP_FONT_WEIGHT, "font-weight", weight, 400.0f, 1.0f, 1000.0f),
+    TEXT_ENUM(AX_PROP_FONT_STYLE, "font-style", style, AX_EFFECT_LAYOUT,
+              AX_FONT_STYLE_VALUE_ITALIC),
+    TEXT_F32(AX_PROP_FONT_WIDTH, "font-width", width, 100.0f, 50.0f, 200.0f),
+    TEXT_F32(AX_PROP_LINE_HEIGHT, "line-height", line_height, 0.0f, 0.0f, 100.0f),
+    {.id = AX_PROP_FONT_FEATURES,
+     .name = "font-feature-settings",
+     .type = AX_VALUE_STRING,
+     .flags = AX_PROP_INHERITED,
+     .effect = AX_EFFECT_LAYOUT,
+     .storage = AX_PROP_IN_TEXT,
+     .offset = TEXT_AT(features)},
+    TEXT_ENUM(AX_PROP_TEXT_ALIGN, "text-align", align, AX_EFFECT_PAINT, AX_TEXT_ALIGN_VALUE_END),
+    {.id = AX_PROP_COLOR,
+     .name = "color",
+     .type = AX_VALUE_COLOR,
+     .flags = AX_PROP_INHERITED | ANIM,
+     .effect = AX_EFFECT_PAINT,
+     .storage = AX_PROP_IN_TEXT,
+     .offset = TEXT_AT(color),
+     .default_value = {.color = {0.0f, 0.0f, 0.0f, 1.0f}}},
 };
 
 enum { BUILTIN_COUNT = (int)(sizeof BUILTINS / sizeof BUILTINS[0]) };
 
 /* Built-in ids must stay inside the core range, sorted, for the binary search. */
-AX_STATIC_ASSERT(AX_PROP_TRANSFORM < AX_PROP_FIRST_IDL, "built-in ids are core ids");
+AX_STATIC_ASSERT(AX_PROP_COLOR < AX_PROP_FIRST_IDL, "built-in ids are core ids");
 
 const ax_prop_desc *ax_prop_registry_builtins(uint32_t *out_count)
 {
@@ -281,7 +343,7 @@ const ax_prop_desc *ax_prop_registry_find_by_name(const ax_prop_registry *reg, a
 
 static bool valid_type(ax_value_type t)
 {
-    return t >= AX_VALUE_F32 && t <= AX_VALUE_BOOL;
+    return t >= AX_VALUE_F32 && t <= AX_VALUE_BOOL; /* strings: core properties only, for now */
 }
 
 static bool valid_effect(ax_effect_class e)
@@ -450,6 +512,78 @@ ax_result ax_prop_check_value(const ax_prop_desc *d, ax_value_type type, const a
         break;
     case AX_VALUE_BOOL:
         break;
+    case AX_VALUE_STRING:
+        return ax_prop_check_string(d, ax_shared_str_view(v->str));
+    }
+    return AX_OK;
+}
+
+/* Well-formed UTF-8: no overlongs, no surrogates, nothing above U+10FFFF. */
+static bool valid_utf8(const unsigned char *s, size_t n)
+{
+    size_t i = 0;
+    while (i < n) {
+        unsigned char c = s[i];
+        uint32_t cp;
+        size_t k, len;
+        if (c < 0x80u) {
+            i++;
+            continue;
+        }
+        if (c >= 0xC2u && c <= 0xDFu) {
+            len = 2;
+            cp = c & 0x1Fu;
+        } else if (c >= 0xE0u && c <= 0xEFu) {
+            len = 3;
+            cp = c & 0x0Fu;
+        } else if (c >= 0xF0u && c <= 0xF4u) {
+            len = 4;
+            cp = c & 0x07u;
+        } else {
+            return false;
+        }
+        if (i + len > n) {
+            return false;
+        }
+        for (k = 1; k < len; ++k) {
+            if ((s[i + k] & 0xC0u) != 0x80u) {
+                return false;
+            }
+            cp = (cp << 6) | (s[i + k] & 0x3Fu);
+        }
+        if ((len == 3 && cp < 0x800u) || (len == 4 && (cp < 0x10000u || cp > 0x10FFFFu)) ||
+            (cp >= 0xD800u && cp <= 0xDFFFu)) {
+            return false;
+        }
+        i += len;
+    }
+    return true;
+}
+
+ax_result ax_prop_check_string(const ax_prop_desc *d, ax_str v)
+{
+    if (d->type != AX_VALUE_STRING) {
+        return ax_set_error(AX_ERR_INVALID_ARGUMENT,
+                            "property %s: wrong value type %d (expects %d)", d->name,
+                            (int)AX_VALUE_STRING, (int)d->type);
+    }
+    if (v.len > AX_PROP_MAX_STRING) {
+        return ax_set_error(AX_ERR_INVALID_ARGUMENT, "property %s: %zu bytes (at most %u)",
+                            d->name, v.len, (unsigned)AX_PROP_MAX_STRING);
+    }
+    if (v.len > 0 && (v.ptr == NULL || !valid_utf8((const unsigned char *)v.ptr, v.len))) {
+        return ax_set_error(AX_ERR_INVALID_ARGUMENT, "property %s: not valid UTF-8", d->name);
+    }
+    if (d->id == AX_PROP_FONT_FEATURES) {
+        ax_text_feature f[AX_TEXT_MAX_FEATURES];
+        ax_result r = AX_OK;
+        (void)ax_text_parse_features(v, f, AX_TEXT_MAX_FEATURES, &r);
+        if (r != AX_OK) {
+            return ax_set_error(AX_ERR_INVALID_ARGUMENT,
+                                "property %s: not a list of at most %u features (\"tnum\", "
+                                "\"liga\" 0)",
+                                d->name, (unsigned)AX_TEXT_MAX_FEATURES);
+        }
     }
     return AX_OK;
 }

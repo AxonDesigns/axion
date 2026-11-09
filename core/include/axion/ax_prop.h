@@ -99,7 +99,25 @@ enum {
     /* transform2d, applied about the center of the node's frame (CSS's default transform
      * origin): the frame is translated so its center is at the origin, transformed, and
      * translated back. A TRANSFORM_ORIGIN property will move that point later. */
-    AX_PROP_TRANSFORM = 0x0302
+    AX_PROP_TRANSFORM = 0x0302,
+
+    /* Text (decision 99). A node with TEXT is a text leaf: layout measures its paragraph and its
+     * children are not laid out. Inherited properties apply to the node and its descendants
+     * unless a descendant sets its own; the style pass resolves them each frame (decision 64's
+     * STYLE mark). */
+    AX_PROP_TEXT = 0x0401,          /* string: the content, UTF-8; layout */
+    AX_PROP_FONT_FAMILY = 0x0402,   /* string, inherited: "" is the system's interface font */
+    AX_PROP_FONT_SIZE = 0x0403,     /* f32, inherited: the em in logical units; > 0, default 14 */
+    AX_PROP_FONT_WEIGHT = 0x0404,   /* f32, inherited: 1..1000, default 400 */
+    AX_PROP_FONT_STYLE = 0x0405,    /* u32, inherited: ax_font_style_value */
+    AX_PROP_FONT_WIDTH = 0x0406,    /* f32, inherited: percent of normal, 50..200, default 100 */
+    AX_PROP_LINE_HEIGHT = 0x0407,   /* f32, inherited: a multiple of the size; 0 (default) is
+                                     * the font's own line spacing */
+    AX_PROP_FONT_FEATURES = 0x0408, /* string, inherited: CSS font-feature-settings ("tnum",
+                                     * "liga" 0, smcp 1) */
+    AX_PROP_TEXT_ALIGN = 0x0409,    /* u32, inherited, paint: ax_text_align_value */
+    AX_PROP_COLOR = 0x040A          /* color, inherited, paint, animatable: the text's color;
+                                     * default opaque black */
 };
 
 #define AX_PROP_FIRST_IDL     0x00008000u
@@ -113,8 +131,8 @@ typedef enum ax_value_type {
     AX_VALUE_COLOR = 4,
     AX_VALUE_TRANSFORM2D = 5,
     AX_VALUE_U32 = 6,
-    AX_VALUE_BOOL = 7
-    /* 8 is reserved for strings (class names, text content). */
+    AX_VALUE_BOOL = 7,
+    AX_VALUE_STRING = 8 /* UTF-8; set with ax_txn_set_str (decision 99) */
 } ax_value_type;
 
 typedef enum ax_effect_class {
@@ -204,6 +222,22 @@ typedef enum ax_align {
     AX_ALIGN_SPACE_AROUND = 7,
     AX_ALIGN_SPACE_EVENLY = 8
 } ax_align;
+
+/* FONT_STYLE. */
+typedef enum ax_font_style_value {
+    AX_FONT_STYLE_VALUE_NORMAL = 0, /* default */
+    AX_FONT_STYLE_VALUE_ITALIC = 1
+} ax_font_style_value;
+
+/* TEXT_ALIGN: where each line sits in the text node's content box. */
+typedef enum ax_text_align_value {
+    AX_TEXT_ALIGN_VALUE_START = 0, /* default: left, until right-to-left text arrives (M3) */
+    AX_TEXT_ALIGN_VALUE_CENTER = 1,
+    AX_TEXT_ALIGN_VALUE_END = 2
+} ax_text_align_value;
+
+/* Longest string value accepted, in bytes. */
+#define AX_PROP_MAX_STRING (1u << 20)
 
 typedef struct ax_vec2f {
     float x, y;

@@ -71,6 +71,14 @@ AX_API ax_result ax_ir_mailbox_publish(ax_ir_mailbox *mb);
  * reader */
 AX_API const ax_render_ir *ax_ir_mailbox_acquire(ax_ir_mailbox *mb);
 
+/*
+ * Writer: the oldest resource epoch (ax_render_ir.resource_epoch) among the snapshots the reader
+ * may still draw: every published snapshot not yet replaced in its slot (the one the reader holds,
+ * and the newest). UINT64_MAX when there is none. Glyphs used before it may be evicted
+ * (decision 100). thread: the writer
+ */
+AX_API uint64_t ax_ir_mailbox_oldest_epoch(const ax_ir_mailbox *mb);
+
 /* Sequence of the newest published snapshot (0 before the first). thread: any */
 AX_API uint64_t ax_ir_mailbox_published(const ax_ir_mailbox *mb);
 

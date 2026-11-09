@@ -24,7 +24,8 @@ enum {
     AXA_RADIUS = 2,     /* 2..5: one per corner, as the properties are */
     AXA_OPACITY = 6,
     AXA_TRANSFORM = 7, /* tx, ty, angle, scale x, scale y, skew (CSS's 2D decomposition) */
-    AXA_CHANNELS = 8
+    AXA_TEXT_COLOR = 8, /* r, g, b, a: the node's own COLOR (decision 99), premultiplied linear */
+    AXA_CHANNELS = 9
 };
 
 #define AXA_MAX_COMPONENTS 6
@@ -52,6 +53,7 @@ typedef struct axa_node {
     float radii[4];
     float opacity;
     ax_affine2 transform;
+    ax_color text_color; /* the node's own COLOR, animated (meaningful when it set one) */
 } axa_node;
 
 /* A node's own transitions (a side component): interned curve + 1 per channel, 0 for none. */

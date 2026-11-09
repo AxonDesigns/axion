@@ -85,8 +85,8 @@ static int parse_options(int argc, char **argv, options *o)
     int i;
     memset(o, 0, sizeof *o);
     o->decorations = AX_DECORATIONS_NATIVE;
-    o->width = 800;
-    o->height = 500;
+    o->width = 860;
+    o->height = 860;
     o->block_every = 2.0;
     for (i = 1; i < argc; ++i) {
         const char *a = argv[i];

@@ -27,7 +27,7 @@ module core {
     enum node_kind : u32 { view = 1; }
     enum unit : u32 { auto = 0; points = 1; percent = 2; }
     enum value_type : u32 { f32 = 1; dimension = 2; vec2 = 3; color = 4; transform2d = 5;
-                            u32 = 6; bool = 7; /* 8 reserved: str */ }
+                            u32 = 6; bool = 7; str = 8; }
     enum effect_class : u32 { layout = 1; paint = 2; composite = 3; }
     enum transition_kind : u32 { none = 1; timing = 2; spring = 3; decay = 4; default = 5; }
     enum easing : u32 { cubic_bezier = 0; steps = 1; linear = 2; }
@@ -43,6 +43,9 @@ module core {
                          space_around = 4; space_evenly = 5; }
     enum align : u32 { auto = 0; flex_start = 1; center = 2; flex_end = 3; stretch = 4;
                        baseline = 5; space_between = 6; space_around = 7; space_evenly = 8; }
+    // Text enumerations (decision 99).
+    enum font_style_value : u32 { normal = 0; italic = 1; }
+    enum text_align_value : u32 { start = 0; center = 1; end = 2; }
     flags prop_flags : u32 { inherited = 0x1; animatable = 0x2; shorthand = 0x4; }
 
     struct dimension { f32 value; unit unit; }
@@ -179,7 +182,25 @@ module core {
         0x0301  opacity                      : f32         composite  [animatable] range(0, 1);
         0x0302  transform                    : transform2d composite  [animatable]
                 origin(center);  // about the frame's center (decision 63)
+        // Text (decision 99): a node with text is a text leaf; inherited values resolve in the
+        // style pass.
+        0x0401  text                         : str         layout;
+        0x0402  font_family                  : str         layout     [inherited];
+        0x0403  font_size                    : f32         layout     [inherited]
+                range(0.01, 10000) default(14);
+        0x0404  font_weight                  : f32         layout     [inherited]
+                range(1, 1000) default(400);
+        0x0405  font_style                   : font_style_value layout [inherited]
+                default(normal);
+        0x0406  font_width                   : f32         layout     [inherited]
+                range(50, 200) default(100);
+        0x0407  line_height                  : f32         layout     [inherited] range(0, 100);
+        0x0408  font_feature_settings        : str         layout     [inherited];
+        0x0409  text_align                   : text_align_value paint [inherited] default(start);
+        0x040A  color                        : color       paint      [inherited, animatable]
+                default(rgba(0, 0, 0, 1));
     }
+    const u32 prop_max_string = 1048576;  // bytes
 
     // ---- Functions ----------------------------------------------------------------------------
     // [thread(...)]  where it may run: any, app, scene, render. Debug builds check it on entry.
@@ -206,6 +227,8 @@ module core {
     [thread(app), sticky(t), setter]   fn txn_set_transform(txn t, node node, prop prop, transform2d value);
     [thread(app), sticky(t), setter]   fn txn_set_u32(txn t, node node, prop prop, u32 value);
     [thread(app), sticky(t), setter]   fn txn_set_bool(txn t, node node, prop prop, bool value);
+    // C: (const char *utf8, size_t length); copied. Bindings pass their string type.
+    [thread(app), sticky(t), setter]   fn txn_set_str(txn t, node node, prop prop, str value);
     [thread(app), sticky(t)]           fn txn_append_child(txn t, node parent, node child);
     [thread(app), sticky(t)]           fn txn_insert_before(txn t, node parent, node child, node? before);
     [thread(app), sticky(t)]           fn txn_remove(txn t, node node);
@@ -234,4 +257,7 @@ module core {
     [thread(app), getter]  fn mirror_get_color(world world, node node, prop prop, out rgba value) -> result;
     [thread(app), getter]  fn mirror_get_transform(world world, node node, prop prop, out transform2d value) -> result;
     [thread(app)]          fn mirror_get_frame(world world, node node, out rectf frame) -> result;
+    // C: (char *buffer, size_t capacity, size_t *out_length): a NUL-terminated prefix and the
+    // whole length. Bindings call it twice and return their string type. Only AX_PROP_TEXT.
+    [thread(app), getter]  fn mirror_get_str(world world, node node, prop prop, out str value) -> result;
 }

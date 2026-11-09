@@ -13,11 +13,12 @@
 
 #include <axion/base/ax_assert.h>
 #include <axion/base/ax_math.h>
+#include <axion/core/ax_text_node.h>
 #include <axion/base/ax_memory.h>
 
 #define PI_F 3.14159265f
 
-static const uint8_t COMPONENTS[AXA_CHANNELS] = {4, 4, 1, 1, 1, 1, 1, 6};
+static const uint8_t COMPONENTS[AXA_CHANNELS] = {4, 4, 1, 1, 1, 1, 1, 6, 4};
 
 /* Rest thresholds per component: displacement and velocity (per second). */
 static float rest_x(int ch, int k)
@@ -26,6 +27,7 @@ static float rest_x(int ch, int k)
     case AXA_FRAME:
         return 0.01f;
     case AXA_BACKGROUND:
+    case AXA_TEXT_COLOR:
     case AXA_OPACITY:
         return 1e-4f;
     case AXA_TRANSFORM:
@@ -41,7 +43,8 @@ size_t ax__anim_node_size(void)
     return sizeof(axa_node);
 }
 
-AX_STATIC_ASSERT(sizeof(axa_transitions) == sizeof(uint16_t) * 8u, "scene.c registers this size");
+AX_STATIC_ASSERT(sizeof(axa_transitions) == sizeof(uint16_t) * AXA_CHANNELS,
+                 "scene.c registers this size");
 
 int axa_channel_of(ax_prop prop)
 {
@@ -59,6 +62,8 @@ int axa_channel_of(ax_prop prop)
         return AXA_OPACITY;
     case AX_PROP_TRANSFORM:
         return AXA_TRANSFORM;
+    case AX_PROP_COLOR:
+        return AXA_TEXT_COLOR;
     default:
         return -1;
     }
@@ -120,6 +125,7 @@ typedef struct frame_change {
     ax_rect prev;         /* the target frame before the first change since the last sample */
     uint32_t prev_parent; /* its parent then */
     bool had_frame;
+    bool viewport; /* caused by a window's resize: starts no animation and stops none */
 } frame_change;
 
 struct anim_state {
@@ -465,10 +471,28 @@ static axa_node *anim_node(world_impl *w, ax_node node, bool create)
 }
 
 /* The target values of a channel, as components. */
-static void target_of(const ax_node_store *s, uint32_t row, int ch, float out[AXA_MAX_COMPONENTS])
+/* A node's own COLOR, or the default when it set none. */
+static ax_color own_text_color(const world_impl *w, uint32_t row)
 {
+    const ax_scene *scene = &w->scene;
+    const ax_node_text *t = (const ax_node_text *)ax_node_store_peek_component(
+        &scene->store, scene->store.slot_of_row[row], scene->text_component);
+    if (t != NULL && (t->own & AX_TEXT_PROP_BIT(AX_PROP_COLOR)) != 0) {
+        return t->color;
+    }
+    return ax_prop_builtin(AX_PROP_COLOR)->default_value.color;
+}
+
+static void target_of(const world_impl *w, uint32_t row, int ch, float out[AXA_MAX_COMPONENTS])
+{
+    const ax_node_store *s = &w->scene.store;
     memset(out, 0, sizeof(float) * AXA_MAX_COMPONENTS);
     switch (ch) {
+    case AXA_TEXT_COLOR: {
+        const ax_color c = own_text_color(w, row);
+        memcpy(out, &c, sizeof c);
+        break;
+    }
     case AXA_FRAME:
         memcpy(out, &s->layout[row].frame, sizeof(ax_rect));
         break;
@@ -492,6 +516,7 @@ static void value_components(int ch, const ax_value *v, float out[AXA_MAX_COMPON
     memset(out, 0, sizeof(float) * AXA_MAX_COMPONENTS);
     switch (ch) {
     case AXA_BACKGROUND:
+    case AXA_TEXT_COLOR:
         memcpy(out, &v->color, sizeof(ax_color));
         break;
     case AXA_TRANSFORM:
@@ -537,7 +562,7 @@ void ax__anim_on_set(world_impl *w, uint64_t seq, ax_node node, ax_prop prop, co
         return; /* this transaction's first change of the channel was handled */
     }
     value_components(ch, old, from);
-    target_of(s, row, ch, to);
+    target_of(w, row, ch, to);
     if (memcmp(from, to, sizeof from) == 0) {
         return;
     }
@@ -583,6 +608,14 @@ void ax__anim_on_frame_changed(world_impl *w, uint32_t slot)
     row = s->slots[slot].row;
     for (i = a->change_count; i-- > 0;) {
         if (a->changes[i].slot == slot && a->changes[i].generation == s->slots[slot].generation) {
+            if (a->changes[i].viewport && !a->viewport_changed) {
+                /* A transaction's change after the viewport's in the same cycle: it animates from
+                 * where the window's resize put the node. */
+                a->changes[i].viewport = false;
+                a->changes[i].prev = s->layout[row].prev_frame;
+                a->changes[i].prev_parent = s->layout[row].prev_parent;
+                a->changes[i].had_frame = (s->layout[row].had_frame & 2u) != 0;
+            }
             return; /* the first change since the last sample keeps its old frame */
         }
     }
@@ -596,11 +629,12 @@ void ax__anim_on_frame_changed(world_impl *w, uint32_t slot)
     c->prev = s->layout[row].prev_frame;
     c->prev_parent = s->layout[row].prev_parent;
     c->had_frame = (s->layout[row].had_frame & 2u) != 0;
+    c->viewport = a->viewport_changed;
 }
 
 static bool animated_ok(bool animate, const frame_change *c, const ax_node_store *s, uint32_t row)
 {
-    return animate && c->had_frame && c->prev_parent == s->links[row].parent;
+    return animate && !c->viewport && c->had_frame && c->prev_parent == s->links[row].parent;
 }
 
 /* Whether a node's frame change animates: an animated transaction caused it, not a viewport's
@@ -640,7 +674,7 @@ static bool under_resizing(const ax_node_store *s, const uint32_t *resizing, uin
 static void frames(world_impl *w, anim_state *a)
 {
     const ax_node_store *s = &w->scene.store;
-    const bool animate = a->any_animated && !a->viewport_changed;
+    const bool animate = a->any_animated;
     uint32_t i, resizing_count = 0, resizing_cap = 0;
     uint32_t *resizing = NULL;
     for (i = 0; i < a->change_count; ++i) {
@@ -667,6 +701,11 @@ static void frames(world_impl *w, anim_state *a)
             continue;
         }
         an = anim_node(w, node, false);
+        if (c->viewport) {
+            /* A window's resize: the node takes its new frame at once, and an animation it is
+             * running goes on (presentation = target + offset, so the offset still settles). */
+            continue;
+        }
         id = frame_curve(w, a, animate, c, row);
         if (id != 0 && under_resizing(s, resizing, resizing_count, row)) {
             id = 0;
@@ -685,7 +724,7 @@ static void frames(world_impl *w, anim_state *a)
         }
         memset(from, 0, sizeof from);
         memcpy(from, &c->prev, sizeof(ax_rect));
-        target_of(s, row, AXA_FRAME, to);
+        target_of(w, row, AXA_FRAME, to);
         retarget(w, a, an, AXA_FRAME, id, from, to, a->change_time);
     }
     if (resizing != NULL) {
@@ -703,8 +742,9 @@ static float clamp01(float v)
 
 /* The presentation values of a node's paint and composite channels: target + offset, clamped to
  * their valid ranges (a bouncing spring never makes opacity leave 0..1 or a radius negative). */
-static void present(const ax_node_store *s, uint32_t row, axa_node *an)
+static void present(const world_impl *w, uint32_t row, axa_node *an)
 {
+    const ax_node_store *s = &w->scene.store;
     const ax_node_paint *p = &s->paint[row];
     const ax_node_composite *c = &s->composite[row];
     int k;
@@ -722,6 +762,14 @@ static void present(const ax_node_store *s, uint32_t row, axa_node *an)
             r += an->track[AXA_RADIUS + k].off[0];
         }
         an->radii[k] = r > 0.0f ? r : 0.0f;
+    }
+    an->text_color = own_text_color(w, row);
+    if (an->active & (1u << AXA_TEXT_COLOR)) {
+        const float *o = an->track[AXA_TEXT_COLOR].off;
+        an->text_color.r += o[0];
+        an->text_color.g += o[1];
+        an->text_color.b += o[2];
+        an->text_color.a = clamp01(an->text_color.a + o[3]);
     }
     an->opacity = c->opacity;
     if (an->active & (1u << AXA_OPACITY)) {
@@ -765,13 +813,13 @@ uint32_t ax__anim_step(world_impl *w, uint64_t t, void (*on_root)(world_impl *, 
                 a->counters.finished++;
             }
         }
-        present(s, row, an);
+        present(w, row, an);
         /* What changed on screen: the frame and the composite only move layers; paint records the
          * node's items again. */
         if (was & ((1u << AXA_FRAME) | (1u << AXA_OPACITY) | (1u << AXA_TRANSFORM))) {
             s->dirty[row] |= AX_DIRTY_COMPOSITE;
         }
-        if (was & ((1u << AXA_BACKGROUND) | (0xFu << AXA_RADIUS))) {
+        if (was & ((1u << AXA_BACKGROUND) | (0xFu << AXA_RADIUS) | (1u << AXA_TEXT_COLOR))) {
             s->dirty[row] |= AX_DIRTY_PAINT;
         }
         if (an->active == 0) {
@@ -824,4 +872,12 @@ void ax__anim_get_counters(world_impl *w, ax_anim_counters *out, bool reset)
 uint64_t ax__anim_time(world_impl *w)
 {
     return w->anim != NULL && w->anim->enabled ? w->anim->last_time : 0;
+}
+
+void ax__anim_viewport_done(world_impl *w)
+{
+    anim_state *a = w->anim;
+    if (a != NULL) {
+        a->viewport_changed = false;
+    }
 }

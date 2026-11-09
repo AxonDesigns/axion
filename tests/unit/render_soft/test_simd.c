@@ -139,7 +139,7 @@ AX_TEST(coverage_is_bit_identical)
         memset(&f, 0, sizeof f);
         memset(&counts, 0, sizeof counts);
         ax_arena_reset(&arena);
-        AX_REQUIRE(ax__soft_prepare(ir, 240, 180, 2.0f, false, &arena, &f, &counts) == AX_OK);
+        AX_REQUIRE(ax__soft_prepare(ir, 240, 180, 2.0f, false, NULL, &arena, &f, &counts) == AX_OK);
         for (i = 0; i < f.cmd_count; ++i) {
             if (f.cmds[i].kind == SOFT_CMD_ITEM) {
                 points += compare_shape(&f.cmds[i].shape, f.cmds[i].box, &mismatches);
@@ -185,7 +185,7 @@ AX_TEST(tile_planes_are_bit_identical)
         memset(&f, 0, sizeof f);
         memset(&counts, 0, sizeof counts);
         ax_arena_reset(&arena);
-        AX_REQUIRE(ax__soft_prepare(ir, 240, 180, 2.0f, scene % 4 == 3, &arena, &f, &counts) ==
+        AX_REQUIRE(ax__soft_prepare(ir, 240, 180, 2.0f, scene % 4 == 3, NULL, &arena, &f, &counts) ==
                    AX_OK);
         f.width = 240;
         f.height = 180;

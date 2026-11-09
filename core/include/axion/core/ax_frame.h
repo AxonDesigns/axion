@@ -77,6 +77,15 @@ AX_API void ax_world_remove_root(ax_world world, ax_node root);
 AX_API uint32_t ax_world_position(ax_world world);
 
 /*
+ * Lays out what the window roots' new viewports made dirty, before the cycle's transactions apply
+ * (decision 104). Its frame changes are the window's resize: they start no animation and stop none
+ * (a running animation goes on from the node's new place), and the cycle's later passes are the
+ * transactions', whose changes animate as usual even while the window is being resized. Returns
+ * how many frames changed.
+ */
+AX_API uint32_t ax_world_layout_viewports(ax_world world);
+
+/*
  * Implicit animations (decision 94), after layout and before recording: starts or retargets the
  * animations of the frames layout changed (when an animated transaction caused the change and it
  * was not a viewport's resize), samples every running animation at frame_time_ns (the frame's
@@ -123,6 +132,21 @@ AX_API bool ax_world_root_changed(ax_world world, ax_node root, uint64_t *out_se
  */
 AX_API ax_result ax_world_record_root(ax_world world, ax_node root, ax_ir_builder *b);
 
+/*
+ * Lets the text system evict glyphs that no snapshot still drawable uses (decision 100): the
+ * runtime passes the oldest resource epoch of the snapshots its mailboxes hold
+ * (ax_ir_mailbox_oldest_epoch). Returns the number of glyphs evicted.
+ */
+AX_API uint32_t ax_world_retire_glyphs(ax_world world, uint64_t oldest_live_epoch);
+
+/*
+ * Glyphs rasterized at once for one snapshot before the rest go to background jobs (decision 100).
+ * AX_GLYPH_BUDGET_AUTO (the default): 1024 with a threaded job system, 256 otherwise (one thread
+ * never defers). For tests and tuning.
+ */
+#define AX_GLYPH_BUDGET_AUTO UINT32_MAX
+AX_API void ax_world_set_glyph_budget(ax_world world, uint32_t glyphs);
+
 /* Counters since the last reset, for tests and profiles. */
 typedef struct ax_frame_counters {
     uint64_t frames_changed;    /* layout: frames that changed */
@@ -135,6 +159,9 @@ typedef struct ax_frame_counters {
     uint64_t layers_demoted;    /* layers back in their parent's space after a neutral second */
     uint64_t present_relayouts; /* resizing nodes whose children were laid out again */
     uint64_t snapshots;         /* ax_world_record_root calls that succeeded */
+    uint64_t glyph_runs;          /* glyph runs recorded (decision 101) */
+    uint64_t glyph_runs_deferred; /* runs left out whole: their glyphs were not ready yet */
+    uint64_t text_rescaled;       /* layers whose settled scale changed: their text records again */
 } ax_frame_counters;
 
 AX_API void ax_world_get_frame_counters(ax_world world, ax_frame_counters *out, bool reset);

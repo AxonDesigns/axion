@@ -27,7 +27,7 @@ AX_TEST(empty_snapshot_has_only_the_root)
     AX_CHECK_EQ_U(ax_ir_layer_at(ir, 0)->parent, AX_IR_NO_LAYER);
     AX_CHECK_EQ_U(ax_ir_layer_at(ir, 0)->subtree_end, 1);
     AX_CHECK_RESULT(ax_ir_validate(ir), AX_OK);
-    axt_check_dump(ir, "render_ir 1.0 size 800x500 time_ns 1000 seq 0 background (0.1 0.2 0.3 1)\n"
+    axt_check_dump(ir, "render_ir 1.1 size 800x500 time_ns 1000 seq 0 background (0.1 0.2 0.3 1)\n"
                        "damage full\n"
                        "layer 0 root items 0\n");
     ax_ir_builder_deinit(&b);
@@ -72,7 +72,7 @@ AX_TEST(layers_items_and_painting_order)
     AX_CHECK_EQ_U(ax_ir_layer_at(ir, 4)->flags, AX_IR_LAYER_IMPLICIT);
     AX_CHECK_EQ_U(ir->items_size, 5 * sizeof(ax_ir_rect_item) + sizeof(ax_ir_rounded_rect_item));
     AX_CHECK_RESULT(ax_ir_validate(ir), AX_OK);
-    axt_check_dump(ir, "render_ir 1.0 size 320x240 time_ns 7 seq 0 background (0 0 0 1)\n"
+    axt_check_dump(ir, "render_ir 1.1 size 320x240 time_ns 7 seq 0 background (0 0 0 1)\n"
                        "damage full\n"
                        "layer 0 root items 1\n"
                        "  rect (0 0 10 10) color (1 0 0 1)\n"
@@ -123,7 +123,7 @@ AX_TEST(items_iterate_in_order_with_unknown_types)
     AX_REQUIRE(h != NULL);
     AX_CHECK_EQ_U(h->type, AX_IR_ITEM_ROUNDED_RECT);
     AX_CHECK(ax_ir_item_next(&it) == NULL);
-    axt_check_dump(ir, "render_ir 1.0 size 10x10 time_ns 0 seq 0 background (0 0 0 0)\n"
+    axt_check_dump(ir, "render_ir 1.1 size 10x10 time_ns 0 seq 0 background (0 0 0 0)\n"
                        "damage full\n"
                        "layer 0 root items 4\n"
                        "  rect (0 0 1 1) color (1 1 1 1)\n"

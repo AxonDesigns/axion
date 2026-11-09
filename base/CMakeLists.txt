@@ -26,6 +26,7 @@ add_library(ax_base STATIC
     src/jobs.c
     src/math.c
     src/pool.c
+    src/shared_str.c
     src/spsc_ring.c
     src/thread_common.c
     src/tracking_allocator.c

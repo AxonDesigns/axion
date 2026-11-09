@@ -184,6 +184,71 @@ static void draw_item(const soft_frame *f, const soft_cmd *cmd, float *planes, i
     }
 }
 
+/* A glyph's coverage at a device pixel (decision 101): the bitmap's byte when raster pixels land
+ * on device pixels, else a bilinear sample at the pixel's center (zero outside the bitmap). */
+static float glyph_coverage(const soft_glyph *g, int32_t px, int32_t py)
+{
+    if (g->exact) {
+        const int32_t u = px - g->x0, v = py - g->y0;
+        if (u < 0 || v < 0 || u >= g->width || v >= g->height) {
+            return 0.0f;
+        }
+        return (float)g->lut[g->pixels[(size_t)v * g->stride + (size_t)u]] * (1.0f / 255.0f);
+    } else {
+        const float cx = (float)px + 0.5f, cy = (float)py + 0.5f;
+        const float u = g->inv.a * cx + g->inv.c * cy + g->inv.tx - 0.5f;
+        const float v = g->inv.b * cx + g->inv.d * cy + g->inv.ty - 0.5f;
+        float fu, fv, t00, t10, t01, t11, top, bottom, c;
+        int32_t iu, iv;
+        if (!(u > -1.0f) || !(v > -1.0f) || !(u < (float)g->width) || !(v < (float)g->height)) {
+            return 0.0f;
+        }
+        iu = (int32_t)(u + 1.0f) - 1; /* floor, for u > -1 */
+        iv = (int32_t)(v + 1.0f) - 1;
+        fu = u - (float)iu;
+        fv = v - (float)iv;
+#define TEXEL(x, y)                                                                         \
+    (((x) < 0 || (y) < 0 || (x) >= g->width || (y) >= g->height)                            \
+         ? 0.0f                                                                             \
+         : (float)g->pixels[(size_t)(y) * g->stride + (size_t)(x)])
+        t00 = TEXEL(iu, iv);
+        t10 = TEXEL(iu + 1, iv);
+        t01 = TEXEL(iu, iv + 1);
+        t11 = TEXEL(iu + 1, iv + 1);
+#undef TEXEL
+        top = t00 + (t10 - t00) * fu;
+        bottom = t01 + (t11 - t01) * fu;
+        c = top + (bottom - top) * fv;
+        {
+            const int32_t i = (int32_t)(c + 0.5f);
+            return (float)g->lut[i < 0 ? 0 : (i > 255 ? 255 : i)] * (1.0f / 255.0f);
+        }
+    }
+}
+
+static void draw_glyph(const soft_frame *f, const soft_cmd *cmd, float *planes, int32_t ox,
+                       int32_t oy, tile_rect r)
+{
+    int32_t x, y;
+    for (y = r.y0; y < r.y1; ++y) {
+        const float py = (float)(oy + y) + 0.5f;
+        for (x = r.x0; x < r.x1; ++x) {
+            float cov = glyph_coverage(&cmd->glyph, ox + x, oy + y);
+            uint32_t c = cmd->clip;
+            const float px = (float)(ox + x) + 0.5f;
+            while (c != AX_IR_NO_INDEX && cov >= SOFT_MIN_COVERAGE) {
+                cov = cov * ax__soft_shape_coverage(&f->clips[c].shape, px, py);
+                c = f->clips[c].parent;
+            }
+            if (cov < SOFT_MIN_COVERAGE) {
+                continue;
+            }
+            ax__soft_blend_pixel(planes, (size_t)y * SOFT_TILE + (size_t)x, cmd->color, cov,
+                                 cmd->linear != 0);
+        }
+    }
+}
+
 static void clear_rect(float *planes, tile_rect r)
 {
     int32_t y;
@@ -285,6 +350,11 @@ void ax__soft_draw_tile(const soft_frame *f, soft_tile_ctx *ctx, uint32_t tx, ui
                 } else {
                     draw_item(f, cmd, ctx->planes + depth * group_stride, ox, oy, r);
                 }
+            }
+        } else if (cmd->kind == SOFT_CMD_GLYPH) {
+            if (r.x0 < r.x1 && r.y0 < r.y1) {
+                /* One path for scalar and SIMD frames: the same bytes either way. */
+                draw_glyph(f, cmd, ctx->planes + depth * group_stride, ox, oy, r);
             }
         } else if (cmd->kind == SOFT_CMD_PUSH) {
             if (!(r.x0 < r.x1 && r.y0 < r.y1)) {

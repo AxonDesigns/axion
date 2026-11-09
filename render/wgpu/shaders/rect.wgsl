@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // ax_render_wgpu: rects and rounded rects as instanced quads with analytic area coverage
-// (decision 55). Embedded into the build by render/wgpu/CMakeLists.txt.
+// (decision 55), and glyphs sampled from the A8 atlas (decision 101), in one draw so painting
+// order is kept. Embedded into the build by render/wgpu/CMakeLists.txt.
 //
 // Coverage is the exact area of the unit pixel square on the inner side of each edge, computed
 // in device pixels from the edge's normal and signed distance:
@@ -27,6 +28,8 @@
 
 const FLAG_ROUNDED: u32 = 1u;
 const FLAG_FOOTPRINT_FROM_DERIVATIVES: u32 = 2u;
+const FLAG_GLYPH: u32 = 4u; // radii = the glyph's texels x0, y0, x1, y1; page and LUT row in the
+                            // flags' bits 8-15 and 16-23
 const MAX_CLIPS: u32 = 5u; // RW_MAX_CLIP_CHAIN complex clips and one device rect
 
 struct Clip {
@@ -37,6 +40,10 @@ struct Clip {
 };
 
 @group(0) @binding(0) var<storage, read> clips: array<Clip>;
+// Glyphs (decision 101): the atlas pages, the coverage correction (256 x 8) and the sampler.
+@group(0) @binding(1) var atlas: texture_2d_array<f32>;
+@group(0) @binding(2) var text_lut: texture_2d<f32>;
+@group(0) @binding(3) var atlas_sampler: sampler;
 
 struct Instance {
     @location(0) rect: vec4f,   // x, y, w, h in local units
@@ -66,7 +73,8 @@ fn vs(@builtin(vertex_index) vi: u32, inst: Instance) -> VOut {
     // Grow the quad by twice the pixel footprint's half extent in local units, so every pixel
     // the shape touches is rasterized; extra pixels get coverage 0.
     let half_px = 0.5 * vec2f(abs(inst.inv.x) + abs(inst.inv.z), abs(inst.inv.y) + abs(inst.inv.w));
-    let margin = 2.0 * half_px;
+    // A glyph's quad is its bitmap: its border texels are already empty.
+    let margin = select(2.0 * half_px, vec2f(0.0), (u32(inst.xlate.z) & FLAG_GLYPH) != 0u);
     let p = inst.rect.xy - margin + corner * (inst.rect.zw + 2.0 * margin);
     var o: VOut;
     o.pos = vec4f(inst.xform.x * p.x + inst.xform.z * p.y + inst.xlate.x,
@@ -173,7 +181,20 @@ fn fs(in: VOut) -> @location(0) vec4f {
     if ((in.flags & FLAG_FOOTPRINT_FROM_DERIVATIVES) != 0u) {
         inv = vec4f(ddx.x, ddx.y, ddy.x, ddy.y);
     }
-    var cov = shape_coverage(in.local, in.rect, in.radii, (in.flags & FLAG_ROUNDED) != 0u, inv);
+    var cov: f32;
+    if ((in.flags & FLAG_GLYPH) != 0u) {
+        // The bitmap's coverage at the pixel (bilinear; exactly a texel where raster pixels land
+        // on device pixels), then corrected for the text's luminance, as ax_render_soft does.
+        let t = (in.local - in.rect.xy) / in.rect.zw;
+        let texel = mix(in.radii.xy, in.radii.zw, t);
+        let page = i32((in.flags >> 8u) & 0xFFu);
+        let raw = textureSampleLevel(atlas, atlas_sampler,
+                                     texel / vec2f(textureDimensions(atlas)), page, 0.0).r;
+        let index = u32(clamp(raw * 255.0 + 0.5, 0.0, 255.0));
+        cov = textureLoad(text_lut, vec2u(index, (in.flags >> 16u) & 0xFFu), 0).r;
+    } else {
+        cov = shape_coverage(in.local, in.rect, in.radii, (in.flags & FLAG_ROUNDED) != 0u, inv);
+    }
 
     // The clips, innermost first, each in its own space (the pixel centre is in.pos.xy).
     var ci = in.clip;

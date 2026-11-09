@@ -149,6 +149,19 @@ AX_TEST(builtin_properties_match_the_documented_table)
         {AX_PROP_OPACITY, "opacity", AX_VALUE_F32, AX_EFFECT_COMPOSITE, AX_PROP_ANIMATABLE},
         {AX_PROP_TRANSFORM, "transform", AX_VALUE_TRANSFORM2D, AX_EFFECT_COMPOSITE,
          AX_PROP_ANIMATABLE},
+        {AX_PROP_TEXT, "text", AX_VALUE_STRING, AX_EFFECT_LAYOUT, 0},
+        {AX_PROP_FONT_FAMILY, "font-family", AX_VALUE_STRING, AX_EFFECT_LAYOUT,
+         AX_PROP_INHERITED},
+        {AX_PROP_FONT_SIZE, "font-size", AX_VALUE_F32, AX_EFFECT_LAYOUT, AX_PROP_INHERITED},
+        {AX_PROP_FONT_WEIGHT, "font-weight", AX_VALUE_F32, AX_EFFECT_LAYOUT, AX_PROP_INHERITED},
+        {AX_PROP_FONT_STYLE, "font-style", AX_VALUE_U32, AX_EFFECT_LAYOUT, AX_PROP_INHERITED},
+        {AX_PROP_FONT_WIDTH, "font-width", AX_VALUE_F32, AX_EFFECT_LAYOUT, AX_PROP_INHERITED},
+        {AX_PROP_LINE_HEIGHT, "line-height", AX_VALUE_F32, AX_EFFECT_LAYOUT, AX_PROP_INHERITED},
+        {AX_PROP_FONT_FEATURES, "font-feature-settings", AX_VALUE_STRING, AX_EFFECT_LAYOUT,
+         AX_PROP_INHERITED},
+        {AX_PROP_TEXT_ALIGN, "text-align", AX_VALUE_U32, AX_EFFECT_PAINT, AX_PROP_INHERITED},
+        {AX_PROP_COLOR, "color", AX_VALUE_COLOR, AX_EFFECT_PAINT,
+         AX_PROP_INHERITED | AX_PROP_ANIMATABLE},
     };
     fixture f;
     uint32_t count = 0;
@@ -172,7 +185,7 @@ AX_TEST(builtin_properties_match_the_documented_table)
     AX_CHECK(ax_prop_registry_find(&f.scene.props, AX_PROP_INVALID) == NULL);
     AX_CHECK(ax_prop_registry_find(&f.scene.props, 0x0150) == NULL);
     AX_CHECK(ax_prop_registry_find(&f.scene.props, 0x12345) == NULL);
-    AX_CHECK(ax_prop_registry_find_by_name(&f.scene.props, AX_STR("color")) == NULL);
+    AX_CHECK(ax_prop_registry_find_by_name(&f.scene.props, AX_STR("colour")) == NULL);
     AX_CHECK_EQ_U(fixture_deinit(&f), 0);
 }
 

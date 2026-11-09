@@ -22,9 +22,10 @@ concurrency:
 
 jobs:
   # Repository checks that need no build: every tracked text file ends in a newline
-  # (.editorconfig), and decisions.md's index agrees with each entry's status line.
+  # (.editorconfig), decisions.md's index agrees with each entry's status line, and every example
+  # defines its executable (decision 103).
   repo-checks:
-    name: Repository checks (final newlines, decision statuses)
+    name: Repository checks (final newlines, decision statuses, examples)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -32,6 +33,8 @@ jobs:
         run: sh tools/ci/check_final_newline.sh
       - name: Decision statuses
         run: python3 tools/ci/check_decision_status.py
+      - name: Examples define their executables
+        run: python3 tools/ci/check_examples.py
 
   build-test:
     name: ${{ matrix.name }}
@@ -59,13 +62,14 @@ jobs:
           # ThreadSanitizer over the code with cross-thread handoffs: base's primitives and jobs, the
           # platform module's queues and triple buffers, the Render IR's mailbox, core's queues, the
           # runtime's threads (with a fake presenter), the software renderer's tiles on the job
-          # system and the headless host's instances and threaded mode. gpu/ is not built: its suites
+          # system, the headless host's instances and threaded mode, and text's shared caches (shaping
+          # and measuring from several threads). gpu/ is not built: its suites
           # run under ASan, and Dawn is not instrumented (decision 44).
-          - name: "Linux / Clang / TSan (base, platform, render IR, core, runtime, soft, headless)"
+          - name: "Linux / Clang / TSan (base, platform, render IR, core, text, runtime, soft, headless)"
             os: ubuntu-latest
             preset: clang-tsan
             configure_args: "-DAX_BUILD_GPU=OFF"
-            test_args: "-L \"^(base|platform|render_ir|core|runtime|render_soft|headless)$\""
+            test_args: "-L \"^(base|platform|render_ir|core|text|runtime|render_soft|headless)$\""
     steps:
       - uses: actions/checkout@v4
 
@@ -83,14 +87,17 @@ jobs:
       # The platform module (Linux only for now) needs libwayland and wayland-scanner; weston
       # runs headless for the Wayland integration tests. The runners have no GPU: gpu/ tests run on
       # Mesa's software Vulkan driver (lavapipe, in mesa-vulkan-drivers).
+      # libfontconfig-dev: text's system font source (decision 98).
       - name: Wayland and Vulkan packages
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libwayland-dev libwayland-bin weston \
+            libfontconfig-dev \
             libvulkan1 mesa-vulkan-drivers
 
-      # Pinned prebuilt WebGPU packages (gpu/third_party/webgpu_deps.cmake), unpacked into .deps/.
+      # Pinned prebuilt WebGPU packages (gpu/third_party/webgpu_deps.cmake) and text's source
+      # archives (cmake/AxionTextDeps.cmake), unpacked into .deps/.
       # CMake verifies each archive's checksum when it downloads one; a cache hit was verified
       # when it was saved.
       - name: Cache WebGPU packages
@@ -98,7 +105,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .deps
-          key: webgpu-${{ runner.os }}-${{ runner.arch }}-${{ contains(matrix.configure_args, 'wgpu-native') && 'wgpu-native' || 'dawn' }}-${{ hashFiles('gpu/third_party/webgpu_deps.cmake') }}
+          key: webgpu-${{ runner.os }}-${{ runner.arch }}-${{ contains(matrix.configure_args, 'wgpu-native') && 'wgpu-native' || 'dawn' }}-${{ hashFiles('gpu/third_party/webgpu_deps.cmake', 'cmake/AxionTextDeps.cmake') }}
 
       # The runners' 32-bit mmap randomization breaks ThreadSanitizer's memory layout
       # ("unexpected memory mapping"); 28 bits is what it supports.
@@ -253,7 +260,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .deps
-          key: webgpu-arch-${{ runner.arch }}-dawn-${{ hashFiles('gpu/third_party/webgpu_deps.cmake') }}
+          key: webgpu-arch-${{ runner.arch }}-dawn-${{ hashFiles('gpu/third_party/webgpu_deps.cmake', 'cmake/AxionTextDeps.cmake') }}
 
       - name: Configure
         run: cmake --preset gcc-debug
@@ -274,7 +281,7 @@ jobs:
   # renderer's and the headless host's tests run in Node: the cooperative mode (ax_host_frame), the
   # inline job system and SIMD128 as the web runs them (decision 79). Tests that need threads skip.
   emscripten:
-    name: Web / Emscripten / single-threaded (core, render IR, runtime, soft, headless in Node)
+    name: Web / Emscripten / single-threaded (core, text, render IR, runtime, soft, headless in Node)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

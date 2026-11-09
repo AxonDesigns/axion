@@ -84,7 +84,7 @@ AX_TEST(round_trip_is_byte_exact)
     AX_REQUIRE(ir != NULL);
     bytes = serialize(ir, &size);
     AX_REQUIRE(bytes != NULL);
-    AX_CHECK_EQ_U(size, 80 + 2 * 16 + ir->layer_count * 100 + ir->items_size);
+    AX_CHECK_EQ_U(size, 96 + 2 * 16 + ir->layer_count * 100 + ir->items_size); /* no glyphs */
 
     AX_REQUIRE(ax_ir_deserialize(bytes, size, &arena, &back) == AX_OK);
     AX_CHECK_EQ_U(back->layer_count, ir->layer_count);
@@ -128,7 +128,7 @@ AX_TEST(header_layout_is_pinned)
     AX_REQUIRE(bytes != NULL);
     AX_CHECK(memcmp(bytes, "AXIR", 4) == 0);
     AX_CHECK_EQ_U(bytes[4] | (bytes[5] << 8), AX_IR_VERSION_MAJOR);
-    AX_CHECK_EQ_U(bytes[8], 80); /* header_size */
+    AX_CHECK_EQ_U(bytes[8], 96); /* header_size: minor 1, an empty glyph table */
     memcpy(&f, bytes + 16, 4);
     AX_CHECK_NEAR_F(f, 1093.5f, 0.0f);
     {
@@ -141,7 +141,7 @@ AX_TEST(header_layout_is_pinned)
     memcpy(&u, bytes + 68, 4);
     AX_CHECK_EQ_U(u, 100); /* layer stride */
     /* The first layer record follows the damage rects: the root, parent = none. */
-    memcpy(&u, bytes + 80 + 32, 4);
+    memcpy(&u, bytes + 96 + 32, 4);
     AX_CHECK_EQ_U(u, AX_IR_NO_LAYER);
     free(bytes);
     ax_ir_builder_deinit(&b);
@@ -178,12 +178,12 @@ AX_TEST(newer_minor_with_larger_records_reads)
     newer = (uint8_t *)malloc(newer_size);
     AX_REQUIRE(newer != NULL);
     memset(newer, 0xEE, newer_size);
-    memcpy(newer, bytes, 80);
+    memcpy(newer, bytes, 96);
     newer[6] = (uint8_t)(AX_IR_VERSION_MINOR + 1);
-    put_u32(newer + 8, 88);
+    put_u32(newer + 8, 104);
     put_u32(newer + 68, 112);
-    w = newer + 88;
-    r = bytes + 80;
+    w = newer + 104;
+    r = bytes + 96;
     memcpy(w, r, 2 * 16);
     w += 32;
     r += 32;
@@ -273,5 +273,36 @@ AX_TEST(small_buffer_writes_nothing)
     AX_CHECK_RESULT(ax_ir_serialize(ir, buf, sizeof buf, &need), AX_ERR_OUT_OF_MEMORY);
     AX_CHECK_EQ_U(need, ax_ir_serialized_size(ir));
     AX_CHECK_EQ_U(buf[0], 0x5A);
+    ax_ir_builder_deinit(&b);
+}
+
+/* A snapshot written by minor 0 (an 80-byte header, no glyph table) still reads. */
+AX_TEST(a_minor_0_snapshot_still_reads)
+{
+    ax_ir_builder b;
+    ax_arena arena;
+    const ax_render_ir *ir, *back;
+    uint8_t *bytes, *old;
+    size_t size, old_size;
+    ax_ir_builder_init(&b, ax_default_allocator());
+    ax_arena_init(&arena, ax_default_allocator(), 0);
+    ir = record_everything(&b);
+    AX_REQUIRE(ir != NULL);
+    bytes = serialize(ir, &size);
+    AX_REQUIRE(bytes != NULL);
+    old_size = size - 16;
+    old = (uint8_t *)malloc(old_size);
+    AX_REQUIRE(old != NULL);
+    memcpy(old, bytes, 80);
+    old[6] = 0;
+    put_u32(old + 8, 80);
+    memcpy(old + 80, bytes + 96, size - 96);
+    AX_REQUIRE(ax_ir_deserialize(old, old_size, &arena, &back) == AX_OK);
+    AX_CHECK_EQ_U(back->version_minor, 0);
+    AX_CHECK(back->glyphs == NULL);
+    AX_CHECK_EQ_U(back->items_size, ir->items_size);
+    free(old);
+    free(bytes);
+    ax_arena_deinit(&arena);
     ax_ir_builder_deinit(&b);
 }

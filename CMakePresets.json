@@ -30,21 +30,21 @@
       "inherits": "base",
       "description": "Run from a shell with the MSVC environment loaded (vcvars64 or msvc-dev-cmd).",
       "architecture": { "value": "x64", "strategy": "external" },
-      "cacheVariables": { "CMAKE_C_COMPILER": "cl" },
+      "cacheVariables": { "CMAKE_C_COMPILER": "cl", "CMAKE_CXX_COMPILER": "cl" },
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
     },
     {
       "name": "clang",
       "hidden": true,
       "inherits": "base",
-      "cacheVariables": { "CMAKE_C_COMPILER": "clang" },
+      "cacheVariables": { "CMAKE_C_COMPILER": "clang", "CMAKE_CXX_COMPILER": "clang++" },
       "condition": { "type": "notEquals", "lhs": "${hostSystemName}", "rhs": "Windows" }
     },
     {
       "name": "gcc",
       "hidden": true,
       "inherits": "base",
-      "cacheVariables": { "CMAKE_C_COMPILER": "gcc" },
+      "cacheVariables": { "CMAKE_C_COMPILER": "gcc", "CMAKE_CXX_COMPILER": "g++" },
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
     },
 
@@ -122,7 +122,7 @@
       "configurePreset": "emscripten-tests",
       "inherits": "test-base",
       "description": "The single-threaded build's tests in Node: core, the Render IR and the runtime's cooperative mode (decision 79).",
-      "filter": { "include": { "label": "^(core|headless|render_ir|render_soft|runtime)$" }, "exclude": { "label": "^death$" } }
+      "filter": { "include": { "label": "^(core|headless|render_ir|render_soft|runtime|text)$" }, "exclude": { "label": "^death$" } }
     }
   ]
 }

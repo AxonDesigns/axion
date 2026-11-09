@@ -315,6 +315,60 @@ AX_TEST(the_pass_lays_out_dirty_roots_and_reports_changed_frames)
     AX_CHECK_EQ_U(fixture_deinit(&f), 0);
 }
 
+static bool scaled_viewport(void *user, ax_node root, float *w, float *h, float *scale)
+{
+    (void)root;
+    *w = 320.0f;
+    *h = 240.0f;
+    *scale = *(const float *)user;
+    return true;
+}
+
+/* A window moved to a monitor of another scale: only the root is marked (its size is the same),
+ * the subtree's layouts are cached, and every frame still rounds to the new grid. Frames left on
+ * the old grid draw between device pixels (blurry edges and text) until something else moves. */
+AX_TEST(a_new_scale_rounds_every_frame_to_its_grid)
+{
+    fixture f;
+    ax_node root, panel, card, label;
+    ax_layout_pass_desc d;
+    float scale = 1.0f;
+    ax_rect r;
+    fixture_init(&f);
+    root = node(&f, (ax_node)AX_HANDLE_NULL_INIT);
+    pts(&f, root, AX_PROP_PADDING, 7);
+    panel = node(&f, root);
+    pts(&f, panel, AX_PROP_HEIGHT, 100);
+    pts(&f, panel, AX_PROP_PADDING, 7);
+    card = node(&f, panel);
+    pts(&f, card, AX_PROP_HEIGHT, 50);
+    pts(&f, card, AX_PROP_PADDING, 7);
+    label = node(&f, card);
+    pts(&f, label, AX_PROP_HEIGHT, 13);
+    memset(&d, 0, sizeof d);
+    d.viewport = scaled_viewport;
+    d.viewport_user = &scale;
+    (void)ax_layout_run(&f.scene, &d);
+    CHECK_FRAME(&f, label, 7, 7, 278, 13);
+    ax_scene_clear_dirty(&f.scene);
+
+    scale = 1.325f;
+    ax_scene_mark_layout(&f.scene, root);
+    (void)ax_layout_run(&f.scene, &d);
+    /* Each offset is whole pixels at 1.325 (7 points: 9.275 pixels, 9), so the label's edges,
+     * the sum of its ancestors' offsets, are too. */
+    r = frame_of(&f, label);
+    {
+        const float abs_x = frame_of(&f, root).x + frame_of(&f, panel).x + frame_of(&f, card).x + r.x;
+        const float abs_y = frame_of(&f, root).y + frame_of(&f, panel).y + frame_of(&f, card).y + r.y;
+        AX_CHECK_NEAR_F(r.x, 9.0f / 1.325f, 1e-4);
+        AX_CHECK_NEAR_F(abs_x * 1.325f, roundf(abs_x * 1.325f), 1e-3);
+        AX_CHECK_NEAR_F(abs_y * 1.325f, roundf(abs_y * 1.325f), 1e-3);
+        AX_CHECK_NEAR_F(r.h * 1.325f, roundf(r.h * 1.325f), 1e-3);
+    }
+    AX_CHECK_EQ_U(fixture_deinit(&f), 0);
+}
+
 /* ---- Relayout boundaries (decision 92) ------------------------------------------------------ */
 
 typedef struct app_scene {

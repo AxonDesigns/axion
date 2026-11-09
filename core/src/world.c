@@ -86,12 +86,14 @@ static void free_world(world_impl *w)
         ax_scene_deinit(&w->scene);
     }
     ax__apply_free(w);
+    ax__text_free(w); /* after the scene: its paragraphs belong to the text system */
     ax__frame_free(w);
     ax__anim_free(w);
     ax__mirror_free(w);
     ax_mem_free(&a, w->free_handles, sizeof(ax_node) * w->free_handle_capacity);
     ax_mem_free(&a, w->recycle_backlog, sizeof(ax_node) * w->recycle_backlog_capacity);
     ax_mem_free(&a, w->return_backlog, sizeof(ax_txn *) * w->return_backlog_capacity);
+    ax_mutex_deinit(&w->wake_lock);
     ax_mem_free(&a, w, sizeof *w);
 }
 
@@ -120,6 +122,7 @@ ax_result ax_world_create(const ax_world_desc *desc, ax_world *out_world)
         return ax_set_error(AX_ERR_OUT_OF_MEMORY, "ax_world_create: out of memory");
     }
     memset(w, 0, sizeof *w);
+    ax_mutex_init(&w->wake_lock);
     w->allocator = *a;
     w->clock = desc != NULL && desc->clock != NULL ? desc->clock : default_clock;
     w->clock_user = desc != NULL && desc->clock != NULL ? desc->clock_user : NULL;
@@ -234,13 +237,32 @@ void ax_world_bind_scene_thread(ax_world world)
     }
 }
 
-void ax_world_set_commit_hook(ax_world world, void (*hook)(void *user), void *user)
+void ax_world_set_wake_hook(ax_world world, ax_world_wake_fn hook, void *user)
 {
     world_impl *w = ax__world_from_handle(world);
     AX_ASSERT(w != NULL);
     if (w != NULL) {
-        w->commit_hook = hook;
-        w->commit_hook_user = user;
+        ax_mutex_lock(&w->wake_lock);
+        w->wake_hook = hook;
+        w->wake_user = user;
+        ax_mutex_unlock(&w->wake_lock);
+    }
+}
+
+void ax__world_wake(world_impl *w, ax_node root)
+{
+    ax_mutex_lock(&w->wake_lock);
+    if (w->wake_hook != NULL) {
+        w->wake_hook(w->wake_user, root);
+    }
+    ax_mutex_unlock(&w->wake_lock);
+}
+
+void ax_world_request_frame(ax_world world, ax_node root)
+{
+    world_impl *w = ax__world_from_handle(world);
+    if (w != NULL) {
+        ax__world_wake(w, root);
     }
 }
 

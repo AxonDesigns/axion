@@ -10,6 +10,7 @@
  * closes before the first layer past its subtree.
  */
 #include <math.h> /* sqrtf only: IEEE requires it correctly rounded */
+#include <stddef.h>
 #include <string.h>
 
 #include "axion/ax_error.h"
@@ -287,10 +288,68 @@ static void add_item_box(builder *b, soft_box box)
     }
 }
 
-ax_result ax__soft_prepare(const ax_render_ir *ir, uint32_t width, uint32_t height, float scale,
-                           bool linear_default, ax_arena *arena, soft_frame *out,
-                           ax_render_counts *counts)
+/* A glyph's bitmap at its place: exact when its raster pixels land on device pixels (an
+ * identity linear part and a whole translation), else mapped back for bilinear sampling.
+ * `m` maps raster pixels to device pixels; (bx, by) is the bitmap's top-left on the raster grid. */
+static bool place_glyph(soft_affine m, float bx, float by, const ax_ir_glyph_bitmap *bm,
+                        uint32_t width, uint32_t height, soft_glyph *g, soft_box *box)
 {
+    const float dx = m.a * bx + m.c * by + m.tx;
+    const float dy = m.b * bx + m.d * by + m.ty;
+    g->pixels = bm->pixels;
+    g->stride = bm->stride;
+    g->width = bm->width;
+    g->height = bm->height;
+    if (!finite(dx) || !finite(dy) || absf(dx) > 1.0e8f || absf(dy) > 1.0e8f) {
+        return false;
+    }
+    if (absf(m.a - 1.0f) < 1e-5f && absf(m.d - 1.0f) < 1e-5f && absf(m.b) < 1e-6f &&
+        absf(m.c) < 1e-6f) {
+        const float rx = dx >= 0.0f ? (float)(int32_t)(dx + 0.5f) : -(float)(int32_t)(-dx + 0.5f);
+        const float ry = dy >= 0.0f ? (float)(int32_t)(dy + 0.5f) : -(float)(int32_t)(-dy + 0.5f);
+        if (absf(dx - rx) < 1e-3f && absf(dy - ry) < 1e-3f) {
+            g->exact = 1;
+            g->x0 = (int32_t)rx;
+            g->y0 = (int32_t)ry;
+            box->x0 = g->x0 > 0 ? g->x0 : 0;
+            box->y0 = g->y0 > 0 ? g->y0 : 0;
+            box->x1 = g->x0 + g->width < (int32_t)width ? g->x0 + g->width : (int32_t)width;
+            box->y1 = g->y0 + g->height < (int32_t)height ? g->y0 + g->height : (int32_t)height;
+            return true;
+        }
+    }
+    {
+        /* Device -> bitmap: the inverse of m after a translation to the bitmap's corner. */
+        soft_affine to_bitmap = m;
+        float xs[4], ys[4];
+        int k;
+        to_bitmap.tx = dx;
+        to_bitmap.ty = dy;
+        if (!within_scale(to_bitmap) || !ax__soft_affine_invert(to_bitmap, &g->inv) ||
+            !within_scale(g->inv)) {
+            return false;
+        }
+        g->exact = 0;
+        for (k = 0; k < 4; ++k) {
+            const float u = (k == 1 || k == 2) ? (float)g->width + 1.0f : -1.0f;
+            const float v = (k >= 2) ? (float)g->height + 1.0f : -1.0f;
+            xs[k] = to_bitmap.a * u + to_bitmap.c * v + to_bitmap.tx;
+            ys[k] = to_bitmap.b * u + to_bitmap.d * v + to_bitmap.ty;
+        }
+        span_to_pixels(minf(minf(xs[0], xs[1]), minf(xs[2], xs[3])),
+                       maxf(maxf(xs[0], xs[1]), maxf(xs[2], xs[3])), width, &box->x0, &box->x1);
+        span_to_pixels(minf(minf(ys[0], ys[1]), minf(ys[2], ys[3])),
+                       maxf(maxf(ys[0], ys[1]), maxf(ys[2], ys[3])), height, &box->y0, &box->y1);
+    }
+    return true;
+}
+
+ax_result ax__soft_prepare(const ax_render_ir *ir, uint32_t width, uint32_t height, float scale,
+                           bool linear_default, const uint8_t (*lut)[256], ax_arena *arena,
+                           soft_frame *out, ax_render_counts *counts)
+{
+    const ax_ir_glyph_source *glyphs =
+        ir->struct_size >= offsetof(ax_render_ir, glyphs) + sizeof(void *) ? ir->glyphs : NULL;
     const soft_box target = {0, 0, (int32_t)width, (int32_t)height};
     soft_affine to_device;
     layer_state *ls;
@@ -414,6 +473,66 @@ ax_result ax__soft_prepare(const ax_render_ir *ir, uint32_t width, uint32_t heig
             bool rounded = false;
             soft_box box;
             ++index;
+            if (h->type == AX_IR_ITEM_GLYPH_RUN) {
+                ax_ir_glyph_run_item run;
+                float enc[4];
+                uint32_t k;
+                memcpy(&run, h, sizeof run);
+                if (glyphs == NULL || !(run.raster_scale > 0.0f) || !finite(run.raster_scale) ||
+                    !finite(run.color.r) || !finite(run.color.g) || !finite(run.color.b) ||
+                    !finite(run.color.a)) {
+                    counts->skipped_items++;
+                    continue;
+                }
+                if (!encode_color(run.color, item_opacity, s->linear, enc)) {
+                    continue;
+                }
+                {
+                    /* Raster pixels -> device pixels: the layer's transform after 1/scale. */
+                    const float inv_scale = 1.0f / run.raster_scale;
+                    soft_affine m = s->world;
+                    const uint8_t *row_lut = lut[ax_ir_text_lut_bucket(run.color)];
+                    m.a = s->world.a * inv_scale;
+                    m.b = s->world.b * inv_scale;
+                    m.c = s->world.c * inv_scale;
+                    m.d = s->world.d * inv_scale;
+                    for (k = 0; k < run.glyph_count; ++k) {
+                        ax_ir_glyph gl;
+                        ax_ir_glyph_bitmap bm;
+                        soft_box gbox;
+                        memcpy(&gl, (const uint8_t *)h + sizeof run + sizeof gl * k, sizeof gl);
+                        if (!glyphs->lookup(glyphs, run.font_instance, gl.id, gl.bin, &bm) ||
+                            bm.width == 0 || bm.height == 0 || bm.pixels == NULL) {
+                            continue;
+                        }
+                        if (b.count == b.capacity) {
+                            counts->skipped_items++; /* no room left (cannot happen: see above) */
+                            break;
+                        }
+                        cmd = &b.cmds[b.count];
+                        memset(cmd, 0, sizeof *cmd);
+                        if (!place_glyph(m, (float)(gl.x + bm.left), (float)(gl.y - bm.top), &bm,
+                                         width, height, &cmd->glyph, &gbox)) {
+                            counts->invalid_items++;
+                            continue;
+                        }
+                        cmd->glyph.lut = row_lut;
+                        gbox = box_intersect(gbox, s->clip_box);
+                        if (box_empty(gbox)) {
+                            continue;
+                        }
+                        memcpy(cmd->color, enc, sizeof enc);
+                        cmd->kind = SOFT_CMD_GLYPH;
+                        cmd->clip = s->clip;
+                        cmd->linear = s->linear ? 1u : 0u;
+                        cmd->box = gbox;
+                        add_item_box(&b, gbox);
+                        b.count++;
+                    }
+                    counts->instances++;
+                }
+                continue;
+            }
             if (h->type == AX_IR_ITEM_RECT) {
                 ax_ir_rect_item item;
                 memcpy(&item, h, sizeof item);

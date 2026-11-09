@@ -12,12 +12,14 @@ foreach(_part MAJOR MINOR PATCH)
                          "${_ax_version_lines}")
 endforeach()
 
-# Only C for now. Platform glue in other languages (Objective-C on Apple, Kotlin or Java on
-# Android) is enabled per platform through cmake/AxionLanguages.cmake when its module lands.
+# AXION is C. C++ is enabled only to build HarfBuzz from source (cmake/AxionTextDeps.cmake,
+# decision 97); no AXION code is C++. Platform glue in other languages (Objective-C on Apple,
+# Kotlin or Java on Android) is enabled per platform through cmake/AxionLanguages.cmake when its
+# module lands.
 project(axion
     VERSION "${_ax_MAJOR}.${_ax_MINOR}.${_ax_PATCH}"
     DESCRIPTION "AXION UI runtime"
-    LANGUAGES C)
+    LANGUAGES C CXX)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake")
 include(AxionCompilerOptions)
@@ -56,6 +58,7 @@ endif()
 if(AX_BUILD_GPU)
     add_subdirectory(gpu)
 endif()
+add_subdirectory(text)
 add_subdirectory(render)
 add_subdirectory(core)
 add_subdirectory(runtime)

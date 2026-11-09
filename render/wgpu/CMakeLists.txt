@@ -17,7 +17,7 @@ add_custom_command(
     COMMENT "Embedding rect.wgsl"
     VERBATIM)
 
-add_library(ax_render_wgpu STATIC src/renderer.c "${_rw_wgsl_c}")
+add_library(ax_render_wgpu STATIC src/renderer.c src/atlas.c "${_rw_wgsl_c}")
 add_library(axion::render_wgpu ALIAS ax_render_wgpu)
 target_include_directories(ax_render_wgpu
     PUBLIC  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"

@@ -23,3 +23,9 @@ ax_target_defaults(bench_anim)
 add_executable(bench_soft bench_soft.c bench_soft_scene.c)
 target_link_libraries(bench_soft PRIVATE ax_headless ax_render_soft ax_core)
 ax_target_defaults(bench_soft)
+
+# Text: a long paragraph's shaping and layout, re-wrapping, and a column of paragraphs whose width
+# animates (decisions 99 to 101).
+add_executable(bench_text bench_text.c)
+target_link_libraries(bench_text PRIVATE ax_core ax_text)
+ax_target_defaults(bench_text)

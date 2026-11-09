@@ -31,6 +31,8 @@
 
 AX_EXTERN_C_BEGIN
 
+struct ax_text_system;
+
 /* ---- Threads --------------------------------------------------------------------------------- */
 
 /* The calling thread becomes the world's scene thread (and owns its node store). The previous
@@ -40,14 +42,42 @@ AX_API void ax_world_bind_scene_thread(ax_world world);
 /* The calling thread becomes the world's app thread. The previous one must not be using it. */
 AX_API void ax_world_bind_app_thread(ax_world world);
 
-/* Called on the app thread after each successful ax_txn_commit (NULL removes it): a runtime wakes
- * surfaces that rest without frames (decision 95). It must not call back into the world.
- * thread: app */
-AX_API void ax_world_set_commit_hook(ax_world world, void (*hook)(void *user), void *user);
+/*
+ * Frame requests (decision 95's generic wake). ax_world_request_frame asks for a frame of the
+ * windows that show `root` (every window for a null root): new content that comes without a
+ * transaction (glyphs rasterized in the background, decision 100; later, decoded images and loaded
+ * fonts) or a commit, which calls it with a null root. The world calls its wake hook, which a
+ * runtime sets to wake its resting surfaces (NULL removes it, waiting for a call in progress); the
+ * woken frame's tick draws what changed. Nothing happens without a hook.
+ * thread: any, for both. The hook runs under the world's wake lock: it must be quick and must not
+ * call back into the world.
+ */
+typedef void (*ax_world_wake_fn)(void *user, ax_node root);
+AX_API void ax_world_set_wake_hook(ax_world world, ax_world_wake_fn hook, void *user);
+AX_API void ax_world_request_frame(ax_world world, ax_node root);
 
 /* The job system the scene's frame stages may use for frame jobs (layout's independent relayout
  * boundaries), or NULL (the default) for one thread. It must outlive its use. thread: scene */
 AX_API void ax_world_set_jobs(ax_world world, struct ax_job_system *jobs);
+
+/*
+ * The text system text leaves use (fonts, the shaping and glyph caches; decision 99), or NULL to
+ * go back to the world's own. Without one, the world makes its own on first use with the bundled
+ * fonts only (the headless default). A runtime sets one with the system's fonts. Set it before the
+ * first text; it must outlive the world. thread: scene
+ */
+AX_API void ax_world_set_text_system(ax_world world, struct ax_text_system *text);
+
+/* As ax_world_set_text_system, and the world destroys it with itself (a runtime's text system
+ * with the system's fonts). thread: scene */
+AX_API void ax_world_adopt_text_system(ax_world world, struct ax_text_system *text);
+
+/* The text system in use, made on first call when none was set (NULL when out of memory).
+ * thread: scene */
+AX_API struct ax_text_system *ax_world_text_system(ax_world world);
+
+/* The text system set or made so far, or NULL; makes none. thread: scene */
+AX_API struct ax_text_system *ax_world_peek_text_system(ax_world world);
 
 /* True for a live world. thread: any */
 AX_API bool ax_world_is_valid(ax_world world);
@@ -75,7 +105,8 @@ typedef enum ax_txn_op {
     AX_TXN_OP_SET = 2,
     AX_TXN_OP_INSERT = 3, /* insert_before; append when before is null */
     AX_TXN_OP_REMOVE = 4,
-    AX_TXN_OP_TRANSITION = 5
+    AX_TXN_OP_TRANSITION = 5,
+    AX_TXN_OP_SET_STR = 6 /* a string value, its bytes inline (decision 99) */
 } ax_txn_op;
 
 typedef struct ax_txn_cmd {
@@ -119,6 +150,20 @@ typedef struct ax_txn_cmd_transition {
     ax_node node;   /* null: the world's default for prop (ax_txn_set_default_transition) */
     ax_curve curve; /* validated (ax_anim.h) */
 } ax_txn_cmd_transition;
+
+/* SET_STR: `length` bytes of UTF-8 follow the fixed part, padded to a multiple of 8 (the
+ * command's size is sizeof(ax_txn_cmd_set_str) + length rounded up to 8). */
+typedef struct ax_txn_cmd_set_str {
+    ax_txn_cmd h;
+    ax_prop prop;
+    uint32_t length;
+    ax_node node;
+} ax_txn_cmd_set_str;
+
+static inline const char *ax_txn_cmd_str_bytes(const ax_txn_cmd_set_str *c)
+{
+    return (const char *)(c + 1);
+}
 
 /* A committed transaction, as the scene thread reads it. */
 typedef struct ax_txn_info {

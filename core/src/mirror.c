@@ -20,6 +20,7 @@
 #include <axion/ax_mirror.h>
 #include <axion/base/ax_error_set.h>
 #include <axion/base/ax_memory.h>
+#include <axion/core/ax_text_node.h>
 
 void ax__mirror_init(world_impl *w)
 {
@@ -32,6 +33,10 @@ void ax__mirror_free(world_impl *w)
 {
     int i;
     for (i = 0; i < 3; ++i) {
+        uint32_t k;
+        for (k = 0; k < w->mirror[i].count; ++k) {
+            ax_shared_str_release(w->mirror[i].nodes[k].text);
+        }
         ax_mem_free(&w->allocator, w->mirror[i].nodes, sizeof(mirror_node) * w->mirror[i].capacity);
         w->mirror[i].nodes = NULL;
         w->mirror[i].capacity = 0;
@@ -80,9 +85,12 @@ void ax_world_touch_node(ax_world world, ax_node node)
     }
 }
 
-static void write_node(const ax_node_store *s, uint32_t slot, mirror_node *out)
+static void write_node(const ax_scene *scene, uint32_t slot, mirror_node *out)
 {
+    const ax_node_store *s = &scene->store;
+    const ax_node_text *t;
     uint32_t row;
+    ax_shared_str_release(out->text);
     memset(out, 0, sizeof *out);
     if (slot >= s->slot_count) {
         return;
@@ -97,6 +105,11 @@ static void write_node(const ax_node_store *s, uint32_t slot, mirror_node *out)
     out->frame = s->layout[row].frame;
     out->paint = s->paint[row];
     out->composite = s->composite[row];
+    t = (const ax_node_text *)ax_node_store_peek_component(s, slot, scene->text_component);
+    if (t != NULL && (t->own & AX_TEXT_PROP_BIT(AX_PROP_TEXT)) != 0) {
+        ax_shared_str_retain(t->content);
+        out->text = t->content;
+    }
 }
 
 bool ax_world_publish_mirror(ax_world world)
@@ -139,7 +152,7 @@ bool ax_world_publish_mirror(ax_world world)
     for (slot = 0; slot < slots; ++slot) {
         uint64_t stamp = slot < w->changed_capacity ? w->changed_at[slot] : 0;
         if (stamp > c->pub || w->changed_all_at > c->pub) {
-            write_node(s, slot, &c->nodes[slot]);
+            write_node(&w->scene, slot, &c->nodes[slot]);
         }
     }
     c->count = slots;
@@ -260,6 +273,12 @@ static ax_result get_value(ax_world world, ax_node node, ax_prop prop, ax_value_
                             "ax_mirror: property 0x%x is unknown or of another type",
                             (unsigned)prop);
     }
+    if (d->storage == AX_PROP_IN_TEXT && d->effect != AX_EFFECT_LAYOUT) {
+        return ax_set_error(AX_ERR_UNSUPPORTED,
+                            "ax_mirror: %s is a text style property, which the mirror does not "
+                            "reflect yet (only the content, with ax_mirror_get_str)",
+                            d->name);
+    }
     if (d->effect == AX_EFFECT_LAYOUT) {
         return ax_set_error(AX_ERR_UNSUPPORTED,
                             "ax_mirror: %s is a layout input, which the mirror does not reflect; "
@@ -342,5 +361,50 @@ ax_result ax_mirror_get_frame(ax_world world, ax_node node, ax_rectf *out)
     out->y = n->frame.y;
     out->w = n->frame.w;
     out->h = n->frame.h;
+    return AX_OK;
+}
+
+ax_result ax_mirror_get_str(ax_world world, ax_node node, ax_prop prop, char *buffer,
+                            size_t capacity, size_t *out_length)
+{
+    world_impl *w;
+    const mirror_copy *c = latched(world, &w);
+    const mirror_node *n;
+    ax_str v;
+    if (out_length != NULL) {
+        *out_length = 0;
+    }
+    if (capacity > 0 && buffer != NULL) {
+        buffer[0] = '\0';
+    }
+    if (w == NULL) {
+        return ax_set_error(AX_ERR_INVALID_HANDLE, "ax_mirror: invalid world");
+    }
+    if (prop != AX_PROP_TEXT) {
+        const ax_prop_desc *d = ax_prop_builtin(prop);
+        if (d == NULL || d->type != AX_VALUE_STRING) {
+            return ax_set_error(AX_ERR_INVALID_ARGUMENT,
+                                "ax_mirror: property 0x%x is unknown or not a string",
+                                (unsigned)prop);
+        }
+        return ax_set_error(AX_ERR_UNSUPPORTED,
+                            "ax_mirror: %s is a text style property, which the mirror does not "
+                            "reflect yet (only AX_PROP_TEXT)",
+                            d->name);
+    }
+    n = find(c, node);
+    if (n == NULL) {
+        return ax_set_error(AX_ERR_INVALID_HANDLE,
+                            "ax_mirror: the node is not live in the latched publication");
+    }
+    v = ax_shared_str_view(n->text);
+    if (out_length != NULL) {
+        *out_length = v.len;
+    }
+    if (buffer != NULL && capacity > 0) {
+        size_t k = v.len < capacity - 1u ? v.len : capacity - 1u;
+        memcpy(buffer, v.ptr, k);
+        buffer[k] = '\0';
+    }
     return AX_OK;
 }

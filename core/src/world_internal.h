@@ -17,6 +17,7 @@
 #include <axion/base/ax_triple_buffer.h>
 #include <axion/core/ax_scene.h>
 #include <axion/core/ax_world_sdk.h>
+#include <axion/render/ax_render_ir.h>
 
 #define AX_TXN_MESSAGE_SIZE 192u
 
@@ -63,6 +64,7 @@ typedef struct mirror_node {
     ax_rect frame;
     ax_node_paint paint;
     ax_node_composite composite;
+    const ax_shared_str *text; /* AX_PROP_TEXT, a reference the copy holds (decision 99) */
 } mirror_node;
 
 /* A published copy, indexed by slot. */
@@ -183,9 +185,18 @@ typedef struct world_impl {
     bool scene_ready;
     frame_state *frame;              /* frame.c: window roots, the recording cache (scene thread) */
     struct ax_job_system *jobs;      /* frame jobs for the scene's stages, or NULL */
+    /* Text (decision 99): the text system (fonts, caches), owned when the world made its own. */
+    struct ax_text_system *text;
+    bool text_owned;
+    struct ax_text_paragraph **text_batch; /* paragraphs to shape this frame (text_stage.c) */
+    uint32_t text_batch_capacity;
+    ax_ir_glyph_source glyph_source; /* snapshots' bitmaps: the text system's glyph cache */
+    ax_atomic_u32 glyphs_arrived;    /* background glyphs became ready (any thread sets it) */
     anim_state *anim;                /* anim/animator.c: implicit animations (scene thread) */
-    void (*commit_hook)(void *user); /* app thread: after each commit */
-    void *commit_hook_user;
+    /* Frame requests (ax_world_request_frame), any thread, under wake_lock. */
+    ax_mutex wake_lock;
+    ax_world_wake_fn wake_hook;
+    void *wake_user;
     ax_atomic_u32 reduce_motion; /* ax_world_set_reduce_motion (app thread writes) */
 } world_impl;
 
@@ -206,6 +217,14 @@ static inline uint64_t ax__world_now(const world_impl *w)
 {
     return w->clock(w->clock_user);
 }
+
+/* Asks for a frame of the windows showing root (null: all); any thread. */
+void ax__world_wake(world_impl *w, ax_node root);
+
+/* text_stage.c: the style pass, then paragraphs for text leaves whose content or style changed,
+ * shaped in frame jobs, with their measure functions (before layout). */
+void ax__text_prepare(world_impl *w);
+void ax__text_free(world_impl *w);
 
 /* App thread: takes back finished transactions and recycled handles from the scene thread. */
 void ax__world_reclaim(world_impl *w);
@@ -260,6 +279,7 @@ void ax__anim_on_set(world_impl *w, uint64_t seq, ax_node node, ax_prop prop, co
                      bool animated);
 void ax__anim_on_frame_changed(world_impl *w, uint32_t slot);
 void ax__anim_viewport_changed(world_impl *w);
+void ax__anim_viewport_done(world_impl *w); /* the viewports' layout pass is over */
 uint32_t ax__anim_step(world_impl *w, uint64_t t, void (*on_root)(world_impl *, uint32_t));
 const struct axa_node *ax__anim_node(world_impl *w, uint32_t row);
 uint64_t ax__anim_time(world_impl *w); /* the last sample's time; 0 before the animator runs */

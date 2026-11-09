@@ -1,7 +1,8 @@
 # Copyright 2026 Axon Works
 # SPDX-License-Identifier: Apache-2.0
 #
-# Downloads and unpacks pinned prebuilt dependencies, verifying each archive's SHA-256 first.
+# Downloads and unpacks pinned dependencies (prebuilt packages and source archives), verifying
+# each archive's SHA-256 first.
 
 include_guard(GLOBAL)
 
