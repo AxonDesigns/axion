@@ -42,18 +42,23 @@ static const WGPUTextureFormat k_format = WGPUTextureFormat_RGBA8Unorm;
 
 typedef struct env {
     WGPUTextureFormat format;
+    uint32_t blend; /* ax_render_blend, for both renderers */
+    bool alt;       /* targets get an sRGB view for linear layers (issue #4's option 3) */
     ax_gpu *gpu;
     ax_render_wgpu *r;
     ax_ir_builder b;
 } env;
 
 /* 1: ready; 0: skip (no adapter); -1: failed (reported). */
-static int env_init_ex(env *e, WGPUTextureFormat format, uint32_t diagnostic_flags)
+static int env_init_blend(env *e, WGPUTextureFormat format, uint32_t diagnostic_flags,
+                          uint32_t blend, bool alt)
 {
     ax_render_wgpu_desc d;
     int g;
     memset(e, 0, sizeof *e);
     e->format = format;
+    e->blend = blend;
+    e->alt = alt;
     g = axt_gpu_create(NULL, &e->gpu);
     if (g <= 0) {
         return g;
@@ -61,12 +66,15 @@ static int env_init_ex(env *e, WGPUTextureFormat format, uint32_t diagnostic_fla
     memset(&d, 0, sizeof d);
     d.gpu = e->gpu;
     d.diagnostic_flags = diagnostic_flags;
+    d.blend = blend;
     if (ax_render_wgpu_create(NULL, &d, &e->r) != AX_OK) {
         ax_test_fail(__FILE__, __LINE__, "ax_render_wgpu_create: %s", ax_last_error()->message.ptr);
         ax_gpu_destroy(e->gpu);
         return -1;
     }
-    if (!ax__render_wgpu_test_wait_ready(e->r, format, 30ull * 1000000000ull)) {
+    if (!ax__render_wgpu_test_wait_ready(e->r, format, 30ull * 1000000000ull) ||
+        (alt && !ax__render_wgpu_test_wait_ready(e->r, WGPUTextureFormat_RGBA8UnormSrgb,
+                                                 30ull * 1000000000ull))) {
         ax_test_fail(__FILE__, __LINE__, "the pipeline did not become ready");
         ax_render_wgpu_destroy(e->r);
         ax_gpu_destroy(e->gpu);
@@ -74,6 +82,11 @@ static int env_init_ex(env *e, WGPUTextureFormat format, uint32_t diagnostic_fla
     }
     ax_ir_builder_init(&e->b, ax_default_allocator());
     return 1;
+}
+
+static int env_init_ex(env *e, WGPUTextureFormat format, uint32_t diagnostic_flags)
+{
+    return env_init_blend(e, format, diagnostic_flags, AX_RENDER_BLEND_SRGB, false);
 }
 
 static int env_init(env *e)
@@ -108,19 +121,34 @@ static uint8_t *render(env *e, const ax_render_ir *ir, uint32_t w, uint32_t h, f
 {
     WGPUTextureDescriptor td = WGPU_TEXTURE_DESCRIPTOR_INIT;
     WGPUTexture tex;
-    WGPUTextureView view;
+    WGPUTextureView view, alt_view = NULL;
     ax_render_wgpu_draw draw;
+    const WGPUTextureFormat srgb = WGPUTextureFormat_RGBA8UnormSrgb;
     uint8_t *pixels = (uint8_t *)malloc((size_t)w * h * 4);
     td.usage = WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_CopySrc;
     td.size.width = w;
     td.size.height = h;
     td.size.depthOrArrayLayers = 1;
     td.format = e->format;
+    if (e->alt) {
+        td.viewFormatCount = 1;
+        td.viewFormats = &srgb;
+    }
     tex = wgpuDeviceCreateTexture(ax_gpu_device(e->gpu), &td);
     view = wgpuTextureCreateView(tex, NULL);
     memset(&draw, 0, sizeof draw);
     draw.struct_size = sizeof draw;
     draw.target = view;
+    if (e->alt) {
+        WGPUTextureViewDescriptor vd = WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
+        vd.format = srgb;
+        vd.dimension = WGPUTextureViewDimension_2D;
+        vd.mipLevelCount = 1;
+        vd.arrayLayerCount = 1;
+        alt_view = wgpuTextureCreateView(tex, &vd);
+        draw.srgb_target = alt_view;
+        draw.srgb_format = srgb;
+    }
     draw.format = e->format;
     draw.width = w;
     draw.height = h;
@@ -133,6 +161,9 @@ static uint8_t *render(env *e, const ax_render_ir *ir, uint32_t w, uint32_t h, f
         pixels = NULL;
     }
     wgpuTextureViewRelease(view);
+    if (alt_view != NULL) {
+        wgpuTextureViewRelease(alt_view);
+    }
     wgpuTextureRelease(tex);
     return pixels;
 }
@@ -190,7 +221,7 @@ static int cmp_double(const void *a, const void *b)
 
 /* The software renderer's drawing of ir (RGBA8, like the GPU's target). */
 static uint8_t *reference(const ax_render_ir *ir, uint32_t w, uint32_t h, float scale,
-                          uint32_t diag)
+                          uint32_t diag, uint32_t blend)
 {
     ax_render_soft_desc d;
     ax_render_soft *r = NULL;
@@ -198,6 +229,7 @@ static uint8_t *reference(const ax_render_ir *ir, uint32_t w, uint32_t h, float 
     uint8_t *px = (uint8_t *)malloc((size_t)w * h * 4u);
     memset(&d, 0, sizeof d);
     d.diagnostic_flags = diag;
+    d.blend = blend;
     memset(&t, 0, sizeof t);
     t.struct_size = sizeof t;
     t.pixels = px;
@@ -234,7 +266,7 @@ static void check_scene_ex(env *e, const char *scene, const ax_render_ir *ir, ui
     memset(&res, 0, sizeof res);
     AX_CHECK_EQ_U(status, AX_FRAME_PRESENTED);
     write_artifact(scene, got, w, h);
-    want = reference(ir, w, h, scale, soft_diag);
+    want = reference(ir, w, h, scale, soft_diag, e->blend);
     de = (double *)malloc(sizeof(double) * n);
     if (want == NULL || de == NULL) {
         ax_test_fail(__FILE__, __LINE__, "out of memory");
@@ -474,6 +506,102 @@ AX_TEST(the_linear_blend_diagnostic_mixes_in_linear_light)
     }
     /* And the same as the software renderer's diagnostic. */
     check_scene_ex(&e, "linear_blend", ir, 64, 48, 2.0f, AX_RENDER_SOFT_DIAG_LINEAR_BLEND, NULL);
+    env_deinit(&e);
+}
+
+/* Issue #4's option 1 (AX_RENDER_BLEND_SRGB_CORRECTED): shapes' coverage through the same tables
+ * as ax_render_soft's, on the antialiasing torture scenes and the blending one. */
+AX_TEST(corrected_srgb_blending_matches_the_software_renderer)
+{
+    env e;
+    ENV_INIT_EX(&e, env_init_blend(&e, k_format, 0, AX_RENDER_BLEND_SRGB_CORRECTED, false));
+    check_shared(&e, "hairlines_1");
+    check_shared(&e, "hairlines_3");
+    check_shared(&e, "rotated");
+    check_shared(&e, "rounded");
+    env_deinit(&e);
+}
+
+/* Option 2 (AX_RENDER_BLEND_LINEAR) by the desc, as the diagnostic. */
+AX_TEST(linear_blending_matches_the_software_renderer)
+{
+    env e;
+    ENV_INIT_EX(&e, env_init_blend(&e, WGPUTextureFormat_RGBA8UnormSrgb, 0, AX_RENDER_BLEND_LINEAR,
+                                   false));
+    check_shared(&e, "hairlines_1");
+    check_shared(&e, "rotated");
+    env_deinit(&e);
+}
+
+static void linear_layer_scene(ax_ir_builder *b)
+{
+    ax_ir_layer_desc d = ax_ir_layer_desc_default();
+    ax_ir_builder_begin(b, 64, 24, 0, ax_color_make(0, 0, 0, 1));
+    ax_ir_rect(b, ax_rect_make(0, 0, 16, 16), ax_color_from_srgb8(0x80FFFFFFu));
+    ax_ir_rect(b, ax_rect_make(16.5f, 18, 4, 4), ax_color_make(1, 1, 1, 1));
+    d.flags = AX_IR_LAYER_LINEAR_BLEND;
+    d.transform = ax_affine2_translate(32, 0);
+    ax_ir_push_layer(b, &d);
+    ax_ir_rect(b, ax_rect_make(0, 0, 16, 16), ax_color_from_srgb8(0x80FFFFFFu));
+    ax_ir_rect(b, ax_rect_make(16.5f, 18, 4, 4), ax_color_make(1, 1, 1, 1));
+    ax_ir_pop_layer(b);
+    /* After the layer, its parent's items again: back in sRGB space. */
+    axt_rotated_rect(b, 3.0f, 2, 18, 12, 0.66f, ax_color_make(1, 1, 1, 1));
+}
+
+/* Option 3: a layer with AX_IR_LAYER_LINEAR_BLEND draws into the target's sRGB view, in a pass of
+ * its own, and matches ax_render_soft (which composites it in linear light). */
+AX_TEST(a_linear_layer_draws_through_the_srgb_view)
+{
+    env e;
+    const ax_render_ir *ir;
+    uint8_t *got;
+    ax_frame_status status;
+    ax_render_counts counts;
+    ENV_INIT_EX(&e, env_init_blend(&e, k_format, 0, AX_RENDER_BLEND_SRGB, true));
+    linear_layer_scene(&e.b);
+    ir = finish(&e);
+    if (ir == NULL) {
+        env_deinit(&e);
+        return;
+    }
+    memset(&counts, 0, sizeof counts);
+    got = render(&e, ir, 64, 24, 1.0f, &status, &counts);
+    if (got != NULL) {
+        AX_CHECK_EQ_U(counts.linear_layers, 1);
+        AX_CHECK_EQ_U(counts.linear_layers_unsupported, 0);
+        AX_CHECK(got[(8 * 64 + 8) * 4] >= 127 && got[(8 * 64 + 8) * 4] <= 129); /* sRGB space */
+        AX_CHECK(got[(8 * 64 + 40) * 4] >= 186 && got[(8 * 64 + 40) * 4] <= 190); /* linear */
+        AX_CHECK(got[(20 * 64 + 48) * 4] >= 186 && got[(20 * 64 + 48) * 4] <= 190);
+        free(got);
+    }
+    check_scene(&e, "linear_layer", ir, 64, 24, 1.0f, NULL);
+    env_deinit(&e);
+}
+
+/* Without an sRGB view the layer blends in sRGB space, and that is counted. */
+AX_TEST(a_linear_layer_without_an_srgb_view_is_counted)
+{
+    env e;
+    const ax_render_ir *ir;
+    uint8_t *got;
+    ax_frame_status status;
+    ax_render_counts counts;
+    ENV_INIT(&e);
+    linear_layer_scene(&e.b);
+    ir = finish(&e);
+    if (ir == NULL) {
+        env_deinit(&e);
+        return;
+    }
+    memset(&counts, 0, sizeof counts);
+    got = render(&e, ir, 64, 24, 1.0f, &status, &counts);
+    if (got != NULL) {
+        AX_CHECK_EQ_U(counts.linear_layers, 0);
+        AX_CHECK_EQ_U(counts.linear_layers_unsupported, 1);
+        AX_CHECK(got[(8 * 64 + 40) * 4] >= 127 && got[(8 * 64 + 40) * 4] <= 129);
+        free(got);
+    }
     env_deinit(&e);
 }
 

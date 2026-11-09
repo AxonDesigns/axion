@@ -54,7 +54,8 @@ AX_EXTERN_C_BEGIN
  * during development only.
  *
  * AX_RENDER_SOFT_DIAG_LINEAR_BLEND: blend every layer in linear light, as
- * AX_RENDER_WGPU_DIAG_LINEAR_BLEND does, so both renderers can be compared in either space.
+ * AX_RENDER_WGPU_DIAG_LINEAR_BLEND does, so both renderers can be compared in either space. The
+ * same as blend = AX_RENDER_BLEND_LINEAR, which replaces it.
  */
 #define AX_RENDER_SOFT_DIAG_LINEAR_BLEND 0x1u
 
@@ -69,6 +70,7 @@ typedef struct ax_render_soft_desc {
     ax_job_system *jobs;
     uint32_t flags;            /* AX_RENDER_SOFT_* */
     uint32_t diagnostic_flags; /* AX_RENDER_SOFT_DIAG_*; 0 in anything but a diagnostic */
+    uint32_t blend;            /* ax_render_blend; 0, AX_RENDER_BLEND_SRGB, is the default */
 } ax_render_soft_desc;
 
 /* Pixel formats of a target: 8 bits per channel, premultiplied alpha, sRGB-encoded. The names give

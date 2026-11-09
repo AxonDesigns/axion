@@ -147,6 +147,9 @@ static ax_result hl_attach(void *self, ax_runtime rt, uint32_t i, uint64_t nativ
         ax_result r;
         memset(&sd, 0, sizeof sd);
         sd.jobs = ax_rt_jobs(h->rt);
+        if (h->desc.struct_size >= offsetof(ax_headless_desc, blend) + sizeof(uint32_t)) {
+            sd.blend = h->desc.blend;
+        }
         r = ax_render_soft_create(&h->allocator, &sd, &h->soft);
         if (r != AX_OK) {
             return r;

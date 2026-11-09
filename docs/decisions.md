@@ -119,6 +119,8 @@ new entry that points back to the old one.
 | 103 | The handshake bound with text; m1_nodes builds again     | Approved       |
 | 104 | Animations keep running while a window is resized        | Approved       |
 | 105 | A rest is not a missed refresh (issue #15)               | Approved       |
+| 106 | Issue #4: the blending options, measured; a recommendation | Approved       |
+| 107 | Text leaves round as Yoga's text nodes                   | Approved       |
 
 ---
 
@@ -1823,6 +1825,9 @@ recording for hidden windows.
 the bound's value is proposed from measurements in decision 59).
 
 ## 58. Roping of thin rotated lines with sRGB-space blending
+
+> Answered by decision 106: the three options of issue #4 implemented and measured, with a
+> recommendation; the diagnostic option is an alias of AX_RENDER_BLEND_LINEAR.
 
 **Context.** Reviewing `m0_window --renderer=ir` on both monitors, the owner saw beads along the
 turning hairline fan (0.5 units, 0.66 px at scale 1.325) and the thin rects rotated by 3 degrees:
@@ -3946,6 +3951,7 @@ style (decision 69's note: each entry is copied three times).
 
 > Replaces decision 76's minimal positioning; amends decision 64 (a static node is not a relayout
 > boundary).
+> Amended by decision 107: a leaf with a measure function rounds as Yoga's text nodes do.
 
 **Context.** "Layout engine": constraints down, sizes up, parent positions; one pass over dirty
 subtrees; intrinsic sizes cached per constraint; an engine written in C because layout animation,
@@ -4617,6 +4623,9 @@ upload needs because it commits nothing.
 
 ## 101. Glyph runs in the Render IR, the atlases, the coverage correction, scaled text
 
+> Amended by decision 106: the correction is one of three tables (text in sRGB space, this
+> decision's, unchanged; text in linear light; shapes), with the background each assumes.
+
 **Context.** The owner asked for a glyph run item as a new minor of the Render IR with M0's
 compatibility rules, drawn by ax_render_wgpu and ax_render_soft, A8 atlases paged with LRU, the
 document's gamma and contrast correction of text coverage tuned to look like platform text, the
@@ -4856,5 +4865,136 @@ while animating.
 - **Tests:** `platform.frame_clock.a_rest_is_not_counted_as_missed_vblanks` (a rest whose last
   commit is reported late, rest time and no misses, misses counted again once animating, unknown
   commits measured); the Wayland and GPU presentation tests unchanged.
+
+**Status.** Approved by the owner.
+
+## 106. Issue #4: the blending options, measured; a recommendation
+
+> Answers decision 58 and issue #4; amends decision 101 (the correction tables).
+
+**Context.** Issue #4, decided in M1 together with text: the default blending space for shapes and
+text, among sRGB space with a luminance correction of the coverage (applied to rects and paths
+too), linear light with its own text correction, and per layer with `AX_IR_LAYER_LINEAR_BLEND`;
+where the correction lives; and what happens to `AX_RENDER_WGPU_DIAG_LINEAR_BLEND`. The owner asked
+for the three options in both renderers, measured (decision 58's roping, the apparent weight of
+text in both polarities, translucency against CSS), a mode of `m1_nodes` to look at them on their
+monitors, and a recommendation, without changing the default.
+
+**Decision.**
+- **The options, in both renderers** (`ax_render_blend`, `ax_renderer_types.h`; `blend` in
+  `ax_render_soft_desc`, `ax_render_wgpu_desc` and `ax_headless_desc`):
+  - `AX_RENDER_BLEND_SRGB` (0): the default, unchanged (decisions 53, 58, 101);
+  - `AX_RENDER_BLEND_SRGB_CORRECTED`, option 1: sRGB space, and the coverage of rects and rounded
+    rects goes through a correction table by their color's luminance before their clips, as
+    glyphs do (the same quantization to 256 entries in both renderers; wgpu's shader reads it from
+    the LUT texture with `FLAG_SHAPE_LUT`, soft takes its scalar path, which gives the SIMD path's
+    coverage);
+  - `AX_RENDER_BLEND_LINEAR`, option 2: linear light everywhere, glyphs through their own table;
+  - option 3: in any mode, a layer with `AX_IR_LAYER_LINEAR_BLEND` blends its content in linear
+    light, its glyphs through the linear text table and its shapes uncorrected. ax_render_soft did
+    already (its groups composite in linear light). **ax_render_wgpu now draws it:** instances are
+    split into runs by view, and a run of linear layers draws into the target's sRGB view
+    (`ax_render_wgpu_draw.srgb_target`) in a render pass of its own; window surfaces always ask
+    for the sRGB view. Without one, such layers blend in sRGB space, counted
+    (`ax_render_counts.linear_layers_unsupported`; `linear_layers` counts the others). Their group
+    opacity is applied to each item, as for any layer in wgpu (`approximated`); a true group needs
+    M2's offscreen layers.
+- **The tables** (render_ir, `ax_ir_lut_build`, one construction for every renderer):
+  `AX_IR_LUT_TEXT_SRGB` (decision 101's, the same bytes), `AX_IR_LUT_TEXT_LINEAR` and
+  `AX_IR_LUT_SHAPE_SRGB`. `ax_ir_text_lut_params` gains **`destination`**, the background a table
+  assumes since the blend cannot read it: 0 the opposite luminance (Skia's; decision 101's table),
+  1 black under light colors and white under dark ones.
+  - **Text in linear light keeps the default's weight:** a 1.85 gamma space with contrast 0.05
+    against black or white, within 0.4 % of the default's ink in both polarities at scales 1 and
+    1.325 (`blend_measure --tune-linear-text`). Gamma and contrast alone, against the opposite
+    luminance, left light text on dark 7 to 15 % heavier at any setting: the opposite of
+    #E8ECF4 (0.83) is 0.17, the background #1E2129 is 0.015.
+  - **Shapes:** gamma 1 (the blend linear light gives) against black or white, which halves the
+    roping the opposite luminance left for light lines on dark (1.29 to 1.12 at 0.66 px).
+- **Measured** (`tools/diag/blend_measure`, on ax_render_soft, which ax_render_wgpu matches within
+  decision 83's tolerance in every mode: `render_wgpu.coverage` tests):
+  - roping, decision 58's table (a line rotated 3 degrees; max/min of the light per scanline; 1.00
+    is even), #E8ECF4 on #1E2129, the reverse, and #E8ECF4 on a mid gray (#6E7480):
+
+    | Option | Background | 0.33 px | 0.66 px | 1.325 px | 1.99 px |
+    | --- | --- | --- | --- | --- | --- |
+    | default | dark | 1.40 | 1.66 | 1.24 | 1.28 |
+    | default | light | 1.11 | 1.26 | 1.12 | 1.21 |
+    | default | mid gray | 1.12 | 1.20 | 1.10 | 1.12 |
+    | 1 | dark | 1.15 | 1.12 | 1.05 | 1.05 |
+    | 1 | light | 1.08 | 1.06 | 1.08 | 1.05 |
+    | 1 | mid gray | **1.33** | **1.31** | 1.11 | 1.12 |
+    | 2 and 3 | dark | 1.01 | 1.01 | 1.01 | 1.01 |
+    | 2 and 3 | light | 1.03 | 1.02 | 1.01 | 1.01 |
+    | 2 and 3 | mid gray | 1.02 | 1.02 | 1.01 | 1.01 |
+
+    Option 1 corrects for a background it assumes: where the real one is far from it (a mid gray,
+    a colored card), it ropes more than the default.
+  - text (the three lines of decision 101's sample, Noto Sans 13.333 px): light text on dark has
+    0.60 (scale 1) and 0.65 (1.325) of the ink of dark text on light in every option, as KDE's
+    text has (decision 101 matched it in both polarities); options 2 and 3 are within 0.2 % of the
+    default's ink, option 1 draws text as the default does;
+  - translucency against CSS (sRGB-space blending of the 8-bit colors, ten mixes): 50 % white over
+    black is 128 in the default and option 1 (OKLab distance from CSS 0.0006 mean, rounding), 188
+    in options 2 and 3, whose mixes are 0.111 mean and 0.196 at worst from CSS's.
+- **Where the correction lives: in the renderer**, from render_ir's shared tables, chosen by item
+  kind and by the blend space of the item's layer. Not an IR item flag: the producer knows the
+  background no better than the renderer, and the space is the renderer's and the layer's; not
+  the text pipeline only: option 1 corrects shapes, and the text table depends on the space.
+- **`AX_RENDER_WGPU_DIAG_LINEAR_BLEND`** (and ax_render_soft's) is now an alias of
+  `blend = AX_RENDER_BLEND_LINEAR`; m0_window's `AX_RW_LINEAR_BLEND=1` sets `blend`. The flags can
+  go in M2.
+- **To look at:** `m1_nodes --blend-compare[=default|1|2]` (window "AXION blend <option>", GPU or
+  `--renderer=soft`): a dark and a light panel, each with a fan of 0.5-unit hairlines, rects
+  rotated 3 degrees 0.25 to 1.5 units wide, text from 11 to 24 px and translucent swatches over
+  black and white. Option 3 has no switch: no node property marks a linear layer yet, and inside
+  one everything draws as option 2 does. `blend_measure --compare-png DIR` writes the scene as
+  ax_render_soft draws it in each mode, at scales 1 and 1.325.
+- **Recommendation: keep the default (sRGB space, glyphs corrected) and make option 3 the way to
+  linear light**, a property for a node's layer (a later step, with the owner's approval), for
+  content made of geometry: charts, rotated hairlines, vector icons and paths when they arrive.
+  - The default keeps CSS's translucency exactly, which content designed in browsers and design
+    tools relies on, and text whose weight matches KDE's in both themes. Its roping is decision
+    58's known limitation, and rotated hairlines are rare in a UI at rest.
+  - Option 2 removes roping everywhere and now keeps text's weight, but changes every translucent
+    mix (188 for 128; up to 0.2 in OKLab), which a UI framework's default should not.
+  - Option 1 keeps CSS's translucency and roughly halves roping on near-black and near-white
+    backgrounds, but it is a guess about the background: on a mid gray it ropes more than the
+    default (1.33 for 1.12). It stays as a comparison mode, not a default; it can be reconsidered
+    with paths (M2), whose antialiasing has the same problem and more content to judge by.
+  - Option 3 costs a render pass per run of linear layers in wgpu (batching breaks at each run),
+    an sRGB view of the target (window surfaces have it; counted otherwise), and its group opacity
+    is approximated until M2's offscreen layers.
+- **The owner's decision** (after looking at `--blend-compare` on both monitors, 2026-11-09):
+  **the default stays sRGB space**, glyphs corrected. Options 1 and 2 remain comparison modes; the
+  node property for option 3 is not added (a later step only if the owner asks for it); roping
+  stays decision 58's known limitation.
+- **Tests:** `render_soft.soft` (option 1 corrects a half-covered edge to linear light's 188 in
+  both polarities and keeps 50 % white over black at 128; the linear mode by the desc);
+  `render_wgpu.coverage` (options 1 and 2 match ax_render_soft on the torture scenes; a linear
+  layer draws through the sRGB view and matches ax_render_soft; without the view it is counted);
+  `render_ir` (the tables at the ends and monotonic, as before).
+
+**Status.** Approved by the owner.
+
+## 107. Text leaves round as Yoga's text nodes
+
+> Amends decision 90 (rounding to the pixel grid).
+
+**Context.** The `--blend-compare` scene places text without a width. Every such text wrapped its
+last word: a leaf with a measure function was rounded to nearest like any box, so its frame could
+end a fraction of a pixel narrower than its measured width, and the paragraph, laid out again in
+the frame, wrapped.
+
+**Decision.**
+- A leaf with a measure function rounds as Yoga rounds its text nodes: its left and top edges
+  round down and, when its measured width or height has a fraction of a pixel, its right or bottom
+  edge rounds up; otherwise down. Its frame is never smaller than what it measured. Other nodes
+  round as before.
+- The text and animation goldens change where a paragraph's top edge now rounds down a pixel
+  (updated on purpose, decision 82; the wrapping is the same).
+- **Test:** `core.layout.a_measured_leaf_is_never_rounded_narrower_than_it_measured` (scales 1,
+  1.325 and 2; a box without a measure function still rounds to nearest); it fails before the
+  change.
 
 **Status.** Approved by the owner.

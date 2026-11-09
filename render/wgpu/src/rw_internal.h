@@ -43,6 +43,11 @@ typedef struct rw_clip {
 #define RW_FLAG_FOOTPRINT_FROM_DERIVATIVES 2u
 #define RW_FLAG_GLYPH                      4u /* radii = the glyph's texels; page and LUT row in
                                                * bits 8-15 and 16-23 of the flags */
+#define RW_FLAG_SHAPE_LUT                  8u /* a shape's coverage through the LUT row in bits
+                                               * 16-23 (AX_RENDER_BLEND_SRGB_CORRECTED) */
+
+/* The LUT texture's row for a table and a luminance bucket. */
+#define RW_LUT_ROW(table, bucket) ((uint32_t)(table) * AX_IR_TEXT_LUT_BUCKETS + (bucket))
 
 /* ---- The glyph atlas (atlas.c, decision 101) ---- */
 
@@ -71,7 +76,7 @@ typedef struct rw_atlas_entry {
 typedef struct rw_atlas {
     WGPUTexture texture; /* R8Unorm, RW_ATLAS_PAGES layers */
     WGPUTextureView view;
-    WGPUTexture lut; /* 256 x AX_IR_TEXT_LUT_BUCKETS, R8Unorm */
+    WGPUTexture lut; /* 256 x (AX_IR_LUT_TABLES x AX_IR_TEXT_LUT_BUCKETS), R8Unorm */
     WGPUTextureView lut_view;
     WGPUSampler sampler;
     uint32_t generation;
@@ -115,7 +120,9 @@ struct ax_render_wgpu {
     uint32_t ring_generation;
     ax_arena scratch; /* per-frame encoding memory */
 
-    bool linear_blend;   /* AX_RENDER_WGPU_DIAG_LINEAR_BLEND (unsupported, decision 58) */
+    bool linear_blend;   /* every layer in linear light: AX_RENDER_BLEND_LINEAR, or the
+                          * AX_RENDER_WGPU_DIAG_LINEAR_BLEND diagnostic (decision 58) */
+    uint32_t blend;      /* ax_render_blend */
     uint32_t test_flags; /* RW_TEST_* (render/wgpu/src/rw_testing.h) */
 
     rw_atlas atlas; /* glyphs (atlas.c) */

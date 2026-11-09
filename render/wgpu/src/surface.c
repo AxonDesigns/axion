@@ -17,6 +17,8 @@ struct rw_surface {
     ax_surface surface;
     ax_gpu_surface *gs;
     WGPUTextureFormat format;
+    WGPUTextureFormat srgb_format; /* the swapchain's sRGB view (Undefined: none) */
+    WGPUTextureFormat view_format; /* its plain view */
     uint64_t attach_ns;
     ax_render_wgpu_surface_stats stats;
 };
@@ -100,7 +102,7 @@ static ax_result vt_attach(void *self, ax_surface surface)
     sd.struct_size = sizeof sd;
     sd.pacing = (ax_gpu_pacing)r->pacing;
     sd.present_mode = (WGPUPresentMode)r->present_mode;
-    sd.srgb_view = r->linear_blend;
+    sd.srgb_view = true; /* linear layers (issue #4's option 3), or every layer when linear */
     res = ax_gpu_surface_create(r->gpu, surface, &sd, &s->gs);
     if (res != AX_OK) {
         return res;
@@ -109,7 +111,11 @@ static ax_result vt_attach(void *self, ax_surface surface)
     info.struct_size = sizeof info;
     ax_gpu_surface_get_info(s->gs, &info);
     s->surface = surface;
-    s->format = r->linear_blend ? info.srgb_view_format : info.view_format;
+    s->format = r->linear_blend && info.srgb_view_format != WGPUTextureFormat_Undefined
+                    ? info.srgb_view_format
+                    : info.view_format;
+    s->srgb_format = info.srgb_view_format;
+    s->view_format = info.view_format;
     s->attach_ns = ax_time_monotonic_ns();
     s->stats.struct_size = sizeof s->stats;
     r->surface_count++;
@@ -179,15 +185,21 @@ static ax_result render_frame(void *self, ax_surface surface, const ax_render_ir
     memset(&draw, 0, sizeof draw);
     draw.struct_size = sizeof draw;
     draw.target = f.view;
-    if (r->linear_blend) {
-        /* Diagnostic: blend in linear light through the sRGB view of the same texture. */
+    if (s->srgb_format != WGPUTextureFormat_Undefined && s->srgb_format != s->view_format) {
+        /* The sRGB view of the same texture: every layer draws into it when blending in linear
+         * light, and layers with AX_IR_LAYER_LINEAR_BLEND otherwise. */
         WGPUTextureViewDescriptor vd = WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
-        vd.format = s->format;
+        vd.format = s->srgb_format;
         vd.dimension = WGPUTextureViewDimension_2D;
         vd.mipLevelCount = 1;
         vd.arrayLayerCount = 1;
         srgb_view = wgpuTextureCreateView(f.texture, &vd);
-        draw.target = srgb_view;
+        if (r->linear_blend) {
+            draw.target = srgb_view;
+        } else {
+            draw.srgb_target = srgb_view;
+            draw.srgb_format = s->srgb_format;
+        }
     }
     draw.format = s->format;
     draw.width = f.width;

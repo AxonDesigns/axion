@@ -84,7 +84,7 @@ typedef enum ax_ir_blend_mode {
 /* ax_ir_layer.flags */
 #define AX_IR_LAYER_IMPLICIT 0x1u /* made by the builder for items recorded after a child */
 #define AX_IR_LAYER_LINEAR_BLEND \
-    0x2u /* blend this layer's content in linear light (not yet drawn) */
+    0x2u /* blend this layer's content in linear light (issue #4's per-layer option) */
 
 typedef struct ax_ir_layer {
     uint32_t parent;       /* AX_IR_NO_LAYER for the root */
@@ -208,6 +208,9 @@ typedef struct ax_ir_glyph_source {
 typedef struct ax_ir_text_lut_params {
     float contrast; /* 0..1: thicker stems for dark text */
     float gamma;    /* the space whose blend it imitates: 1 linear light, ~2.2 the sRGB space */
+    /* The destination assumed (the blend cannot read it): 0 the opposite luminance (Skia's), 1
+     * black under light text and white under dark text (a UI's usual backgrounds), or between. */
+    float destination;
 } ax_ir_text_lut_params;
 
 /* AXION's defaults (decision 101). */
@@ -218,9 +221,40 @@ AX_API ax_ir_text_lut_params ax_ir_text_lut_default(void);
  * renderer exists */
 AX_API void ax_ir_text_lut_override(const ax_ir_text_lut_params *params);
 
-/* Builds the table. Deterministic (base's own exp2 and log2). thread: any */
+/* Builds the table for text blended in sRGB space (AX_IR_LUT_TEXT_SRGB). Deterministic (base's
+ * own exp2 and log2). thread: any */
 AX_API void ax_ir_text_lut_build(const ax_ir_text_lut_params *params,
                                  uint8_t lut[AX_IR_TEXT_LUT_BUCKETS][256]);
+
+/*
+ * Coverage correction tables (issue #4's comparison). The same construction as the text table,
+ * for what a renderer blends and in which space:
+ *   AX_IR_LUT_TEXT_SRGB    glyphs blended in sRGB space (the default; decision 101);
+ *   AX_IR_LUT_TEXT_LINEAR  glyphs blended in linear light (AX_RENDER_BLEND_LINEAR, and layers with
+ *                          AX_IR_LAYER_LINEAR_BLEND): the alpha that gives, against the opposite
+ *                          luminance, the blend the params' gamma space would;
+ *   AX_IR_LUT_SHAPE_SRGB   rects and rounded rects blended in sRGB space with
+ *                          AX_RENDER_BLEND_SRGB_CORRECTED: by default the blend linear light would
+ *                          give (gamma 1), against the opposite luminance, so thin lines do not
+ *                          rope while translucency stays in sRGB space.
+ * Rows are AX_IR_TEXT_LUT_BUCKETS luminances of the item's color (ax_ir_text_lut_bucket).
+ */
+typedef enum ax_ir_lut_table {
+    AX_IR_LUT_TEXT_SRGB = 0,
+    AX_IR_LUT_TEXT_LINEAR = 1,
+    AX_IR_LUT_SHAPE_SRGB = 2,
+    AX_IR_LUT_TABLES = 3
+} ax_ir_lut_table;
+
+/* A table's defaults; AX_IR_LUT_TEXT_SRGB's is ax_ir_text_lut_default(). */
+AX_API ax_ir_text_lut_params ax_ir_lut_default(ax_ir_lut_table table);
+
+/* UNSUPPORTED, as ax_ir_text_lut_override, for one table (tools/diag/blend_measure). */
+AX_API void ax_ir_lut_override(ax_ir_lut_table table, const ax_ir_text_lut_params *params);
+
+/* Builds a table, in its blend space. thread: any */
+AX_API void ax_ir_lut_build(ax_ir_lut_table table, const ax_ir_text_lut_params *params,
+                            uint8_t lut[AX_IR_TEXT_LUT_BUCKETS][256]);
 
 /* The bucket of a text color (premultiplied linear): its luminance, quantized. */
 AX_API uint32_t ax_ir_text_lut_bucket(ax_color color);

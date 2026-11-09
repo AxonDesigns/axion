@@ -18,3 +18,10 @@ target_link_libraries(ax_wl_read_trace PRIVATE ${CMAKE_DL_LIBS} Threads::Threads
 add_executable(text_weight text_weight.c)
 target_link_libraries(text_weight PRIVATE ax_headless ax_core ax_text ax_render_ir m)
 ax_target_defaults(text_weight)
+
+# Issue #4's blending options measured on ax_render_soft: roping, text weight, translucency.
+add_executable(blend_measure blend_measure.c "${PROJECT_SOURCE_DIR}/examples/m1_nodes/m1_blend.c"
+    "${PROJECT_SOURCE_DIR}/examples/m1_nodes/m1_cards.c")
+target_include_directories(blend_measure PRIVATE "${PROJECT_SOURCE_DIR}/examples/m1_nodes")
+target_link_libraries(blend_measure PRIVATE ax_headless ax_core ax_text ax_render_soft ax_render_ir m)
+ax_target_defaults(blend_measure)

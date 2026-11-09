@@ -7,7 +7,8 @@
  * Rects and rounded rects are instanced quads whose fragment shader computes each pixel's exact
  * area coverage of the shape's edges from the pixel's footprint in the shape's local space, which
  * the CPU derives from the inverse of the instance's affine transform (decision 55). Colors are
- * encoded to sRGB per instance and blended in sRGB space with premultiplied alpha (decision 53).
+ * encoded to sRGB per instance and blended in sRGB space with premultiplied alpha (decision 53),
+ * or as ax_render_wgpu_desc.blend says (ax_render_blend, issue #4).
  *
  * This header is the part that needs no window: creating the renderer and drawing a snapshot
  * into any texture (used by the coverage tests). Presenting into windows goes through the
@@ -40,6 +41,8 @@ typedef struct ax_render_wgpu_desc {
     int pacing;                /* ax_gpu_pacing for attached surfaces; 0 = the default */
     int present_mode;          /* WGPUPresentMode for attached surfaces; 0 = the pacing's own */
     uint32_t diagnostic_flags; /* AX_RENDER_WGPU_DIAG_*; 0 in anything but a diagnostic */
+    uint32_t blend; /* ax_render_blend; 0, AX_RENDER_BLEND_SRGB, is the default. With
+                     * AX_RENDER_BLEND_LINEAR, targets are as with the linear diagnostic */
 } ax_render_wgpu_desc;
 
 /*
@@ -49,7 +52,8 @@ typedef struct ax_render_wgpu_desc {
  *
  * AX_RENDER_WGPU_DIAG_LINEAR_BLEND: blend in linear light instead of sRGB space (decision 58).
  * Colors are uploaded in linear light; window surfaces render through the swapchain's sRGB view
- * (ax_gpu_surface_desc.srgb_view), and ax_render_wgpu_draw_ir expects an sRGB-format target.
+ * (ax_gpu_surface_desc.srgb_view), and ax_render_wgpu_draw_ir expects an sRGB-format target. The
+ * same as blend = AX_RENDER_BLEND_LINEAR, which replaces it.
  */
 #define AX_RENDER_WGPU_DIAG_LINEAR_BLEND 0x1u
 
@@ -71,6 +75,13 @@ typedef struct ax_render_wgpu_draw {
     uint32_t width, height;   /* pixels */
     float scale;              /* device pixels per logical unit */
     ax_color background;      /* used when ir is NULL */
+    /* Optional: an sRGB view of the same texture (its format: the sRGB counterpart of `format`),
+     * into which layers with AX_IR_LAYER_LINEAR_BLEND draw, blending in linear light, each run of
+     * them in a render pass of its own. NULL: those layers blend in sRGB space, counted in
+     * ax_render_counts.linear_layers_unsupported. Their group opacity is applied to each item,
+     * as for any layer (ax_render_counts.approximated). */
+    WGPUTextureView srgb_target;
+    WGPUTextureFormat srgb_format;
 } ax_render_wgpu_draw;
 
 /* thread: presenter */

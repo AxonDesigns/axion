@@ -61,6 +61,9 @@ static void add_counts(ax_render_counts *sum, const ax_render_counts *c)
     sum->approximated += c->approximated;
     sum->invalid_items += c->invalid_items;
     sum->instances += c->instances;
+    sum->clips_approximated += c->clips_approximated;
+    sum->linear_layers += c->linear_layers;
+    sum->linear_layers_unsupported += c->linear_layers_unsupported;
 }
 
 ax_result ax_render_frame_step(ax_render_frame *rf, bool animating, uint64_t timeout_ns,

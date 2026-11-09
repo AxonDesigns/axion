@@ -111,17 +111,21 @@ static void on_request(void *ctx, const ax_scene_request *q)
     ax_rt_request_frame(rt_of(ps->p), ps->index, &r);
 }
 
-/* Chains ax_render_soft's options (its tiles on the runtime's job system) unless the caller's
- * renderer desc chains its own. */
+/* Chains ax_render_soft's options first: the caller's own, if its renderer desc chains them, with
+ * the tiles on the runtime's job system when it names none. */
 static void chain_soft(plat *p, ax_runtime rt)
 {
     const ax_renderer_chain *c;
+    memset(&p->soft, 0, sizeof p->soft);
     for (c = p->rdesc.next; c != NULL; c = c->next) {
         if (c->type == AX_RENDERER_CHAIN_SOFT) {
-            return;
+            p->soft = *(const ax_render_soft_desc *)(const void *)c;
+            if (p->soft.jobs != NULL) {
+                return; /* the caller's, as it is */
+            }
+            break;
         }
     }
-    memset(&p->soft, 0, sizeof p->soft);
     p->soft.chain.type = AX_RENDERER_CHAIN_SOFT;
     p->soft.chain.next = p->rdesc.next;
     p->soft.jobs = ax_rt_jobs(rt);

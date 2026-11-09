@@ -12,6 +12,7 @@ linked into an AXION library or example, or shipped.
 | `kde_text_capture.py` | Captures KDE's text (a Qt Quick TextArea in the desktop's general font that grabs itself at its monitor's scale, moved to each output by KWin, in Breeze Dark and Breeze Light for that process only), for tuning the text coverage correction (decision 101). The captures stay out of the repository. |
 | `measure_m1_handshake.py` | Runs `examples/m1_nodes` on each output at rest and while KWin resizes it, and prints presented, missed, scene-late and forced acknowledgements per second (decision 103). |
 | `text_weight.c` | Compares the ink of that capture's text with AXION's rendering of the same lines, for a grid of corrections (`ax_ir_text_lut`), and names the closest. Built with `-DAX_BUILD_DIAG_TOOLS=ON`. |
+| `blend_measure.c` | Issue #4's blending options on `ax_render_soft`: decision 58's roping table (three backgrounds), text weight in both themes at scales 1 and 1.325, and translucency against CSS. `--tune-linear-text` sweeps the linear text table. Built with `-DAX_BUILD_DIAG_TOOLS=ON`. |
 
 ```sh
 cmake -S . -B build/diag -G Ninja -DCMAKE_BUILD_TYPE=Release -DAX_BUILD_DIAG_TOOLS=ON

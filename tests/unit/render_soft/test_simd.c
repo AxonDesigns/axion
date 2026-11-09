@@ -19,6 +19,10 @@ typedef struct rng {
     uint32_t s;
 } rng;
 
+/* The scenes have no glyphs and no corrected shapes: no tables needed. */
+static const soft_blend blend_srgb = {AX_RENDER_BLEND_SRGB, NULL};
+static const soft_blend blend_linear = {AX_RENDER_BLEND_LINEAR, NULL};
+
 static uint32_t next_u32(rng *r)
 {
     r->s ^= r->s << 13;
@@ -139,7 +143,7 @@ AX_TEST(coverage_is_bit_identical)
         memset(&f, 0, sizeof f);
         memset(&counts, 0, sizeof counts);
         ax_arena_reset(&arena);
-        AX_REQUIRE(ax__soft_prepare(ir, 240, 180, 2.0f, false, NULL, &arena, &f, &counts) == AX_OK);
+        AX_REQUIRE(ax__soft_prepare(ir, 240, 180, 2.0f, &blend_srgb, &arena, &f, &counts) == AX_OK);
         for (i = 0; i < f.cmd_count; ++i) {
             if (f.cmds[i].kind == SOFT_CMD_ITEM) {
                 points += compare_shape(&f.cmds[i].shape, f.cmds[i].box, &mismatches);
@@ -185,7 +189,8 @@ AX_TEST(tile_planes_are_bit_identical)
         memset(&f, 0, sizeof f);
         memset(&counts, 0, sizeof counts);
         ax_arena_reset(&arena);
-        AX_REQUIRE(ax__soft_prepare(ir, 240, 180, 2.0f, scene % 4 == 3, NULL, &arena, &f, &counts) ==
+        AX_REQUIRE(ax__soft_prepare(ir, 240, 180, 2.0f, scene % 4 == 3 ? &blend_linear : &blend_srgb, &arena,
+                                    &f, &counts) ==
                    AX_OK);
         f.width = 240;
         f.height = 180;

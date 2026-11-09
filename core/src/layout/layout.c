@@ -432,10 +432,21 @@ static bool round_node(ax_layout_ctx *ctx, uint32_t row, double abs_left, double
     ax_rect frame;
     if (ctx->scale != 0.0f) {
         double sc = ctx->scale;
-        frame.x = round_grid(left, sc, false, false);
-        frame.y = round_grid(top, sc, false, false);
-        frame.w = round_grid(ax + w, sc, false, false) - round_grid(ax, sc, false, false);
-        frame.h = round_grid(ay + h, sc, false, false) - round_grid(ay, sc, false, false);
+        /* Yoga's text rounding, for a leaf with a measure function: its left and top edges round
+         * down and, when its measured size has a fraction of a pixel, its right and bottom edges
+         * up, so its frame is never narrower than what it measured (a paragraph laid out again at
+         * a narrower width would wrap its last word). */
+        void *user;
+        const bool text = axl_measure_of(ctx, row, &user) != NULL;
+        const double fw = fmod(w * sc, 1.0), fh = fmod(h * sc, 1.0);
+        const bool frac_w = !(fabs(fw) < 0.0001 || fabs(fw - 1.0) < 0.0001);
+        const bool frac_h = !(fabs(fh) < 0.0001 || fabs(fh - 1.0) < 0.0001);
+        frame.x = round_grid(left, sc, false, text);
+        frame.y = round_grid(top, sc, false, text);
+        frame.w = round_grid(ax + w, sc, text && frac_w, text && !frac_w) -
+                  round_grid(ax, sc, false, text);
+        frame.h = round_grid(ay + h, sc, text && frac_h, text && !frac_h) -
+                  round_grid(ay, sc, false, text);
     } else {
         frame = ax_rect_make((float)left, (float)top, (float)w, (float)h);
     }

@@ -24,7 +24,8 @@ struct ax_render_soft {
     uint32_t ctx_count;
     ax_atomic_u64 free_ctx; /* bit i: ctx[i] is free */
     ax_render_soft_stats stats;
-    uint8_t lut[AX_IR_TEXT_LUT_BUCKETS][256]; /* text coverage correction (decision 101) */
+    /* Coverage corrections (decision 101 and issue #4), one per ax_ir_lut_table. */
+    uint8_t luts[AX_IR_LUT_TABLES][AX_IR_TEXT_LUT_BUCKETS][256];
     void *user; /* the window side's state (surface.c), freed with the renderer */
     size_t user_size;
 };
@@ -63,8 +64,11 @@ ax_result ax_render_soft_create(const ax_allocator *allocator, const ax_render_s
     memset(r, 0, sizeof *r);
     r->allocator = *a;
     {
-        const ax_ir_text_lut_params lp = ax_ir_text_lut_default();
-        ax_ir_text_lut_build(&lp, r->lut);
+        uint32_t t;
+        for (t = 0; t < AX_IR_LUT_TABLES; ++t) {
+            const ax_ir_text_lut_params lp = ax_ir_lut_default((ax_ir_lut_table)t);
+            ax_ir_lut_build((ax_ir_lut_table)t, &lp, r->luts[t]);
+        }
     }
     if (desc != NULL) {
         r->desc = *desc;
@@ -263,9 +267,13 @@ ax_result ax_render_soft_draw_ir(ax_render_soft *r, const ax_soft_target *target
     memset(&f, 0, sizeof f);
     ax_arena_reset(&r->scratch);
     if (ir != NULL) {
-        res = ax__soft_prepare(ir, target->width, target->height, target->scale,
-                               (r->desc.diagnostic_flags & AX_RENDER_SOFT_DIAG_LINEAR_BLEND) != 0,
-                               (const uint8_t(*)[256])r->lut, &r->scratch, &f, &counts);
+        soft_blend blend;
+        blend.mode = (r->desc.diagnostic_flags & AX_RENDER_SOFT_DIAG_LINEAR_BLEND) != 0
+                         ? (uint32_t)AX_RENDER_BLEND_LINEAR
+                         : r->desc.blend;
+        blend.luts = (const uint8_t(*)[AX_IR_TEXT_LUT_BUCKETS][256])r->luts;
+        res = ax__soft_prepare(ir, target->width, target->height, target->scale, &blend,
+                               &r->scratch, &f, &counts);
         if (res != AX_OK) {
             return res;
         }
