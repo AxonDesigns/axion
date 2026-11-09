@@ -27,13 +27,28 @@ set(_ax_platform_wayland
     src/wayland/wl_shm_present.c
     src/wayland/wl_window.c)
 
-add_library(ax_platform STATIC ${_ax_platform_common} ${_ax_platform_wayland})
+# The accessibility adapter (decision 108): AccessKit's where cmake/AxionAccessKit.cmake finds its
+# binary (AX_ACCESSKIT), none otherwise; the tree and the headless queries work without it.
+include("${PROJECT_SOURCE_DIR}/cmake/AxionAccessKit.cmake")
+ax_add_accesskit()
+if(AX_HAVE_ACCESSKIT)
+    set(_ax_platform_a11y src/a11y/accesskit_adapter.c)
+else()
+    set(_ax_platform_a11y src/a11y/no_adapter.c)
+endif()
+set(AX_HAVE_ACCESSKIT ${AX_HAVE_ACCESSKIT} PARENT_SCOPE)
+
+add_library(ax_platform STATIC ${_ax_platform_common} ${_ax_platform_wayland} ${_ax_platform_a11y})
 add_library(axion::platform ALIAS ax_platform)
 
 target_include_directories(ax_platform
     PUBLIC  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
     PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(ax_platform PUBLIC ax_base)
+if(AX_HAVE_ACCESSKIT)
+    target_link_libraries(ax_platform PRIVATE ax_accesskit)
+    target_compile_definitions(ax_platform PUBLIC AX_HAVE_ACCESSKIT=1)
+endif()
 ax_target_defaults(ax_platform)
 
 # ---- Wayland ----------------------------------------------------------------------------------

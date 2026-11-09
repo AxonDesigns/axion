@@ -25,7 +25,12 @@
  *                 [--adapter=default|software] [--max-wait-ms=MS] [--renderer=gpu|soft]
  *                 [--pacing=default|compositor|driver]
  *                 [--present-mode=default|fifo|fifo-relaxed|mailbox|immediate]
- *                 [--blend-compare[=default|1|2]]
+ *                 [--blend-compare[=default|1|2]] [--still]
+ *
+ * Accessibility (decision 108): assistive technologies (Orca, Accerciser) read the cards through
+ * AccessKit's AT-SPI adapter where the build has it (AX_ACCESSKIT): each card is an article named
+ * by its title, and its default action ("click" in Accerciser) grows or shrinks it. --still stops
+ * the automatic changes, so a screen reader can be followed without the cards moving under it.
  *
  * --blend-compare shows issue #4's comparison scene (m1_blend.c) instead of the cards, with the
  * renderer blending as the option says: default (sRGB space, glyphs corrected), 1 (shapes
@@ -73,6 +78,7 @@ typedef struct options {
     uint64_t max_wait_ns;
     int blend_compare;  /* --blend-compare: 0 off, else 1 + ax_render_blend */
     bool size_given;
+    bool still; /* --still: no automatic changes */
 } options;
 
 /* --blend-compare's options (issue #4) and the window titles they get. */
@@ -97,7 +103,7 @@ static const char usage[] =
     "          [--adapter=default|software] [--max-wait-ms=MS] [--renderer=gpu|soft]\n"
     "          [--pacing=default|compositor|driver]\n"
     "          [--present-mode=default|fifo|fifo-relaxed|mailbox|immediate]\n"
-    "          [--blend-compare[=default|1|2]]\n";
+    "          [--blend-compare[=default|1|2]] [--still]\n";
 
 static int parse_options(int argc, char **argv, options *o)
 {
@@ -138,6 +144,8 @@ static int parse_options(int argc, char **argv, options *o)
             o->blend_compare = 1 + AX_RENDER_BLEND_SRGB_CORRECTED;
         } else if (strcmp(a, "--blend-compare=2") == 0) {
             o->blend_compare = 1 + AX_RENDER_BLEND_LINEAR;
+        } else if (strcmp(a, "--still") == 0) {
+            o->still = true;
         } else if (strcmp(a, "--renderer=soft") == 0) {
             o->soft = 1;
         } else if (strcmp(a, "--adapter=default") == 0) {
@@ -363,11 +371,26 @@ static int app_thread(void *arg)
         case AX_WORLD_EVENT_OCCLUSION:
             printf("occlusion: %s\n", e.data.occlusion.occluded ? "hidden" : "visible");
             break;
+        case AX_WORLD_EVENT_A11Y_ACTION: {
+            /* An assistive technology's action (decision 108): a card's default action grows or
+             * shrinks it; the focus is the tree's own. */
+            ax_node n;
+            n.h = e.data.a11y_action.node;
+            printf("a11y: %s on node %llx\n",
+                   e.data.a11y_action.action == AX_ACTION_DEFAULT ? "default action"
+                   : e.data.a11y_action.action == AX_ACTION_FOCUS ? "focus"
+                                                                  : "action",
+                   (unsigned long long)n.h);
+            if (e.data.a11y_action.action == AX_ACTION_DEFAULT && s->opt.blend_compare == 0) {
+                (void)m1_cards_toggle(world, &cards, n, NULL);
+            }
+            break;
+        }
         default:
             break;
         }
         now = ax_time_monotonic_ns();
-        if (now >= next_change && s->opt.blend_compare == 0) {
+        if (now >= next_change && s->opt.blend_compare == 0 && !s->opt.still) {
             /* A reorder, a card growing or a new color: a transaction, timed to the screen; the
              * scene animates it. */
             if (m1_cards_step(world, &cards, step++, &seq) == AX_OK) {

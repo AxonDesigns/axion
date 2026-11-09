@@ -130,4 +130,15 @@ void ax__rt_render_commands(rt_impl *r);
 ax_result ax__rt_start_threads(rt_impl *r);
 void ax__rt_stop_threads(rt_impl *r);
 
+#if defined(AX_RUNTIME_HAVE_PLATFORM)
+#    include <axion/ax_window.h>
+/* a11y_bridge.c (decision 108): a window's accessibility bridge, or NULL without an adapter. The
+ * app thread creates and destroys it; the surface's sink (scene thread) feeds it. */
+typedef struct rt_a11y_bridge rt_a11y_bridge;
+rt_a11y_bridge *ax__rt_a11y_bridge_create(ax_world world, ax_window window, ax_node root);
+void ax__rt_a11y_bridge_destroy(rt_a11y_bridge *b); /* NULL is fine */
+void ax__rt_a11y_bridge_window_focused(rt_a11y_bridge *b, bool focused);
+void ax__rt_a11y_bridge_sink(void *user, const ax_a11y_update *update);
+#endif
+
 #endif /* AX_RUNTIME_RT_INTERNAL_H */
