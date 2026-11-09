@@ -40,6 +40,7 @@ typedef struct ax_rt_window_counters {
     uint64_t scene_late, forced_acks, hidden_acks; /* decision 57's handshake */
     uint64_t refresh_ns;
     float shown_width, shown_height; /* logical size of the newest frame presented */
+    uint64_t rests, rest_ns; /* the platform's rests (ax_present_stats): not counted as missed */
 } ax_rt_window_counters;
 
 /* Errors: AX_ERR_INVALID_HANDLE, AX_ERR_INVALID_ARGUMENT (no such window). */

@@ -10,8 +10,11 @@ include_guard(GLOBAL)
 set(AX_DEPS_DIR "${PROJECT_SOURCE_DIR}/.deps" CACHE PATH
     "Where pinned prebuilt dependencies are downloaded and unpacked")
 
-# ax_fetch_prebuilt(<out_var> <name> <url> <sha256>)
+# ax_fetch_prebuilt(<out_var> <name> <url> <sha256> [<mirror_url>...])
 #   Makes <AX_DEPS_DIR>/<name> hold the unpacked archive and sets <out_var> to that directory.
+#   The URLs are tried in order, each twice, until one gives the pinned archive: the checksum makes
+#   any mirror as trustworthy as the first URL, and one failing host (an HTTP error from a busy
+#   server) does not fail the configure.
 #   <name> must change whenever the pin does (include the version). An archive with a single
 #   top-level directory is unpacked without it. The checksum is recorded once unpacking succeeds,
 #   so an interrupted download or extraction is redone on the next configure, and a directory
@@ -37,16 +40,34 @@ function(ax_fetch_prebuilt out_var name url sha256)
     set(_archive "${AX_DEPS_DIR}/${_archive_name}")
     set(_tmp "${AX_DEPS_DIR}/${name}.tmp")
 
-    message(STATUS "Downloading ${_archive_name}")
-    file(DOWNLOAD "${url}" "${_archive}"
-         EXPECTED_HASH "SHA256=${sha256}"
-         TLS_VERIFY ON
-         STATUS _status)
-    list(GET _status 0 _code)
-    if(NOT _code EQUAL 0)
-        list(GET _status 1 _msg)
-        file(REMOVE "${_archive}")
-        message(FATAL_ERROR "Downloading ${url} failed: ${_msg}")
+    set(_errors "")
+    set(_done FALSE)
+    foreach(_url IN ITEMS "${url}" ${ARGN})
+        foreach(_attempt RANGE 1 2)
+            message(STATUS "Downloading ${_archive_name} from ${_url}")
+            # The hash is checked after the download: with EXPECTED_HASH, a failed download is a
+            # fatal error before STATUS can be read, and no other URL would be tried.
+            file(DOWNLOAD "${_url}" "${_archive}" TLS_VERIFY ON STATUS _status)
+            list(GET _status 0 _code)
+            if(_code EQUAL 0)
+                file(SHA256 "${_archive}" _got)
+                if(_got STREQUAL sha256)
+                    set(_done TRUE)
+                    break()
+                endif()
+                set(_msg "SHA-256 ${_got}, expected ${sha256}")
+            else()
+                list(GET _status 1 _msg)
+            endif()
+            file(REMOVE "${_archive}")
+            string(APPEND _errors "\n  ${_url} (attempt ${_attempt}): ${_msg}")
+        endforeach()
+        if(_done)
+            break()
+        endif()
+    endforeach()
+    if(NOT _done)
+        message(FATAL_ERROR "Downloading ${_archive_name} failed:${_errors}")
     endif()
 
     file(REMOVE_RECURSE "${_tmp}" "${_dir}")
