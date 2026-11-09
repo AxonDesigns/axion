@@ -4965,8 +4965,10 @@ monitors, and a recommendation, without changing the default.
   - Option 3 costs a render pass per run of linear layers in wgpu (batching breaks at each run),
     an sRGB view of the target (window surfaces have it; counted otherwise), and its group opacity
     is approximated until M2's offscreen layers.
-- **The default does not change** without the owner's approval; options 1 and 2 are for
-  comparison until then.
+- **The owner's decision** (after looking at `--blend-compare` on both monitors, 2026-11-09):
+  **the default stays sRGB space**, glyphs corrected. Options 1 and 2 remain comparison modes; the
+  node property for option 3 is not added (a later step only if the owner asks for it); roping
+  stays decision 58's known limitation.
 - **Tests:** `render_soft.soft` (option 1 corrects a half-covered edge to linear light's 188 in
   both polarities and keeps 50 % white over black at 128; the linear mode by the desc);
   `render_wgpu.coverage` (options 1 and 2 match ax_render_soft on the torture scenes; a linear
