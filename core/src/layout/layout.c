@@ -441,6 +441,7 @@ static bool round_node(ax_layout_ctx *ctx, uint32_t row, double abs_left, double
     }
     b->abs_x = ax;
     b->abs_y = ay;
+    b->rounded_scale = ctx->scale;
     if (memcmp(&b->frame, &frame, sizeof frame) != 0) {
         /* What layout animations start from (decision 94): bit 0 of had_frame says a frame was
          * written before, bit 1 that prev_frame holds one. */
@@ -454,8 +455,10 @@ static bool round_node(ax_layout_ctx *ctx, uint32_t row, double abs_left, double
     return moved;
 }
 
-/* Rounds a subtree: descends into a child laid out or visited in this pass, or whose absolute
- * position moved; any other subtree is unchanged and keeps its frames. Iterative, pre-order. */
+/* Rounds a subtree: descends into a child laid out or visited in this pass, whose absolute
+ * position moved, or rounded at another scale (a window moved to another monitor: its size, and so
+ * every cached layout, may be the same); any other subtree is unchanged and keeps its frames.
+ * Iterative, pre-order. */
 static void round_subtree(ax_layout_ctx *ctx, uint32_t root_row, double abs_left, double abs_top,
                           bool everything)
 {
@@ -467,7 +470,7 @@ static void round_subtree(ax_layout_ctx *ctx, uint32_t root_row, double abs_left
         uint32_t row = axl_row(s, cur);
         ax_node_layout *cb = axl_box(ctx, row);
         const ax_node_layout *pb = axl_box(ctx, axl_row(s, s->links[row].parent));
-        bool need = everything || cb->pass == ctx->pass ||
+        bool need = everything || cb->pass == ctx->pass || cb->rounded_scale != ctx->scale ||
                     pb->abs_x + (double)cb->pos[AX_EDGE_LEFT] != cb->abs_x ||
                     pb->abs_y + (double)cb->pos[AX_EDGE_TOP] != cb->abs_y;
         if (need) {

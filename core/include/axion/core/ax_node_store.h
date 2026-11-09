@@ -137,6 +137,7 @@ typedef struct ax_node_layout {
     float measured_w, measured_h;
     float flex_basis;    /* NaN until computed */
     double abs_x, abs_y; /* unrounded position from the root, for rounding */
+    float rounded_scale; /* the pixel scale `frame` was rounded at (0: not rounded) */
     float margin[4];     /* resolved by the last layout */
     float padding[4];
     float border[4];
