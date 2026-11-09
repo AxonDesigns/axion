@@ -59,6 +59,7 @@ static ax_result vt_create(const ax_renderer_desc *desc, void **out_self)
     for (c = desc->next; c != NULL; c = c->next) {
         if (c->type == AX_RENDERER_CHAIN_SOFT) {
             sd = (const ax_render_soft_desc *)(const void *)c;
+            break; /* the first */
         }
     }
     res = ax_render_soft_create(desc->allocator, sd, &r);

@@ -25,6 +25,13 @@
  *                 [--adapter=default|software] [--max-wait-ms=MS] [--renderer=gpu|soft]
  *                 [--pacing=default|compositor|driver]
  *                 [--present-mode=default|fifo|fifo-relaxed|mailbox|immediate]
+ *                 [--blend-compare[=default|1|2]]
+ *
+ * --blend-compare shows issue #4's comparison scene (m1_blend.c) instead of the cards, with the
+ * renderer blending as the option says: default (sRGB space, glyphs corrected), 1 (shapes
+ * corrected too) or 2 (linear light); the window is titled "AXION blend <option>". Option 3 (a
+ * layer blended in linear light) draws its layers as option 2 does; no node property marks such
+ * a layer yet.
  *
  * --block-ms blocks the app thread that long every --block-every seconds (default 2).
  * --stats prints, once a second, what the window presented and how long the last change took from
@@ -49,6 +56,7 @@
 #include "axion/render/ax_render_soft_surface.h"
 #include "axion/render/ax_render_wgpu.h"
 #include "axion/runtime/ax_runtime_platform.h"
+#include "m1_blend.h"
 #include "m1_cards.h"
 
 #define PI_F 3.14159265358979f
@@ -63,7 +71,15 @@ typedef struct options {
     int adapter, pacing, present_mode;
     int soft; /* --renderer=soft */
     uint64_t max_wait_ns;
+    int blend_compare;  /* --blend-compare: 0 off, else 1 + ax_render_blend */
+    bool size_given;
 } options;
+
+/* --blend-compare's options (issue #4) and the window titles they get. */
+static const char *const BLEND_NAMES[3] = {"default (sRGB)", "1: sRGB, shapes corrected",
+                                           "2: linear light"};
+static const char *const BLEND_TITLES[3] = {"AXION blend default", "AXION blend 1",
+                                            "AXION blend 2"};
 
 typedef struct shared {
     options opt;
@@ -80,7 +96,8 @@ static const char usage[] =
     "          [--height=H] [--block-ms=MS] [--block-every=SECONDS]\n"
     "          [--adapter=default|software] [--max-wait-ms=MS] [--renderer=gpu|soft]\n"
     "          [--pacing=default|compositor|driver]\n"
-    "          [--present-mode=default|fifo|fifo-relaxed|mailbox|immediate]\n";
+    "          [--present-mode=default|fifo|fifo-relaxed|mailbox|immediate]\n"
+    "          [--blend-compare[=default|1|2]]\n";
 
 static int parse_options(int argc, char **argv, options *o)
 {
@@ -102,8 +119,10 @@ static int parse_options(int argc, char **argv, options *o)
             o->duration = atof(a + 11);
         } else if (strncmp(a, "--width=", 8) == 0) {
             o->width = (float)atof(a + 8);
+            o->size_given = true;
         } else if (strncmp(a, "--height=", 9) == 0) {
             o->height = (float)atof(a + 9);
+            o->size_given = true;
         } else if (strncmp(a, "--block-ms=", 11) == 0) {
             o->block_ms = atof(a + 11);
         } else if (strncmp(a, "--block-every=", 14) == 0) {
@@ -112,6 +131,13 @@ static int parse_options(int argc, char **argv, options *o)
             o->max_wait_ns = (uint64_t)(atof(a + 14) * 1e6);
         } else if (strcmp(a, "--renderer=gpu") == 0) {
             o->soft = 0;
+        } else if (strcmp(a, "--blend-compare=default") == 0 ||
+                   strcmp(a, "--blend-compare") == 0) {
+            o->blend_compare = 1 + AX_RENDER_BLEND_SRGB;
+        } else if (strcmp(a, "--blend-compare=1") == 0) {
+            o->blend_compare = 1 + AX_RENDER_BLEND_SRGB_CORRECTED;
+        } else if (strcmp(a, "--blend-compare=2") == 0) {
+            o->blend_compare = 1 + AX_RENDER_BLEND_LINEAR;
         } else if (strcmp(a, "--renderer=soft") == 0) {
             o->soft = 1;
         } else if (strcmp(a, "--adapter=default") == 0) {
@@ -228,6 +254,7 @@ static int app_thread(void *arg)
     ax_runtime_desc d;
     ax_rt_platform_desc pd;
     ax_render_wgpu_desc wd;
+    ax_render_soft_desc sd;
     ax_renderer_desc rd;
     ax_node root;
     static m1_cards cards;
@@ -246,6 +273,7 @@ static int app_thread(void *arg)
         return 1;
     }
     memset(&wd, 0, sizeof wd);
+    memset(&sd, 0, sizeof sd);
     wd.chain.type = AX_RENDERER_CHAIN_WGPU;
     wd.adapter = (ax_gpu_adapter_kind)s->opt.adapter;
     wd.pacing = s->opt.pacing;
@@ -253,6 +281,14 @@ static int app_thread(void *arg)
     memset(&rd, 0, sizeof rd);
     rd.struct_size = sizeof rd;
     rd.next = &wd.chain;
+    if (s->opt.blend_compare != 0) {
+        /* Issue #4's comparison: the renderer blends as the option says, GPU or software. */
+        wd.blend = (uint32_t)(s->opt.blend_compare - 1);
+        sd.chain.type = AX_RENDERER_CHAIN_SOFT;
+        sd.chain.next = &wd.chain;
+        sd.blend = wd.blend;
+        rd.next = &sd.chain;
+    }
     rd.initial_background = ax_color_from_srgb8(0xFF1E2129u);
     memset(&d, 0, sizeof d);
     d.struct_size = sizeof d;
@@ -293,9 +329,15 @@ static int app_thread(void *arg)
         s->csd = ax_window_get_info(s->window, &info) == AX_OK && !info.server_decorated;
         publish_regions(s, w, h);
     }
-    (void)m1_cards_build(world, root, &cards, s->csd, &seq);
-    printf("m1_nodes: %u cards committed (transaction %llu)%s\n", (unsigned)M1_CARDS,
-           (unsigned long long)seq, s->csd ? ", client-side decorations" : "");
+    if (s->opt.blend_compare != 0) {
+        (void)m1_blend_build(world, root, BLEND_NAMES[s->opt.blend_compare - 1], s->csd, &seq);
+        printf("m1_nodes: blend comparison, %s (%s)\n", BLEND_NAMES[s->opt.blend_compare - 1],
+               s->opt.soft ? "soft" : "gpu");
+    } else {
+        (void)m1_cards_build(world, root, &cards, s->csd, &seq);
+        printf("m1_nodes: %u cards committed (transaction %llu)%s\n", (unsigned)M1_CARDS,
+               (unsigned long long)seq, s->csd ? ", client-side decorations" : "");
+    }
     fflush(stdout);
 
     next_change = ax_time_monotonic_ns() + 1200 * MS;
@@ -325,7 +367,7 @@ static int app_thread(void *arg)
             break;
         }
         now = ax_time_monotonic_ns();
-        if (now >= next_change) {
+        if (now >= next_change && s->opt.blend_compare == 0) {
             /* A reorder, a card growing or a new color: a transaction, timed to the screen; the
              * scene animates it. */
             if (m1_cards_step(world, &cards, step++, &seq) == AX_OK) {
@@ -390,6 +432,15 @@ int main(int argc, char **argv)
     memset(&win_desc, 0, sizeof win_desc);
     win_desc.struct_size = sizeof win_desc;
     win_desc.title = AX_STR("AXION m1_nodes");
+    if (s.opt.blend_compare != 0) {
+        const char *title = BLEND_TITLES[s.opt.blend_compare - 1];
+        win_desc.title.ptr = title;
+        win_desc.title.len = strlen(title);
+        if (!s.opt.size_given) {
+            s.opt.width = 928;
+            s.opt.height = 664;
+        }
+    }
     win_desc.width = s.opt.width;
     win_desc.height = s.opt.height;
     win_desc.min_width = 240;

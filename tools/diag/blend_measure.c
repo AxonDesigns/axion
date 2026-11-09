@@ -27,6 +27,10 @@
  *
  *   build/diag/tools/diag/blend_measure [--tune-linear-text]
  *
+ * --compare-png DIR writes m1_nodes --blend-compare's scene as ax_render_soft draws it in each mode
+ * (DIR/blend_<option>_<scale>.png at scales 1 and 1.325), to set beside the captures of the
+ * monitors.
+ *
  * --tune-linear-text sweeps AX_IR_LUT_TEXT_LINEAR's gamma and contrast and prints how far text in
  * linear light is from the default's weight, in both polarities and at both scales.
  */
@@ -40,8 +44,10 @@
 #include "axion/base/ax_math.h"
 #include "axion/core/ax_world_sdk.h"
 #include "axion/headless/ax_headless.h"
+#include "axion/headless/ax_png.h"
 #include "axion/render/ax_render_ir.h"
 #include "axion/render/ax_render_soft.h"
+#include "m1_blend.h"
 
 typedef struct option {
     const char *name;
@@ -312,6 +318,59 @@ static void translucency(const option *o, uint32_t *white50, double *mean, doubl
     ax_ir_builder_deinit(&b);
 }
 
+static int compare_png(const char *dir)
+{
+    static const char *const names[3] = {"default (sRGB)", "1: sRGB, shapes corrected",
+                                         "2: linear light"};
+    static const char *const files[3] = {"default", "1", "2"};
+    static const float scales[2] = {1.0f, 1.325f};
+    uint32_t i, k;
+    for (i = 0; i < 3; ++i) {
+        for (k = 0; k < 2; ++k) {
+            ax_headless *h = NULL;
+            ax_headless_desc d = ax_headless_default_desc();
+            ax_headless_surface_desc s = ax_headless_default_surface_desc();
+            ax_headless_image img;
+            ax_node root;
+            uint64_t seq = 0;
+            uint8_t *png = NULL;
+            size_t size = 0;
+            char path[1024];
+            FILE *f;
+            d.renderer = AX_HEADLESS_RENDER_SOFT;
+            d.blend = OPTIONS[i].blend;
+            s.width = 928.0f;
+            s.height = 632.0f;
+            s.scale = scales[k];
+            if (ax_headless_create(&d, &h) != AX_OK ||
+                ax_headless_add_surface(h, &s, &root) != AX_OK ||
+                m1_blend_build(ax_headless_world(h), root, names[i], false, &seq) != AX_OK) {
+                ax_headless_destroy(h);
+                return 1;
+            }
+            (void)ax_headless_settle(h, 20, NULL);
+            if (ax_headless_capture(h, root, &img) != AX_OK) {
+                ax_headless_destroy(h);
+                return 1;
+            }
+            (void)snprintf(path, sizeof path, "%s/blend_%s_%s.png", dir, files[i],
+                           k == 0 ? "1" : "1.325");
+            if (ax_png_encode(NULL, img.rgba, img.width, img.height, img.stride,
+                              AX_PNG_PREMULTIPLIED, &png, &size) ==
+                    AX_OK &&
+                (f = fopen(path, "wb")) != NULL) {
+                (void)fwrite(png, 1, size, f);
+                fclose(f);
+                printf("%s\n", path);
+            }
+            ax_png_free(NULL, png, size);
+            ax_headless_image_free(h, &img);
+            ax_headless_destroy(h);
+        }
+    }
+    return 0;
+}
+
 static void tune_linear_text(void)
 {
     static const float gammas[] = {1.7f, 1.75f, 1.8f, 1.85f, 1.9f};
@@ -356,6 +415,9 @@ int main(int argc, char **argv)
     double ink[3][2][2]; /* text option x scale x polarity (0: light on dark) */
     uint32_t i, k;
 
+    if (argc > 2 && strcmp(argv[1], "--compare-png") == 0) {
+        return compare_png(argv[2]);
+    }
     if (argc > 1 && strcmp(argv[1], "--tune-linear-text") == 0) {
         tune_linear_text();
         return 0;
