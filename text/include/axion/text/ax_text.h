@@ -226,6 +226,34 @@ AX_API const ax_text_layout *ax_text_paragraph_layout(ax_text_paragraph *p, floa
 AX_API void ax_text_layout_retain(const ax_text_layout *l);
 AX_API void ax_text_layout_release(const ax_text_layout *l);
 
+/* ---- Characters and words (accessibility's text ranges, decision 108) ------------------------ */
+
+/* A character of a laid-out line: a grapheme cluster (UAX #29). */
+typedef struct ax_text_char {
+    uint32_t start;  /* byte offset in the paragraph's text */
+    uint32_t length; /* UTF-8 bytes */
+    float x;         /* from the paragraph's left, as the line's glyphs */
+    float width;
+} ax_text_char;
+
+/*
+ * The characters of line `line` of a layout of paragraph p (shaped), in order, into chars (at
+ * most capacity); returns how many the line has. A character inside a ligature gets an equal
+ * share of its glyph's advance; the last one ends at the line's width (trailing spaces, which
+ * hang, get none).
+ */
+AX_API uint32_t ax_text_line_chars(const ax_text_paragraph *p, const ax_text_layout *l,
+                                   uint32_t line, ax_text_char *chars, uint32_t capacity);
+
+/*
+ * Splits a line's characters (as ax_text_line_chars gave them) into words (UAX #29 word
+ * boundaries; spaces and punctuation after a word belong to it): word_lengths[i] is the i-th
+ * word's length in characters, at most capacity of them; returns how many words there are.
+ * Thread: any. Out of memory: 1 word with every character.
+ */
+AX_API uint32_t ax_text_line_words(const ax_text_paragraph *p, const ax_text_char *chars,
+                                   uint32_t char_count, uint32_t *word_lengths, uint32_t capacity);
+
 /* ---- Glyphs ---------------------------------------------------------------------------------- */
 
 #define AX_TEXT_SUBPIXEL_MAX_SIZE 48.0f /* device pixels: subpixel positions and light hinting */

@@ -190,6 +190,7 @@ static bool apply_create(apply_state *st, const ax_txn_cmd_create *c)
     }
     push_undo(st, UNDO_CREATE, c->node);
     ax__mirror_touch_slot(st->w, ax_handle_slot(c->node.h));
+    ax__a11y_touch(st->w, ax_handle_slot(c->node.h), AX__A11Y_STRUCT);
     return true;
 }
 
@@ -201,7 +202,7 @@ static void push_undo_set(apply_state *st, ax_node node, const ax_prop_desc *d)
     undo_entry *u = push_undo(st, UNDO_SET, node);
     u->prop = d->id;
     u->type = (uint32_t)d->type;
-    if (d->storage == AX_PROP_IN_TEXT) {
+    if (d->storage == AX_PROP_IN_TEXT || d->storage == AX_PROP_IN_SEMANTICS) {
         bool was_set = false;
         (void)ax_scene_get_own(st->scene, node, d->id, &u->value, &was_set);
         u->reserved = was_set ? UNDO_WAS_SET : 0u;
@@ -253,6 +254,7 @@ static bool apply_set_str(apply_state *st, const ax_txn_cmd_set_str *c)
         return false;
     }
     ax__mirror_touch_slot(st->w, ax_handle_slot(c->node.h));
+    ax__a11y_touch_prop(st->w, ax_handle_slot(c->node.h), c->prop);
     return true;
 }
 
@@ -283,6 +285,7 @@ static bool apply_set(apply_state *st, const ax_txn_cmd_set *c)
         return false;
     }
     ax__mirror_touch_slot(st->w, ax_handle_slot(c->node.h));
+    ax__a11y_touch_prop(st->w, ax_handle_slot(c->node.h), c->prop);
     return true;
 }
 
@@ -304,6 +307,7 @@ static bool apply_insert(apply_state *st, const ax_txn_cmd_insert *c)
         return false;
     }
     ax__mirror_touch_slot(st->w, ax_handle_slot(c->child.h)); /* its parent changed */
+    ax__a11y_touch(st->w, ax_handle_slot(c->child.h), AX__A11Y_STRUCT);
     return true;
 }
 
@@ -315,6 +319,7 @@ static bool apply_remove(apply_state *st, const ax_txn_cmd_remove *c)
     push_undo_move(st, c->node);
     (void)ax_scene_detach(st->scene, c->node);
     ax__mirror_touch_slot(st->w, ax_handle_slot(c->node.h));
+    ax__a11y_touch(st->w, ax_handle_slot(c->node.h), AX__A11Y_STRUCT);
     st->removed[st->removed_count++] = c->node;
     return true;
 }
@@ -347,7 +352,8 @@ static void undo_all(apply_state *st)
             break;
         case UNDO_SET:
             if (ax_prop_builtin(u->prop) != NULL &&
-                ax_prop_builtin(u->prop)->storage == AX_PROP_IN_TEXT &&
+                (ax_prop_builtin(u->prop)->storage == AX_PROP_IN_TEXT ||
+                 ax_prop_builtin(u->prop)->storage == AX_PROP_IN_SEMANTICS) &&
                 (u->reserved & UNDO_WAS_SET) == 0) {
                 r = ax_scene_unset(scene, u->node, u->prop);
             } else {

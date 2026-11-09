@@ -48,7 +48,8 @@ jobs:
           - { name: "macOS / Clang / ASan+UBSan",    os: macos-latest,   preset: clang-asan }
           - { name: "macOS / Clang / Release",       os: macos-latest,   preset: clang-release, coverage: dawn-metal, images: macos }
           - { name: "Linux / GCC / ASan+UBSan",      os: ubuntu-latest,  preset: gcc-asan }
-          - { name: "Linux / GCC / Release",         os: ubuntu-latest,  preset: gcc-release }
+          # Without AccessKit (decision 108): everything builds and the tree works the same.
+          - { name: "Linux / GCC / Release / no AccessKit", os: ubuntu-latest, preset: gcc-release, configure_args: "-DAX_ACCESSKIT=OFF" }
           - { name: "Linux / Clang / ASan+UBSan",    os: ubuntu-latest,  preset: clang-asan }
           - { name: "Linux / Clang / Release",       os: ubuntu-latest,  preset: clang-release, coverage: dawn-lavapipe, images: linux }
           # The alternative WebGPU implementation (decision 43): builds gpu/ and the renderer
@@ -105,7 +106,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .deps
-          key: webgpu-${{ runner.os }}-${{ runner.arch }}-${{ contains(matrix.configure_args, 'wgpu-native') && 'wgpu-native' || 'dawn' }}-${{ hashFiles('gpu/third_party/webgpu_deps.cmake', 'cmake/AxionTextDeps.cmake') }}
+          key: webgpu-${{ runner.os }}-${{ runner.arch }}-${{ contains(matrix.configure_args, 'wgpu-native') && 'wgpu-native' || 'dawn' }}-${{ hashFiles('gpu/third_party/webgpu_deps.cmake', 'cmake/AxionTextDeps.cmake', 'cmake/AxionAccessKit.cmake') }}
 
       # The runners' 32-bit mmap randomization breaks ThreadSanitizer's memory layout
       # ("unexpected memory mapping"); 28 bits is what it supports.
@@ -260,7 +261,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .deps
-          key: webgpu-arch-${{ runner.arch }}-dawn-${{ hashFiles('gpu/third_party/webgpu_deps.cmake', 'cmake/AxionTextDeps.cmake') }}
+          key: webgpu-arch-${{ runner.arch }}-dawn-${{ hashFiles('gpu/third_party/webgpu_deps.cmake', 'cmake/AxionTextDeps.cmake', 'cmake/AxionAccessKit.cmake') }}
 
       - name: Configure
         run: cmake --preset gcc-debug

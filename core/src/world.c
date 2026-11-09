@@ -59,6 +59,7 @@ static void on_slot_freed(void *user, ax_node next_handle)
 {
     world_impl *w = (world_impl *)user;
     ax__mirror_touch_slot(w, ax_handle_slot(next_handle.h)); /* the node is gone */
+    ax__a11y_touch(w, ax_handle_slot(next_handle.h), AX__A11Y_STRUCT);
     if (!w->suppress_recycle) {
         recycle_handle(w, next_handle);
     }
@@ -90,6 +91,7 @@ static void free_world(world_impl *w)
     ax__frame_free(w);
     ax__anim_free(w);
     ax__mirror_free(w);
+    ax__a11y_free(w);
     ax_mem_free(&a, w->free_handles, sizeof(ax_node) * w->free_handle_capacity);
     ax_mem_free(&a, w->recycle_backlog, sizeof(ax_node) * w->recycle_backlog_capacity);
     ax_mem_free(&a, w->return_backlog, sizeof(ax_txn *) * w->return_backlog_capacity);
@@ -123,6 +125,7 @@ ax_result ax_world_create(const ax_world_desc *desc, ax_world *out_world)
     }
     memset(w, 0, sizeof *w);
     ax_mutex_init(&w->wake_lock);
+    ax__a11y_init(w);
     w->allocator = *a;
     w->clock = desc != NULL && desc->clock != NULL ? desc->clock : default_clock;
     w->clock_user = desc != NULL && desc->clock != NULL ? desc->clock_user : NULL;

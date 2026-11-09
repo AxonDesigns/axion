@@ -52,6 +52,7 @@ typedef struct plat_surface {
     uint64_t reported_ir;
     /* counters, read from any thread */
     uint64_t window_handle; /* set by the app thread before the surface is added */
+    rt_a11y_bridge *a11y;   /* the window's accessibility bridge (app thread), or NULL */
     ax_atomic_u64 frames, shown, presented, missed, scene_late, forced, hidden, refresh;
     ax_atomic_u64 rests, rest_ns;
     ax_atomic_u32 shown_w, shown_h; /* float bits */
@@ -427,6 +428,9 @@ static void pump_events(void *user, ax_runtime rt)
         if (e.type == AX_EVENT_OCCLUSION && s != UINT32_MAX) {
             ax_rt_set_surface_visible(rt, s, !e.data.occlusion.occluded);
         }
+        if (e.type == AX_EVENT_FOCUS && s != UINT32_MAX) {
+            ax__rt_a11y_bridge_window_focused(p->s[s].a11y, e.data.focus.focused);
+        }
         (void)ax_world_push_event(world, &we);
     }
 }
@@ -435,7 +439,12 @@ static void cleanup(void *user)
 {
     plat *p = (plat *)user;
     ax_allocator a = p->allocator;
+    uint32_t i;
     (void)ax_app_set_event_notify(p->app, NULL, NULL); /* waits for a call in progress */
+    for (i = 0; i < AX_RUNTIME_MAX_SURFACES; ++i) {
+        ax__rt_a11y_bridge_destroy(p->s[i].a11y); /* windows never removed; the threads stopped */
+        p->s[i].a11y = NULL;
+    }
     ax_mem_free(&a, p, sizeof *p);
 }
 
@@ -587,9 +596,20 @@ ax_result ax_runtime_add_window(ax_runtime runtime, ax_window window, ax_node *o
     memset(&sd, 0, sizeof sd);
     sd.native_surface = surface.h;
     sd.window = window.h;
-    res = ax_rt_add_surface(runtime, root, &sd, &index);
-    if (res != AX_OK) {
-        return res;
+    /* Assistive technologies read the root's tree through the platform's adapter (decision 108),
+     * when this build has one. */
+    {
+        rt_a11y_bridge *bridge = ax__rt_a11y_bridge_create(r->desc.world, window, root);
+        if (bridge != NULL) {
+            sd.a11y.update = ax__rt_a11y_bridge_sink;
+            sd.a11y.user = bridge;
+        }
+        res = ax_rt_add_surface(runtime, root, &sd, &index);
+        if (res != AX_OK) {
+            ax__rt_a11y_bridge_destroy(bridge);
+            return res;
+        }
+        p->s[index].a11y = bridge;
     }
     p->s[index].window_handle = window.h;
     *out_root = root;
@@ -605,7 +625,16 @@ ax_result ax_runtime_remove_window(ax_runtime runtime, ax_window window)
     if (s == UINT32_MAX) {
         return ax_set_error(AX_ERR_INVALID_ARGUMENT, "ax_runtime_remove_window: not added");
     }
-    return ax_rt_remove_surface(runtime, s);
+    {
+        plat *p = plat_of(ax__rt_from_handle(runtime));
+        const ax_result res = ax_rt_remove_surface(runtime, s);
+        if (res == AX_OK && p != NULL) {
+            /* The scene let the surface's sink go: the bridge can stop. */
+            ax__rt_a11y_bridge_destroy(p->s[s].a11y);
+            p->s[s].a11y = NULL;
+        }
+        return res;
+    }
 }
 
 ax_result ax_rt_get_window_counters(ax_runtime rt, ax_window window, ax_rt_window_counters *out)

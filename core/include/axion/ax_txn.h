@@ -136,8 +136,8 @@ AX_API void ax_txn_set_transform(ax_txn *t, ax_node node, ax_prop prop, ax_trans
 AX_API void ax_txn_set_u32(ax_txn *t, ax_node node, ax_prop prop, uint32_t value);
 AX_API void ax_txn_set_bool(ax_txn *t, ax_node node, ax_prop prop, bool value);
 
-/* Sets a string property (AX_PROP_TEXT, AX_PROP_FONT_FAMILY, AX_PROP_FONT_FEATURES): `length`
- * bytes of UTF-8, copied (they need no terminating NUL; NULL with length 0 is the empty string).
+/* Sets a string property (AX_PROP_TEXT, AX_PROP_FONT_FAMILY, AX_PROP_FONT_FEATURES, the semantic
+ * strings such as AX_PROP_LABEL): `length` bytes of UTF-8, copied (they need no terminating NUL; NULL with length 0 is the empty string).
  * Invalid UTF-8, more than AX_PROP_MAX_STRING bytes or a font feature list that does not parse
  * is a recording error. thread: app */
 AX_API void ax_txn_set_str(ax_txn *t, ax_node node, ax_prop prop, const char *utf8, size_t length);

@@ -8,7 +8,9 @@
  * that decides how much of the frame pipeline a change touches:
  *   - LAYOUT: style, layout, paint record, composite (width, padding, flex, font size...);
  *   - PAINT: the node's paint record, composite (background, border color, corner radius...);
- *   - COMPOSITE: composite only (transform, opacity...).
+ *   - COMPOSITE: composite only (transform, opacity...);
+ *   - SEMANTICS: the accessibility tree only (role, label, states...): nothing is laid out,
+ *     recorded or composited again.
  *
  * Ids are fixed forever:
  *   0x00000001 - 0x00007FFF  core properties, declared here; new ones are appended
@@ -116,8 +118,30 @@ enum {
     AX_PROP_FONT_FEATURES = 0x0408, /* string, inherited: CSS font-feature-settings ("tnum",
                                      * "liga" 0, smcp 1) */
     AX_PROP_TEXT_ALIGN = 0x0409,    /* u32, inherited, paint: ax_text_align_value */
-    AX_PROP_COLOR = 0x040A          /* color, inherited, paint, animatable: the text's color;
+    AX_PROP_COLOR = 0x040A,         /* color, inherited, paint, animatable: the text's color;
                                      * default opaque black */
+
+    /* Semantics (decision 108): what assistive technologies and the testing API's queries see.
+     * Effect SEMANTICS: a change updates the accessibility tree and nothing else. None is
+     * inherited or animatable. Strings are UTF-8. */
+    AX_PROP_ROLE = 0x0501,        /* u32, ax_role; default NONE: a text leaf is a LABEL, any other
+                                   * node a generic container */
+    AX_PROP_LABEL = 0x0502,       /* string: the accessible name; "" (default) is the text of a
+                                   * text leaf, or no name */
+    AX_PROP_DESCRIPTION = 0x0503, /* string: a longer description */
+    AX_PROP_TEST_ID = 0x0504,     /* string: an id for tests and automation, never announced */
+    AX_PROP_VALUE_TEXT = 0x0505,  /* string: the value as text ("50%", a text field's content) */
+    AX_PROP_VALUE = 0x0506,       /* f32: a numeric value (slider, progress); unset: none */
+    AX_PROP_VALUE_MIN = 0x0507,   /* f32: its range; unset: none */
+    AX_PROP_VALUE_MAX = 0x0508,   /* f32 */
+    AX_PROP_VALUE_STEP = 0x0509,  /* f32, >= 0: what increment and decrement move by */
+    AX_PROP_DISABLED = 0x050A,    /* bool: present but not operable */
+    AX_PROP_HIDDEN = 0x050B,      /* bool: left out of the tree with its subtree */
+    AX_PROP_SELECTED = 0x050C,    /* bool */
+    AX_PROP_CHECKED = 0x050D,     /* u32, ax_toggled: a checkbox's or a switch's state */
+    AX_PROP_EXPANDED = 0x050E,    /* u32, ax_expanded */
+    AX_PROP_ACTIONS = 0x050F,     /* u32, AX_ACTION_* bits: what assistive technologies may do */
+    AX_PROP_LEVEL = 0x0510        /* u32, 0..9: a heading's or a tree item's level; 0 = none */
 };
 
 #define AX_PROP_FIRST_IDL     0x00008000u
@@ -138,7 +162,8 @@ typedef enum ax_value_type {
 typedef enum ax_effect_class {
     AX_EFFECT_LAYOUT = 1,
     AX_EFFECT_PAINT = 2,
-    AX_EFFECT_COMPOSITE = 3
+    AX_EFFECT_COMPOSITE = 3,
+    AX_EFFECT_SEMANTICS = 4 /* decision 108 */
 } ax_effect_class;
 
 /* Property flags. */
@@ -235,6 +260,66 @@ typedef enum ax_text_align_value {
     AX_TEXT_ALIGN_VALUE_CENTER = 1,
     AX_TEXT_ALIGN_VALUE_END = 2
 } ax_text_align_value;
+
+/* ROLE (decision 108): what a node is to assistive technologies. Values are fixed forever; new
+ * roles are appended. Each maps to the platform's own (UI Automation, NSAccessibility, AT-SPI,
+ * Android, UIAccessibility, ARIA) through AccessKit's roles or our own bridges. */
+typedef enum ax_role {
+    AX_ROLE_NONE = 0,       /* default: LABEL for a text leaf, GENERIC otherwise */
+    AX_ROLE_GENERIC = 1,    /* a container with no meaning of its own */
+    AX_ROLE_WINDOW = 2,     /* a window root (the default of a root) */
+    AX_ROLE_GROUP = 3,
+    AX_ROLE_LABEL = 4,      /* static text */
+    AX_ROLE_HEADING = 5,    /* with LEVEL */
+    AX_ROLE_PARAGRAPH = 6,
+    AX_ROLE_BUTTON = 7,
+    AX_ROLE_LINK = 8,
+    AX_ROLE_IMAGE = 9,
+    AX_ROLE_CHECKBOX = 10,  /* with CHECKED */
+    AX_ROLE_SWITCH = 11,    /* with CHECKED */
+    AX_ROLE_RADIO = 12,     /* with CHECKED */
+    AX_ROLE_SLIDER = 13,    /* with VALUE and its range */
+    AX_ROLE_PROGRESS = 14,  /* with VALUE and its range */
+    AX_ROLE_TEXT_INPUT = 15, /* with VALUE_TEXT */
+    AX_ROLE_LIST = 16,
+    AX_ROLE_LIST_ITEM = 17,
+    AX_ROLE_ARTICLE = 18,
+    AX_ROLE_DIALOG = 19,
+    AX_ROLE_TOOLBAR = 20,
+    AX_ROLE_TAB_LIST = 21,
+    AX_ROLE_TAB = 22,
+    AX_ROLE_TAB_PANEL = 23,
+    AX_ROLE_MENU = 24,
+    AX_ROLE_MENU_ITEM = 25,
+    AX_ROLE_SCROLL_VIEW = 26,
+    AX_ROLE_SEPARATOR = 27,
+    AX_ROLE_TEXT_RUN = 28 /* a line of a text leaf; the tree makes them, nodes cannot take it */
+} ax_role;
+
+#define AX_ROLE_LAST AX_ROLE_TEXT_RUN
+
+/* CHECKED. */
+typedef enum ax_toggled {
+    AX_TOGGLED_NONE = 0, /* default: not checkable */
+    AX_TOGGLED_FALSE = 1,
+    AX_TOGGLED_TRUE = 2,
+    AX_TOGGLED_MIXED = 3
+} ax_toggled;
+
+/* EXPANDED. */
+typedef enum ax_expanded {
+    AX_EXPANDED_NONE = 0, /* default: does not expand */
+    AX_EXPANDED_COLLAPSED = 1,
+    AX_EXPANDED_EXPANDED = 2
+} ax_expanded;
+
+/* ACTIONS bits. Fixed forever; new actions are appended. */
+#define AX_ACTION_FOCUS     0x01u /* move the assistive technology's focus to the node */
+#define AX_ACTION_DEFAULT   0x02u /* the default action: press, toggle, open */
+#define AX_ACTION_SET_VALUE 0x04u /* set VALUE (a number; text values arrive with text input) */
+#define AX_ACTION_INCREMENT 0x08u
+#define AX_ACTION_DECREMENT 0x10u
+#define AX_ACTION_ALL       0x1Fu
 
 /* Longest string value accepted, in bytes. */
 #define AX_PROP_MAX_STRING (1u << 20)

@@ -29,3 +29,9 @@ ax_target_defaults(bench_soft)
 add_executable(bench_text bench_text.c)
 target_link_libraries(bench_text PRIVATE ax_core ax_text)
 ax_target_defaults(bench_text)
+
+# The accessibility tree: 10 101 nodes, its cost inactive and active, activation, and the flush
+# for 1 to 1000 changes and a resize (decision 108).
+add_executable(bench_a11y bench_a11y.c)
+target_link_libraries(bench_a11y PRIVATE ax_core)
+ax_target_defaults(bench_a11y)

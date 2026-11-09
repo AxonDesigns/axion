@@ -121,6 +121,9 @@ new entry that points back to the old one.
 | 105 | A rest is not a missed refresh (issue #15)               | Approved       |
 | 106 | Issue #4: the blending options, measured; a recommendation | Approved       |
 | 107 | Text leaves round as Yoga's text nodes                   | Approved       |
+| 108 | The accessibility tree: semantic properties, diffs, actions | Approved       |
+| 109 | The headless host's semantic tree and queries            | Approved       |
+| 110 | AccessKit: the prebuilt release, the platform adapter, licenses | Approved       |
 
 ---
 
@@ -2205,6 +2208,7 @@ scene-thread tag and the skipped generations were the owner's adjustments).
 
 > Amended by decision 89: percentages are accepted, and layout gains its properties.
 > Amended by decision 99: the string value type (8), the text properties and the style pass.
+> Amended by decision 108: the semantic properties (0x05xx) and the effect class SEMANTICS.
 
 **Context.** "Property system" gives every property an id, a value type, an inherited flag, an
 animatable flag and an effect class. The owner asked for an extensible registry with ids stable
@@ -2977,6 +2981,8 @@ through a per-role function.
 
 ## 75. Events to the app thread, `on_presented`, the clock
 
+> Amended by decision 108: the scene's own events take values from 0x100 (`AX_WORLD_EVENT_A11Y_ACTION`).
+
 **Context.** "Queues" gives the scene-to-app direction a ring of events, and
 `ax_txn_on_presented(seq, cb)` tells the app when a change is on screen. The owner asked for:
 - the platform's events (resize, close, scale) on that ring;
@@ -3696,6 +3702,7 @@ then software, unless the app pins one.
 ## 85. The headless host and its C testing API
 
 > Amended by decision 96: `ax_headless_settle` waits until nothing animates; the driver option is gone.
+> Amended by decision 109: queries over the semantic tree; settle also waits for the trees.
 
 > Amended by decision 88: not settling (and the other timeouts) is `AX_ERR_TIMEOUT`.
 
@@ -4996,5 +5003,217 @@ the frame, wrapped.
 - **Test:** `core.layout.a_measured_leaf_is_never_rounded_narrower_than_it_measured` (scales 1,
   1.325 and 2; a box without a measure function still rounds to nearest); it fails before the
   change.
+
+**Status.** Approved by the owner.
+
+## 108. The accessibility tree: semantic properties, diffs, actions
+
+> Amends decision 63 (semantic properties 0x05xx and the effect class SEMANTICS) and decision 75
+> (the scene's own events, from 0x100: `AX_WORLD_EVENT_A11Y_ACTION`).
+
+**Context.** "Platform layer" keeps an accessibility tree (roles, names, states, actions, text
+ranges) next to the node tree. The owner asked, for M1 prompt 6: the tree on the scene thread, its
+properties in the property system with their effect class and ids in decision 63's ranges, names
+with prompt 5's string type; per-frame diffs without walking the tree, after AccessKit's update
+format; assistive technologies' actions (focus, default action, set value) through decision 75's
+ring, the adapter's callbacks queued and never touching the store; the on-screen geometry decided
+and recorded; changes that only touch the tree published even with zero frames at rest (decision
+95); the diff measured on 10 000 nodes, and no cost per frame while no assistive technology is
+active. Plan adjustments: geometry is the target frame **and the node's target transform**
+(AccessKit takes one per node), so a scaled or rotated node at rest has the right box; a
+semantics-only change records no item and presents nothing.
+
+**Decision.**
+- **Properties** (`ax_prop.h`, stable): `ROLE` 0x0501 (`ax_role`: NONE resolves to WINDOW for a
+  root, LABEL for a text leaf, GENERIC otherwise; TEXT_RUN is the tree's own), `LABEL`,
+  `DESCRIPTION`, `TEST_ID`, `VALUE_TEXT` (strings), `VALUE`, `VALUE_MIN`, `VALUE_MAX`, `VALUE_STEP`
+  (f32, none until set), `DISABLED`, `HIDDEN`, `SELECTED` (bool), `CHECKED` (`ax_toggled`),
+  `EXPANDED` (`ax_expanded`), `ACTIONS` (`AX_ACTION_*` bits: focus, default, set value, increment,
+  decrement), `LEVEL` (0-9). Effect class `AX_EFFECT_SEMANTICS` = 4: no dirty flag, nothing laid
+  out, recorded or composited. Values live in a side component (`ax_node_semantics`, a bit per
+  value set), so a tree without semantics pays nothing; a rejected transaction restores them,
+  unset numbers included. The IDL draft gains them.
+- **The tree** (`core/src/a11y.c`, internal SDK `ax_a11y.h`): every node under a window root except
+  HIDDEN and DISPLAY none ones and their subtrees, and a text leaf's own children. Names: LABEL;
+  otherwise a text leaf's text; for ARIA's roles named by content (button, checkbox, heading, link,
+  menu item, radio, switch, tab) the text of the text leaves below. Ids: the node's handle; a text
+  leaf's lines are TEXT_RUN children (bit 63 set) with their text, characters (grapheme clusters)
+  with positions and widths, and words (text: `ax_text_line_chars`, `ax_text_line_words`).
+- **Geometry: target values**, as the mirror. Bounds (0, 0, w, h) in the node's space and a
+  transform to its parent's: the frame's origin times TRANSFORM about the frame's center. While an
+  animation runs between targets nothing is sent per frame; the screen reader sees where things
+  go. Presentation values would cost a diff per animated node per frame and describe positions
+  that are about to change.
+- **Diffs.** The world's change points (transactions: create, set, insert, remove; layout's changed
+  frames; destroyed nodes) queue the slots they touch while a tree is active. Each flush rebuilds
+  those records, compares each one's hash with what was last sent and sends the nodes that differ,
+  each complete, plus the parents whose children changed (a record per slot remembers the parent,
+  root and hash sent, so a destroyed or moved node's old parent is sent again). A node that joins a
+  tree is sent with its subtree. The update has AccessKit's shape (`ax_a11y_update`: root, focus,
+  nodes; a node no longer listed by its parent is gone with its subtree) and goes to the root's
+  sink (`ax_a11y_sink`): a platform bridge or the headless host.
+- **Activation and cost.** `ax_world_a11y_activate(world, root, active)` (any thread) queues the
+  change and asks for a frame (`ax_world_request_frame`); the flush builds the whole tree once and
+  sends it as a full update. While no root is active, each change point costs a branch and the
+  flush an atomic load: nothing is queued or built. An activation that comes before the scene thread
+  has the root's sink waits for it (64 flushes).
+- **Actions.** `ax_world_post_a11y_action` (any thread, a 64-entry queue under a mutex, a frame
+  asked for) never touches the store; the flush checks the target (live, in the tree, the action in
+  its ACTIONS), moves the tree's focus for FOCUS, and pushes `AX_WORLD_EVENT_A11Y_ACTION` (node,
+  action, value) on decision 75's ring. Actions on a text run go to its leaf. Text values for
+  SET_VALUE wait for text input (M3).
+- **Zero frames at rest.** A transaction that touches only semantics wakes the windows as any
+  commit (decision 95); its tick applies it and flushes, records nothing and presents nothing.
+  Activations and actions wake through `ax_world_request_frame`.
+- **Runtime:** each tick calls `ax_world_a11y_flush` after recording and before the mirror and the
+  dirty flags; `ax_rt_surface_desc.a11y` gives a surface's sink, set and removed by the scene thread
+  with the surface.
+- **Measurements** (`bench_a11y`, Release, Ryzen 5 3400G; 10 101 nodes, 1000 of them text leaves):
+  a frame with one label changing costs the same without a sink, with an inactive one (0 nodes
+  touched or built) and with an active tree (0.023 ms median); activation builds and sends the
+  whole tree (12 101 nodes and runs) in 9.8 ms; the flush sends 1 changed node in under 1 µs, 100 in
+  0.03 ms, 1000 in 0.37 ms. A resize that changes every frame sends everything: 5.8 ms. That is over a
+  260 Hz refresh while an assistive technology is active.
+- **Pending for M2 (the owner's, on review): no geometry on every frame of a resize or an
+  animation.** Animations already send only their targets; a window resize still sends every
+  changed frame each frame. M2's full bridge groups geometry-only changes and sends them once the
+  geometry settles (a resize that stops, as text's re-raster after a stable scale, decision 100) or
+  at a bounded rate meanwhile, keeping structure, names and states immediate; measured again with
+  `bench_a11y`'s resize case.
+- **Tests:** `core.semantics.*` (storage, rejections, undo), `core.a11y.*` (inactive costs nothing
+  and activation builds once; one change sends one node; paint only sends nothing; a reorder sends
+  the parent; removal, hiding and new subtrees; the tree rebuilt from diffs equals a full build;
+  text runs, names from content; target geometry with the transform and nothing sent while an
+  animation runs; actions from another thread, the focus, the queue's limit; a semantics-only
+  change records no item), `text.chars.*`, and
+  `runtime.single_thread.each_tick_flushes_the_tree_and_a_semantics_only_change_presents_nothing`.
+  Under ASan, TSan (three runs) and in Node.
+
+**Status.** Approved by the owner.
+
+## 109. The headless host's semantic tree and queries
+
+> Amends decision 85 (queries by role and name, out of its scope then).
+
+**Context.** "Headless host, automation and MCP": queries find elements the way users and
+assistive technologies do, by role and accessible name, by text or by test id, over the
+accessibility tree; snapshots include the semantic tree as text for diffs. The owner asked for the
+queries, the dump, and the tree's golden in decision 86's determinism job.
+
+**Decision.**
+- Each headless surface gets a sink and its tree is activated: the host reads every surface as an
+  assistive technology would (`AX_HEADLESS_NO_SEMANTICS` opts out). The sink applies updates as
+  AccessKit does (a node replaced whole, what the root no longer reaches dropped) into a copy read
+  under the host's lock, so queries work with the host's threads too.
+- `ax_headless_get_by_role(role, name)`, `ax_headless_get_by_text` (text leaves, by their lines'
+  text), `ax_headless_get_by_test_id`: tree order, exact matching after trimming, or substring and
+  ASCII case-insensitive on request. `ax_headless_get_element` (role, states, value, bounds in the
+  window, focus) and `ax_headless_get_name`. `ax_headless_a11y_action` posts an action as an
+  assistive technology would.
+- `ax_headless_dump_semantics`: a line per element, compact by default as the MCP server's
+  `get_tree` (generic containers left out, their children in their place; no text runs), with
+  everything and bounds on request.
+- `ax_headless_settle` also waits for the trees (`ax_world_a11y_caught_up`, any thread: every
+  activation and action handled, every applied transaction sent).
+- **Goldens:** `tests/goldens/a11y/m1_nodes.txt` (compact, with bounds) and `m1_nodes_all.txt`
+  (everything, text runs included). The harness gains text goldens (`AXT_CHECK_GOLDEN_TEXT`:
+  updated on purpose, failures written as `.actual.txt`, copies in `AX_TEST_IMAGE_DIR`), and
+  `tools/ci/compare_images.py` compares `.txt` files byte for byte too.
+- m1_nodes' cards: each an `article` named by its title (test ids `card-0`...), with a level 2
+  heading, its paragraphs, a progress bar with its value; the page heading is level 1; avatars are
+  hidden (decorative). A card's default action grows or shrinks it (`m1_cards_toggle`).
+- **Tests:** `headless.semantics.*`: queries on m1_nodes; the goldens; an action reaching the app,
+  which grows the card, moves the focus and brings its detail into the tree; a semantics-only
+  change records no item and draws no new snapshot; the queries with the host's threads, and none
+  without semantics.
+
+**Status.** Approved by the owner.
+
+## 110. AccessKit: the prebuilt release, the platform adapter, licenses
+
+> Resolves the architecture's open point "AccessKit's iOS and web coverage is confirmed at M1":
+> `docs/accesskit-coverage.md`.
+
+**Context.** The architecture plans AccessKit through its C API wherever it has an adapter, and
+our own bridges elsewhere. The owner asked for a coverage report with a recommendation per
+platform, a Linux proof of concept behind a platform interface (Orca or Accerciser seeing
+m1_nodes' cards), how Rust enters the build (decision 97 limited C++ to HarfBuzz), optional, with
+its costs measured. Owner's choices on the plan: the official binaries pinned by version and
+SHA-256, `AX_ACCESSKIT=AUTO` by default with a CI job in OFF; every crate's license checked from
+the tag's `Cargo.lock` and listed in NOTICE, stopping on any license off the allow-list. The check
+found `unicode-ident` (Unicode-DFS-2016) linked on Linux; the owner added Unicode-DFS-2016 and
+Unicode-3.0 to the allow-list (ARCHITECTURE.md is the owner's to change) and asked to check the
+standard library's crates too, and to record the static Rust library's risks.
+
+**Decision.**
+- **Coverage** (`docs/accesskit-coverage.md`): AccessKit on Windows, macOS, Linux and Android;
+  **iOS: AccessKit** (`accesskit_ios` 0.2.2, in the official repository, in the C API and the
+  release; young, so checked with VoiceOver at M4, with our own bridge on the same updates as the
+  fallback); **web: our own bridge** (a hidden ARIA DOM; AccessKit has no web adapter).
+- **Rust enters as a prebuilt binary**, not built: accesskit-c 0.23.2's official release archive
+  (all platforms, 68 MB, SHA-256 `c7fa84f8...3681`), fetched and verified by `ax_fetch_prebuilt`
+  (`cmake/AxionAccessKit.cmake`), linked as the static `libaccesskit.a`. AXION's builds need no Rust
+  toolchain. `AX_ACCESSKIT`: AUTO (on where the release has a binary and AXION a bridge, Linux
+  x86_64 in M1, off under TSan, whose instrumentation cannot see the Rust code's synchronization;
+  the shared library with `AX_WEBGPU=wgpu-native`, another Rust static library),
+  ON (required) or OFF; `AX_ACCESSKIT_ROOT` for offline builds. CI's GCC Release job builds with
+  OFF; everything works the same without it.
+- **Interfaces.** platform's `ax_a11y_adapter` (`axion/platform/ax_a11y_adapter.h`): created per
+  window, fed updates in its own types (platform depends only on base; the role and action numbers
+  are a private copy, checked equal to core's by `runtime.a11y_values`), calling back
+  `activated` and `action` from the adapter's threads; a stub without AccessKit. The runtime gives
+  each window a bridge (`runtime/src/a11y_bridge.c`): core's updates converted on the scene thread,
+  the callbacks passed to `ax_world_a11y_activate` and `ax_world_post_a11y_action`.
+- **AccessKit's conventions:** a Label's text is its value, other roles carry a label; a text run's
+  text is its value with character lengths, positions, widths and word starts; bounds and a
+  transform per node; the first update carries the tree info. AccessKit asks for a tree
+  synchronously when an assistive technology appears: the adapter answers with the root alone and
+  the full tree follows on the frame the activation asks for. No lock of ours is held while
+  AccessKit runs (its threads call back into us).
+- **Licenses, and how to check them again at each update:**
+  `tools/licenses/accesskit_licenses.py --source <release> --check|--write`. It runs
+  `cargo tree --locked --target <t> -e normal,no-proc-macro` in the release's own sources for every
+  target the release ships (normal dependencies only, without proc macros, which run in the
+  compiler), and the same in rust-src for the standard library (`RUSTC_BOOTSTRAP=1`, std with
+  backtrace and panic-unwind, as release toolchains build it; it stops unless the toolchain is the
+  one the binary was built with, per its `.comment`). It evaluates each crate's SPDX expression
+  against the allow-list (MIT, Apache-2.0, Apache-2.0 WITH LLVM-exception, BSD, Zlib, Unicode-3.0,
+  Unicode-DFS-2016), fails on any other, and writes NOTICE's AccessKit section from the crates'
+  sources: every crate, its copyright lines, each license's text once, and AccessKit's
+  Chromium-derived code under BSD-3-Clause. It needs cargo and the network, so it runs by hand, not
+  in CI. For 0.23.2: 112 crates, 21 of the standard library, all within the list.
+  `Apache-2.0 WITH LLVM-exception` (`compiler_builtins`, in every Rust binary) is Apache 2.0 with an
+  added permission; it is listed as such.
+- **Risks of a static Rust library**, accepted for now:
+  - a Rust panic aborts the whole process (`panic = "abort"`, and unwinding into C would be
+    undefined anyway); an AccessKit bug can therefore crash the app, not only its accessibility;
+  - two Rust static libraries linked into one binary (AccessKit, and a future one such as
+    wgpu-native if it were ever shipped) each carry a copy of the standard library and their
+    shared crates, whose unmangled symbols (`rust_eh_personality`, the allocator shims) can clash
+    at link time. CI's wgpu-native job showed it at once (`rust_eh_personality` defined twice).
+    With `AX_WEBGPU=wgpu-native` the build therefore links the release's **shared** library
+    (a cdylib: it exports only accesskit-c's 444 C functions and `ACCESSKIT_TREE_ID_ROOT`, no
+    SONAME, found through the build tree's RPATH), which links beside wgpu-native's archive
+    (checked locally and in CI's wgpu-native job). The owner suggested it on review. A shipped
+    app with two Rust libraries would do the same, or link one Rust staticlib re-exporting both
+    C APIs, built by us from pinned sources;
+  - its code is outside our sanitizers (TSan is off for it; ASan sees its allocations only).
+- **Costs** (Ryzen 5 3400G): m1_nodes stripped grows by 1.95 MB (17.81 to 19.76 MB; 21.1 to 44.3 MB
+  unstripped, the archive's debug info); the archive is a 68 MB download, cached by CI. Building it
+  with cargo instead would take 1 min 08 s cold (88 crates), 24 s after touching its `lib.rs` (LTO),
+  472 MB of `target/` and a 1.6 GB toolchain.
+- **Linux, checked:** in a headless weston with the session's AT-SPI bus enabled, AT-SPI shows
+  m1_nodes as a frame with the page's heading and subtitle and, per card, an `article` named by its
+  title with its heading, labels and progress bar; AT-SPI's `click` on a card reaches the app,
+  which grows it, and the detail paragraph appears. AccessKit registers only while
+  `org.a11y.Status.IsEnabled` is true (an assistive technology running sets it).
+- **Pending for M2 (the owner's, on review): the `expanded` state on AT-SPI.** AT-SPI shows none for
+  m1_nodes' articles. The cause is AccessKit's AT-SPI adapter: `accesskit_atspi_common` 0.21.1 maps
+  no node to AT-SPI's `expandable`/`expanded` states at all (its consumer knows `is_expanded`, and the
+  Windows adapter exposes it through UI Automation's ExpandCollapse pattern), so no role would show
+  it on Linux today. M2 checks a newer AccessKit, or reports it upstream.
+- **Open for M2's full bridge:** window coordinates
+  stay window-relative under Wayland (a client cannot know its position); focus follows the
+  assistive technology's requests only (keyboard focus is M2).
 
 **Status.** Approved by the owner.

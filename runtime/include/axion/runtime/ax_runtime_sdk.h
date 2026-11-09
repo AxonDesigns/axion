@@ -26,6 +26,7 @@
  *   4. ax_world_position (layout), ax_world_animate (implicit animations at T; the surface's
  *      animating flag), ax_world_record_collect, and if the root's content changed,
  *      ax_world_record_root into the surface's mailbox, published;
+ *   5. ax_world_a11y_flush: the accessibility trees' updates, to their sinks (decision 108);
  *   6. ax_world_publish_mirror (after layout, decision 69);
  *   7. ax_scene_clear_dirty.
  */
@@ -38,6 +39,7 @@
 #include "../ax_runtime.h"
 #include <axion/base/ax_compiler.h>
 #include <axion/base/ax_jobs.h>
+#include <axion/core/ax_a11y.h>
 #include <axion/render/ax_ir_mailbox.h>
 
 AX_EXTERN_C_BEGIN
@@ -104,6 +106,10 @@ typedef struct ax_rt_surface_desc {
     uint64_t refresh_ns;        /* single-threaded mode: the host's frame interval (0: none) */
     uint64_t native_surface;    /* the platform's ax_surface handle value, or 0 */
     uint64_t window;            /* the platform's ax_window handle value, or 0 */
+    /* Where the root's accessibility tree goes (decision 108): a platform bridge, the headless
+     * host. update NULL: none. The scene thread sets it when it picks the surface up and removes
+     * it with the surface; the sink activates the tree (ax_world_a11y_activate). */
+    ax_a11y_sink a11y;
 } ax_rt_surface_desc;
 
 /*

@@ -54,3 +54,10 @@ if("address" IN_LIST AX_SANITIZE)
                  APPEND PROPERTY ENVIRONMENT
         "LSAN_OPTIONS=fast_unwind_on_malloc=0:suppressions=${PROJECT_SOURCE_DIR}/tools/sanitizers/lsan-gpu-drivers.supp")
 endif()
+
+# The semantic tree (decision 108): queries and its golden on m1_nodes' cards.
+ax_add_unit_test(headless test_semantics.c)
+target_sources(test_headless_semantics PRIVATE "${PROJECT_SOURCE_DIR}/examples/m1_nodes/m1_cards.c")
+target_include_directories(test_headless_semantics PRIVATE "${PROJECT_SOURCE_DIR}/examples/m1_nodes")
+target_link_libraries(test_headless_semantics PRIVATE ax_headless ax_test_golden)
+set_property(TEST headless.semantics.the_semantic_tree_matches_its_golden APPEND PROPERTY LABELS golden)

@@ -156,3 +156,104 @@ bool axt_golden_check(const char *file, int line, const char *suite, const char 
     free(got);
     return ok;
 }
+
+static bool write_bytes(const char *path, const char *text, size_t length)
+{
+    FILE *f = fopen(path, "wb");
+    bool ok;
+    if (f == NULL) {
+        return false;
+    }
+    ok = fwrite(text, 1, length, f) == length;
+    return fclose(f) == 0 && ok;
+}
+
+/* The file's bytes (malloc'd) or NULL. */
+static char *read_bytes(const char *path, size_t *out_length)
+{
+    FILE *f = fopen(path, "rb");
+    char *data = NULL;
+    size_t cap = 0, len = 0;
+    if (f == NULL) {
+        return NULL;
+    }
+    for (;;) {
+        size_t n;
+        if (len == cap) {
+            char *fresh = (char *)realloc(data, cap == 0 ? 4096u : cap * 2u);
+            if (fresh == NULL) {
+                free(data);
+                fclose(f);
+                return NULL;
+            }
+            data = fresh;
+            cap = cap == 0 ? 4096u : cap * 2u;
+        }
+        n = fread(data + len, 1, cap - len, f);
+        len += n;
+        if (n == 0) {
+            break;
+        }
+    }
+    fclose(f);
+    *out_length = len;
+    return data;
+}
+
+bool axt_golden_check_text(const char *file, int line, const char *suite, const char *name,
+                           const char *text, size_t length)
+{
+    char path[1024], out[1024];
+    const char *fail_dir = getenv("AX_TEST_FAILURE_DIR");
+    char *want;
+    size_t want_len = 0, i, line_no = 1;
+    snprintf(path, sizeof path, "%s/%s/%s.txt", AX_TEST_GOLDEN_DIR, suite, name);
+    if (env_set("AX_TEST_IMAGE_DIR")) {
+        snprintf(out, sizeof out, "%s/%s__%s.txt", getenv("AX_TEST_IMAGE_DIR"), suite, name);
+        if (!write_bytes(out, text, length)) {
+            ax_test_fail(file, line, "cannot write %s", out);
+        }
+    }
+    if (env_set("AX_UPDATE_GOLDENS")) {
+        if (env_set("CI")) {
+            ax_test_fail(file, line,
+                         "golden %s/%s: AX_UPDATE_GOLDENS is refused in CI; goldens are updated "
+                         "only on purpose, locally (tools/update_goldens.sh)",
+                         suite, name);
+            return false;
+        }
+        (void)axt_mkdir(AX_TEST_GOLDEN_DIR);
+        snprintf(out, sizeof out, "%s/%s", AX_TEST_GOLDEN_DIR, suite);
+        (void)axt_mkdir(out);
+        if (!write_bytes(path, text, length)) {
+            ax_test_fail(file, line, "cannot write the golden %s", path);
+            return false;
+        }
+        printf("golden updated: %s\n", path);
+        return true;
+    }
+    want = read_bytes(path, &want_len);
+    if (want == NULL) {
+        ax_test_fail(file, line,
+                     "golden %s/%s: cannot read %s; create it with tools/update_goldens.sh", suite,
+                     name, path);
+        return false;
+    }
+    if (want_len == length && memcmp(want, text, length) == 0) {
+        free(want);
+        return true;
+    }
+    for (i = 0; i < length && i < want_len && text[i] == want[i]; ++i) {
+        line_no += text[i] == '\n' ? 1u : 0u;
+    }
+    {
+        const char *dir = fail_dir != NULL && fail_dir[0] != '\0' ? fail_dir : "golden-failures";
+        (void)axt_mkdir(dir);
+        snprintf(out, sizeof out, "%s/%s__%s.actual.txt", dir, suite, name);
+        (void)write_bytes(out, text, length);
+        ax_test_fail(file, line, "golden %s/%s: differs from line %zu; actual text in %s", suite,
+                     name, line_no, out);
+    }
+    free(want);
+    return false;
+}

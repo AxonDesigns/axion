@@ -15,6 +15,7 @@
 #include "axion/ax_mirror.h"
 #include "axion/ax_runtime.h"
 #include "axion/ax_txn.h"
+#include "axion/core/ax_a11y.h"
 #include "axion/core/ax_world_sdk.h"
 #include "axion/render/ax_render_ir.h"
 #include "axion/runtime/ax_runtime_sdk.h"
@@ -152,6 +153,9 @@ static ax_rgba opaque(float r, float g, float b)
     return c;
 }
 
+/* The surface's accessibility sink for the next pipeline_start (decision 108). */
+static ax_a11y_sink g_a11y_sink;
+
 /* A root (dark blue) with one card (white, 10,20 100x50), on a 200x100 surface refreshing every
  * 16 ms. */
 static bool pipeline_start(pipeline *p)
@@ -199,6 +203,7 @@ static bool pipeline_start(pipeline *p)
     sd.height = 100;
     sd.scale = 1;
     sd.refresh_ns = 16 * MS;
+    sd.a11y = g_a11y_sink;
     return ax_rt_add_surface(p->rt, p->root, &sd, &p->surface) == AX_OK;
 }
 
@@ -533,5 +538,56 @@ AX_TEST(measure_sync_lays_out_what_was_committed_without_a_frame)
     AX_REQUIRE(frame_at(&p, 132 * MS));
     AX_CHECK_RESULT(p.step_measure, AX_ERR_WRONG_THREAD);
     AX_CHECK_RESULT(ax_measure_sync(p.rt, p.card, NULL), AX_ERR_INVALID_ARGUMENT);
+    pipeline_stop(&p);
+}
+
+/* ---- The accessibility tree (decision 108) ------------------------------------------------- */
+
+typedef struct a11y_log {
+    uint32_t updates;
+    uint32_t last_count;
+    bool last_full;
+} a11y_log;
+
+static void log_update(void *user, const ax_a11y_update *u)
+{
+    a11y_log *l = (a11y_log *)user;
+    l->updates++;
+    l->last_count = u->count;
+    l->last_full = u->full;
+}
+
+AX_TEST(each_tick_flushes_the_tree_and_a_semantics_only_change_presents_nothing)
+{
+    pipeline p;
+    a11y_log log;
+    ax_rt_counters before, after;
+    ax_txn *t;
+    memset(&log, 0, sizeof log);
+    g_a11y_sink.update = log_update;
+    g_a11y_sink.user = &log;
+    AX_REQUIRE(pipeline_start(&p));
+    memset(&g_a11y_sink, 0, sizeof g_a11y_sink);
+    AX_REQUIRE(frame_at(&p, 100 * MS));
+    AX_CHECK_EQ_U(log.updates, 0); /* a sink, but no assistive technology yet */
+
+    ax_world_a11y_activate(p.world, p.root, true);
+    AX_REQUIRE(frame_at(&p, 116 * MS));
+    AX_CHECK_EQ_U(log.updates, 1);
+    AX_CHECK(log.last_full);
+    AX_CHECK_EQ_U(log.last_count, 2); /* the root and the card */
+
+    ax_rt_get_counters(p.rt, &before);
+    t = ax_txn_begin(p.world);
+    ax_txn_set_str(t, p.card, AX_PROP_LABEL, "Card", 4);
+    ax_txn_set_u32(t, p.card, AX_PROP_ROLE, AX_ROLE_BUTTON);
+    AX_REQUIRE(ax_txn_commit(t, NULL) == AX_OK);
+    AX_REQUIRE(frame_at(&p, 132 * MS));
+    AX_REQUIRE(frame_at(&p, 148 * MS));
+    ax_rt_get_counters(p.rt, &after);
+    AX_CHECK_EQ_U(log.updates, 2);
+    AX_CHECK_EQ_U(log.last_count, 1);
+    AX_CHECK(!log.last_full);
+    AX_CHECK_EQ_U(after.snapshots, before.snapshots); /* nothing recorded, nothing new to show */
     pipeline_stop(&p);
 }

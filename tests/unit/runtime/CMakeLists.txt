@@ -15,3 +15,10 @@ foreach(_t IN LISTS _ax_runtime_tests)
     string(REGEX REPLACE "^test_" "" _n "${_n}")
     target_link_libraries(test_runtime_${_n} PRIVATE ax_runtime)
 endforeach()
+
+# Platform's copy of core's semantic values (decision 108), where platform builds.
+if(AX_BUILD_PLATFORM)
+    ax_add_unit_test(runtime test_a11y_values.c)
+    target_link_libraries(test_runtime_a11y_values PRIVATE ax_runtime)
+    target_include_directories(test_runtime_a11y_values PRIVATE "${PROJECT_SOURCE_DIR}/platform/src")
+endif()

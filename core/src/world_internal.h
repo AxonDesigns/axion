@@ -15,6 +15,7 @@
 #include <axion/base/ax_spsc_ring.h>
 #include <axion/base/ax_thread.h>
 #include <axion/base/ax_triple_buffer.h>
+#include <axion/core/ax_a11y.h>
 #include <axion/core/ax_scene.h>
 #include <axion/core/ax_world_sdk.h>
 #include <axion/render/ax_render_ir.h>
@@ -198,6 +199,24 @@ typedef struct world_impl {
     ax_world_wake_fn wake_hook;
     void *wake_user;
     ax_atomic_u32 reduce_motion; /* ax_world_set_reduce_motion (app thread writes) */
+    /* Accessibility (a11y.c, decision 108). */
+    void *a11y;        /* scene: the tree's state, made by the first sink */
+    bool a11y_enabled; /* scene: some root's tree is active; the change points check it */
+    ax_mutex a11y_lock; /* any thread: activations and actions waiting for the scene */
+    ax_atomic_u32 a11y_pending;
+    ax_atomic_u32 a11y_dropped;
+    ax_atomic_u64 a11y_posted;      /* activations and actions posted (under a11y_lock) */
+    ax_atomic_u64 a11y_handled;     /* of those, how many a finished flush has handled */
+    ax_atomic_u64 a11y_flushed_seq; /* the applied transactions a finished flush covered */
+    ax_atomic_u32 a11y_active;      /* a copy of a11y_enabled for other threads */
+    struct {
+        ax_node root;
+        bool active;
+        uint32_t age; /* flushes it waited for its root's sink */
+    } a11y_activations[AX_A11Y_MAX_ACTIVATIONS];
+    uint32_t a11y_activation_count;
+    ax_a11y_action a11y_actions[AX_A11Y_ACTION_QUEUE];
+    uint32_t a11y_action_count;
 } world_impl;
 
 world_impl *ax__world_from_handle(ax_world world);
@@ -249,6 +268,21 @@ void ax__txn_free(world_impl *w, ax_txn *t);
 
 /* Frees apply.c's buffers (world teardown). */
 void ax__apply_free(world_impl *w);
+
+/* Accessibility (a11y.c, decision 108). The change points queue what they touch while a tree is
+ * active: one branch otherwise. */
+#define AX__A11Y_STRUCT 0x1u /* the node's parent, children or place in the tree changed */
+#define AX__A11Y_TEXT   0x2u /* its text changed */
+void ax__a11y_init(world_impl *w);
+void ax__a11y_free(world_impl *w);
+void ax__a11y_touch_slow(world_impl *w, uint32_t slot, uint32_t flags);
+void ax__a11y_touch_prop(world_impl *w, uint32_t slot, ax_prop prop);
+static inline void ax__a11y_touch(world_impl *w, uint32_t slot, uint32_t flags)
+{
+    if (w->a11y_enabled) {
+        ax__a11y_touch_slow(w, slot, flags);
+    }
+}
 
 /* Scene thread: the slot's state changed; the next publication copies it. Never fails. */
 void ax__mirror_touch_slot(world_impl *w, uint32_t slot);

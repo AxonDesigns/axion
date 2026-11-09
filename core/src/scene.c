@@ -10,6 +10,7 @@
 #include <axion/base/ax_assert.h>
 #include <axion/base/ax_error_set.h>
 #include <axion/base/ax_memory.h>
+#include <axion/core/ax_a11y.h>
 #include <axion/core/ax_scene.h>
 #include <axion/core/ax_text_node.h>
 #include <axion/text/ax_text.h>
@@ -35,6 +36,18 @@ static void text_removed(void *element, void *user)
         ax_text_paragraph_release(t->paragraph);
     }
     memset(t, 0, sizeof *t);
+}
+
+/* The semantics component's references go with it. */
+static void semantics_removed(void *element, void *user)
+{
+    ax_node_semantics *m = (ax_node_semantics *)element;
+    (void)user;
+    ax_shared_str_release(m->label);
+    ax_shared_str_release(m->description);
+    ax_shared_str_release(m->test_id);
+    ax_shared_str_release(m->value_text);
+    memset(m, 0, sizeof *m);
 }
 
 void ax_scene_init(ax_scene *scene, const ax_node_store_desc *desc)
@@ -65,6 +78,12 @@ void ax_scene_init(ax_scene *scene, const ax_node_store_desc *desc)
         cd.align = AX_ALIGNOF(ax_node_text);
         cd.on_remove = text_removed;
         r = ax_node_store_register_component(&scene->store, &cd, &scene->text_component);
+        AX_ASSERT(r == AX_OK);
+        /* Semantics (decision 108): own values. */
+        cd.size = sizeof(ax_node_semantics);
+        cd.align = AX_ALIGNOF(ax_node_semantics);
+        cd.on_remove = semantics_removed;
+        r = ax_node_store_register_component(&scene->store, &cd, &scene->semantics_component);
         AX_ASSERT(r == AX_OK);
         (void)r;
     }
@@ -184,6 +203,8 @@ static void mark_effect(ax_scene *scene, uint32_t slot, ax_effect_class effect)
     case AX_EFFECT_COMPOSITE:
         scene->store.dirty[row_of_slot(scene, slot)] |= AX_DIRTY_COMPOSITE;
         break;
+    case AX_EFFECT_SEMANTICS:
+        break; /* the accessibility tree learns of it from the world (decision 108) */
     }
 }
 
@@ -437,6 +458,45 @@ static ax_result set_text(ax_scene *scene, ax_node node, const ax_prop_desc *d,
     return AX_OK;
 }
 
+/* Sets a semantic property's own value (decision 108): the node gets the semantics component, the
+ * property's bit, and a string's reference. */
+static ax_result set_semantics(ax_scene *scene, ax_node node, const ax_prop_desc *d,
+                               const ax_value *value)
+{
+    ax_node_semantics *m = ax_scene_semantics(scene, node);
+    const uint32_t bit = AX_SEMANTICS_BIT(d->id);
+    unsigned char *dst;
+    bool was_set;
+    if (m == NULL) {
+        ax_result r = ax_node_store_add_component(&scene->store, node, scene->semantics_component,
+                                                  (void **)&m);
+        if (r != AX_OK) {
+            return r;
+        }
+        memset(m, 0, sizeof *m);
+    }
+    was_set = (m->own & bit) != 0;
+    dst = (unsigned char *)m + d->offset;
+    m->own |= bit;
+    if (d->type == AX_VALUE_STRING) {
+        const ax_shared_str **slot = (const ax_shared_str **)(void *)dst;
+        ax_str a = ax_shared_str_view(*slot), b = ax_shared_str_view(value->str);
+        if (was_set && a.len == b.len && (a.len == 0 || memcmp(a.ptr, b.ptr, a.len) == 0)) {
+            return AX_OK;
+        }
+        ax_shared_str_retain(value->str);
+        ax_shared_str_release(*slot);
+        *slot = value->str;
+    } else {
+        size_t size = value_size(d->type);
+        if (was_set && memcmp(dst, value, size) == 0) {
+            return AX_OK;
+        }
+        memcpy(dst, value, size);
+    }
+    return AX_OK; /* SEMANTICS marks no dirty flag */
+}
+
 /* Sets one longhand (or plain) property; the value has been checked. */
 static ax_result set_one(ax_scene *scene, ax_node node, uint32_t row, const ax_prop_desc *d,
                          const ax_value *value)
@@ -445,6 +505,9 @@ static ax_result set_one(ax_scene *scene, ax_node node, uint32_t row, const ax_p
     unsigned char *dst;
     if (d->storage == AX_PROP_IN_TEXT) {
         return set_text(scene, node, d, value);
+    }
+    if (d->storage == AX_PROP_IN_SEMANTICS) {
+        return set_semantics(scene, node, d, value);
     }
     if (d->storage == AX_PROP_IN_COMPONENT) {
         ax_value *stored =
@@ -524,6 +587,15 @@ static void get_one(const ax_scene *scene, ax_node node, uint32_t row, const ax_
             *out = d->default_value;
         } else {
             memcpy(out, (const unsigned char *)t + d->offset, value_size(d->type));
+        }
+        return;
+    }
+    if (d->storage == AX_PROP_IN_SEMANTICS) {
+        const ax_node_semantics *m = ax_scene_semantics(scene, node);
+        if (m == NULL || (m->own & AX_SEMANTICS_BIT(d->id)) == 0) {
+            *out = d->default_value;
+        } else {
+            memcpy(out, (const unsigned char *)m + d->offset, value_size(d->type));
         }
         return;
     }
@@ -610,59 +682,95 @@ ax_node_text *ax_scene_text(const ax_scene *scene, ax_node node)
                                                        scene->text_component);
 }
 
+/* A property kept with a bit per value set: text (decision 99) or semantics (decision 108). */
 static const ax_prop_desc *text_desc(const ax_scene *scene, ax_prop prop)
 {
     const ax_prop_desc *d = ax_prop_registry_find(&scene->props, prop);
-    return d != NULL && d->storage == AX_PROP_IN_TEXT ? d : NULL;
+    return d != NULL && (d->storage == AX_PROP_IN_TEXT || d->storage == AX_PROP_IN_SEMANTICS)
+               ? d
+               : NULL;
+}
+
+/* The own value's address and whether it is set, in the text or semantics component. */
+static unsigned char *own_value(const ax_scene *scene, ax_node node, const ax_prop_desc *d,
+                                uint32_t **out_own, uint32_t *out_bit)
+{
+    if (d->storage == AX_PROP_IN_SEMANTICS) {
+        ax_node_semantics *m = ax_scene_semantics(scene, node);
+        if (m == NULL) {
+            return NULL;
+        }
+        *out_own = &m->own;
+        *out_bit = AX_SEMANTICS_BIT(d->id);
+        return (unsigned char *)m + d->offset;
+    } else {
+        ax_node_text *t = ax_scene_text(scene, node);
+        if (t == NULL) {
+            return NULL;
+        }
+        *out_own = &t->own;
+        *out_bit = AX_TEXT_PROP_BIT(d->id);
+        return (unsigned char *)t + d->offset;
+    }
+}
+
+ax_node_semantics *ax_scene_semantics(const ax_scene *scene, ax_node node)
+{
+    return (ax_node_semantics *)ax_node_store_get_component(&scene->store, node,
+                                                            scene->semantics_component);
 }
 
 ax_result ax_scene_get_own(const ax_scene *scene, ax_node node, ax_prop prop, ax_value *out,
                            bool *out_set)
 {
     const ax_prop_desc *d = text_desc(scene, prop);
-    const ax_node_text *t;
+    unsigned char *at;
+    uint32_t *own = NULL, bit = 0;
     memset(out, 0, sizeof *out);
     *out_set = false;
     if (d == NULL) {
-        return ax_set_error(AX_ERR_INVALID_ARGUMENT, "property 0x%x is not a text property",
-                            (unsigned)prop);
+        return ax_set_error(AX_ERR_INVALID_ARGUMENT,
+                            "property 0x%x is not a text or semantic property", (unsigned)prop);
     }
     if (ax_node_store_row(&scene->store, node) == AX_NODE_NONE) {
         return AX_ERR_INVALID_HANDLE;
     }
-    t = ax_scene_text(scene, node);
-    if (t == NULL || (t->own & AX_TEXT_PROP_BIT(prop)) == 0) {
+    at = own_value(scene, node, d, &own, &bit);
+    if (at == NULL || (*own & bit) == 0) {
         *out = d->default_value;
         return AX_OK;
     }
     *out_set = true;
-    memcpy(out, (const unsigned char *)t + d->offset, value_size(d->type));
+    memcpy(out, at, value_size(d->type));
     return AX_OK;
 }
 
 ax_result ax_scene_unset(ax_scene *scene, ax_node node, ax_prop prop)
 {
     const ax_prop_desc *d = text_desc(scene, prop);
-    ax_node_text *t;
+    unsigned char *at;
+    uint32_t *own = NULL, bit = 0;
     if (d == NULL) {
-        return ax_set_error(AX_ERR_INVALID_ARGUMENT, "property 0x%x is not a text property",
-                            (unsigned)prop);
+        return ax_set_error(AX_ERR_INVALID_ARGUMENT,
+                            "property 0x%x is not a text or semantic property", (unsigned)prop);
     }
     if (ax_node_store_row(&scene->store, node) == AX_NODE_NONE) {
         return AX_ERR_INVALID_HANDLE;
     }
-    t = ax_scene_text(scene, node);
-    if (t == NULL || (t->own & AX_TEXT_PROP_BIT(prop)) == 0) {
+    at = own_value(scene, node, d, &own, &bit);
+    if (at == NULL || (*own & bit) == 0) {
         return AX_OK;
     }
-    t->own &= ~AX_TEXT_PROP_BIT(prop);
+    *own &= ~bit;
     if (d->type == AX_VALUE_STRING) {
-        const ax_shared_str **slot = (const ax_shared_str **)(void *)((unsigned char *)t + d->offset);
+        const ax_shared_str **slot = (const ax_shared_str **)(void *)at;
         ax_shared_str_release(*slot);
         *slot = NULL;
         if (prop == AX_PROP_TEXT) {
-            t->paragraph_stale = true;
+            ax_scene_text(scene, node)->paragraph_stale = true;
         }
+    } else if (d->storage == AX_PROP_IN_SEMANTICS) {
+        memcpy(at, &d->default_value, value_size(d->type));
     }
     mark_set(scene, node, d);
     return AX_OK;

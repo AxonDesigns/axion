@@ -22,7 +22,8 @@ ax_target_defaults(ax_runtime)
 
 # The platform presenter: windows presented on the render thread with a renderer (decision 78).
 if(AX_BUILD_PLATFORM)
-    target_sources(ax_runtime PRIVATE src/platform.c)
+    target_sources(ax_runtime PRIVATE src/platform.c src/a11y_bridge.c)
+    target_compile_definitions(ax_runtime PRIVATE AX_RUNTIME_HAVE_PLATFORM=1)
     target_link_libraries(ax_runtime PUBLIC ax_platform ax_render_frame ax_render_soft)
     if(AX_BUILD_GPU)
         target_link_libraries(ax_runtime PUBLIC ax_render_wgpu)
