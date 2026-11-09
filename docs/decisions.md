@@ -118,7 +118,7 @@ new entry that points back to the old one.
 | 102 | Layout animations end on the pixel grid                  | Approved       |
 | 103 | The handshake bound with text; m1_nodes builds again     | Approved       |
 | 104 | Animations keep running while a window is resized        | Approved       |
-| 105 | A rest is not a missed refresh (issue #15)               | Implementation |
+| 105 | A rest is not a missed refresh (issue #15)               | Approved       |
 
 ---
 
