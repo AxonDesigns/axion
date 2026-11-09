@@ -12,6 +12,7 @@
 #include <axion/base/ax_assert.h>
 #include <axion/base/ax_error_set.h>
 #include <axion/base/ax_memory.h>
+#include <axion/core/ax_a11y.h>
 #include <axion/core/ax_prop_registry.h>
 #include <axion/core/ax_text_node.h>
 #include <axion/text/ax_text.h>
@@ -120,6 +121,25 @@
      .offset = TEXT_AT(field_),                       \
      .min_value = 0.0f,                               \
      .max_value = (float)(max_)}
+
+/* Semantic properties (decision 108), in the semantics component (ax_node_semantics). */
+#define SEM_AT(field_) ((uint32_t)offsetof(ax_node_semantics, field_))
+#define SEM(id_, name_, type_, field_)  \
+    {.id = (id_),                       \
+     .name = (name_),                   \
+     .type = (type_),                   \
+     .effect = AX_EFFECT_SEMANTICS,     \
+     .storage = AX_PROP_IN_SEMANTICS,   \
+     .offset = SEM_AT(field_)}
+#define SEM_RANGE(id_, name_, type_, field_, min_, max_) \
+    {.id = (id_),                                        \
+     .name = (name_),                                    \
+     .type = (type_),                                    \
+     .effect = AX_EFFECT_SEMANTICS,                      \
+     .storage = AX_PROP_IN_SEMANTICS,                    \
+     .offset = SEM_AT(field_),                           \
+     .min_value = (min_),                                \
+     .max_value = (max_)}
 
 #define BORDER_AT(edge_) ((uint32_t)(offsetof(ax_node_style, border) + sizeof(float) * (edge_)))
 
@@ -261,12 +281,31 @@ static const ax_prop_desc BUILTINS[] = {
      .storage = AX_PROP_IN_TEXT,
      .offset = TEXT_AT(color),
      .default_value = {.color = {0.0f, 0.0f, 0.0f, 1.0f}}},
+    /* Semantics (decision 108): in the semantics component. TEXT_RUN is the tree's own role. */
+    SEM_RANGE(AX_PROP_ROLE, "role", AX_VALUE_U32, role, 0.0f, (float)(AX_ROLE_LAST - 1)),
+    SEM(AX_PROP_LABEL, "label", AX_VALUE_STRING, label),
+    SEM(AX_PROP_DESCRIPTION, "description", AX_VALUE_STRING, description),
+    SEM(AX_PROP_TEST_ID, "test-id", AX_VALUE_STRING, test_id),
+    SEM(AX_PROP_VALUE_TEXT, "value-text", AX_VALUE_STRING, value_text),
+    SEM_RANGE(AX_PROP_VALUE, "value", AX_VALUE_F32, value, -FLT_MAX, FLT_MAX),
+    SEM_RANGE(AX_PROP_VALUE_MIN, "value-min", AX_VALUE_F32, value_min, -FLT_MAX, FLT_MAX),
+    SEM_RANGE(AX_PROP_VALUE_MAX, "value-max", AX_VALUE_F32, value_max, -FLT_MAX, FLT_MAX),
+    SEM_RANGE(AX_PROP_VALUE_STEP, "value-step", AX_VALUE_F32, value_step, 0.0f, FLT_MAX),
+    SEM(AX_PROP_DISABLED, "disabled", AX_VALUE_BOOL, disabled),
+    SEM(AX_PROP_HIDDEN, "hidden", AX_VALUE_BOOL, hidden),
+    SEM(AX_PROP_SELECTED, "selected", AX_VALUE_BOOL, selected),
+    SEM_RANGE(AX_PROP_CHECKED, "checked", AX_VALUE_U32, checked, 0.0f, (float)AX_TOGGLED_MIXED),
+    SEM_RANGE(AX_PROP_EXPANDED, "expanded", AX_VALUE_U32, expanded, 0.0f,
+              (float)AX_EXPANDED_EXPANDED),
+    SEM_RANGE(AX_PROP_ACTIONS, "actions", AX_VALUE_U32, actions, 0.0f, (float)AX_ACTION_ALL),
+    SEM_RANGE(AX_PROP_LEVEL, "level", AX_VALUE_U32, level, 0.0f, 9.0f),
 };
 
 enum { BUILTIN_COUNT = (int)(sizeof BUILTINS / sizeof BUILTINS[0]) };
 
 /* Built-in ids must stay inside the core range, sorted, for the binary search. */
-AX_STATIC_ASSERT(AX_PROP_COLOR < AX_PROP_FIRST_IDL, "built-in ids are core ids");
+AX_STATIC_ASSERT(AX_PROP_LEVEL < AX_PROP_FIRST_IDL, "built-in ids are core ids");
+AX_STATIC_ASSERT(AX_SEMANTICS_LAST - AX_SEMANTICS_FIRST < 32, "one own bit per semantic property");
 
 const ax_prop_desc *ax_prop_registry_builtins(uint32_t *out_count)
 {
@@ -348,7 +387,7 @@ static bool valid_type(ax_value_type t)
 
 static bool valid_effect(ax_effect_class e)
 {
-    return e >= AX_EFFECT_LAYOUT && e <= AX_EFFECT_COMPOSITE;
+    return e >= AX_EFFECT_LAYOUT && e <= AX_EFFECT_SEMANTICS;
 }
 
 ax_result ax_prop_registry_register(ax_prop_registry *reg, ax_node_store *store,

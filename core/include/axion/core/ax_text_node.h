@@ -77,12 +77,14 @@ AX_API uint32_t ax_scene_resolve_styles(struct ax_scene *scene);
 /* The node's text component, or NULL. */
 AX_API ax_node_text *ax_scene_text(const struct ax_scene *scene, ax_node node);
 
-/* A text property's own value and whether the node set it (an inherited property it did not set
- * reads as unset with the default). String values are borrowed. For undoing a change. */
+/* A text or semantic property's own value and whether the node set it (an inherited property it
+ * did not set reads as unset with the default). String values are borrowed. For undoing a
+ * change. */
 AX_API ax_result ax_scene_get_own(const struct ax_scene *scene, ax_node node, ax_prop prop,
                                   ax_value *out, bool *out_set);
 
-/* Clears the node's own value of a text property (it inherits again), marking as a set would. */
+/* Clears the node's own value of a text property (it inherits again) or a semantic property (an
+ * optional number is none again), marking as a set would. */
 AX_API ax_result ax_scene_unset(struct ax_scene *scene, ax_node node, ax_prop prop);
 
 /* As ax_scene_set for a string property, from bytes (copied into a shared string). */

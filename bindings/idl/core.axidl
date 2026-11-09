@@ -28,7 +28,7 @@ module core {
     enum unit : u32 { auto = 0; points = 1; percent = 2; }
     enum value_type : u32 { f32 = 1; dimension = 2; vec2 = 3; color = 4; transform2d = 5;
                             u32 = 6; bool = 7; str = 8; }
-    enum effect_class : u32 { layout = 1; paint = 2; composite = 3; }
+    enum effect_class : u32 { layout = 1; paint = 2; composite = 3; semantics = 4; }
     enum transition_kind : u32 { none = 1; timing = 2; spring = 3; decay = 4; default = 5; }
     enum easing : u32 { cubic_bezier = 0; steps = 1; linear = 2; }
     enum step_position : u32 { jump_end = 0; jump_start = 1; jump_none = 2; jump_both = 3; }
@@ -46,6 +46,17 @@ module core {
     // Text enumerations (decision 99).
     enum font_style_value : u32 { normal = 0; italic = 1; }
     enum text_align_value : u32 { start = 0; center = 1; end = 2; }
+    // Semantic enumerations (decision 108).
+    enum role : u32 { none = 0; generic = 1; window = 2; group = 3; label = 4; heading = 5;
+                      paragraph = 6; button = 7; link = 8; image = 9; checkbox = 10; switch = 11;
+                      radio = 12; slider = 13; progress = 14; text_input = 15; list = 16;
+                      list_item = 17; article = 18; dialog = 19; toolbar = 20; tab_list = 21;
+                      tab = 22; tab_panel = 23; menu = 24; menu_item = 25; scroll_view = 26;
+                      separator = 27; text_run = 28; }
+    enum toggled : u32 { none = 0; false = 1; true = 2; mixed = 3; }
+    enum expanded : u32 { none = 0; collapsed = 1; expanded = 2; }
+    flags actions : u32 { focus = 0x1; default = 0x2; set_value = 0x4; increment = 0x8;
+                          decrement = 0x10; }
     flags prop_flags : u32 { inherited = 0x1; animatable = 0x2; shorthand = 0x4; }
 
     struct dimension { f32 value; unit unit; }
@@ -199,6 +210,23 @@ module core {
         0x0409  text_align                   : text_align_value paint [inherited] default(start);
         0x040A  color                        : color       paint      [inherited, animatable]
                 default(rgba(0, 0, 0, 1));
+        // Semantics (decision 108): the accessibility tree only.
+        0x0501  role                         : role        semantics  default(none);
+        0x0502  label                        : str         semantics;
+        0x0503  description                  : str         semantics;
+        0x0504  test_id                      : str         semantics;
+        0x0505  value_text                   : str         semantics;
+        0x0506  value                        : f32         semantics  [optional];
+        0x0507  value_min                    : f32         semantics  [optional];
+        0x0508  value_max                    : f32         semantics  [optional];
+        0x0509  value_step                   : f32         semantics  [optional] min(0);
+        0x050A  disabled                     : bool        semantics;
+        0x050B  hidden                       : bool        semantics;
+        0x050C  selected                     : bool        semantics;
+        0x050D  checked                      : toggled     semantics  default(none);
+        0x050E  expanded                     : expanded    semantics  default(none);
+        0x050F  actions                      : actions     semantics;
+        0x0510  level                        : u32         semantics  range(0, 9);
     }
     const u32 prop_max_string = 1048576;  // bytes
 

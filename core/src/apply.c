@@ -201,7 +201,7 @@ static void push_undo_set(apply_state *st, ax_node node, const ax_prop_desc *d)
     undo_entry *u = push_undo(st, UNDO_SET, node);
     u->prop = d->id;
     u->type = (uint32_t)d->type;
-    if (d->storage == AX_PROP_IN_TEXT) {
+    if (d->storage == AX_PROP_IN_TEXT || d->storage == AX_PROP_IN_SEMANTICS) {
         bool was_set = false;
         (void)ax_scene_get_own(st->scene, node, d->id, &u->value, &was_set);
         u->reserved = was_set ? UNDO_WAS_SET : 0u;
@@ -347,7 +347,8 @@ static void undo_all(apply_state *st)
             break;
         case UNDO_SET:
             if (ax_prop_builtin(u->prop) != NULL &&
-                ax_prop_builtin(u->prop)->storage == AX_PROP_IN_TEXT &&
+                (ax_prop_builtin(u->prop)->storage == AX_PROP_IN_TEXT ||
+                 ax_prop_builtin(u->prop)->storage == AX_PROP_IN_SEMANTICS) &&
                 (u->reserved & UNDO_WAS_SET) == 0) {
                 r = ax_scene_unset(scene, u->node, u->prop);
             } else {

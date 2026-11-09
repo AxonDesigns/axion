@@ -17,6 +17,7 @@ set(_ax_core_tests
     test_mirror.c
     test_node_store.c
     test_props.c
+    test_semantics.c
     test_text_layout.c
     test_text_style.c
     test_txn.c)

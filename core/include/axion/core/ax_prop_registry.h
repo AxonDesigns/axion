@@ -55,8 +55,10 @@ typedef enum ax_prop_storage {
     AX_PROP_IN_COMPOSITE = 3, /* ax_node_store.composite */
     AX_PROP_IN_COMPONENT = 4, /* a side component holding one ax_value */
     AX_PROP_EXPANDS = 5,      /* a shorthand: no storage, sets its longhands */
-    AX_PROP_IN_TEXT = 6       /* the scene's text component (ax_node_text), at `offset`; a node
+    AX_PROP_IN_TEXT = 6,      /* the scene's text component (ax_node_text), at `offset`; a node
                                * gets it when it first sets a text property (decision 99) */
+    AX_PROP_IN_SEMANTICS = 7  /* the scene's semantics component (ax_node_semantics), at
+                               * `offset`, with a bit per property set (decision 108) */
 } ax_prop_storage;
 
 #define AX_PROP_MAX_LONGHANDS 4u

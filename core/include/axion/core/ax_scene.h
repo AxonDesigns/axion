@@ -81,6 +81,8 @@ typedef struct ax_scene {
     ax_component_type anim_component;        /* a node's running animations */
     /* Text (decision 99): ax_node_text (ax_text_node.h). */
     ax_component_type text_component;
+    /* Semantics (decision 108): ax_node_semantics (ax_a11y.h). */
+    ax_component_type semantics_component;
     uint32_t style_pass; /* the newest style pass */
     uint32_t layout_pass;                    /* the newest pass */
     uint32_t present_pass;                   /* the newest presentation pass (ax_layout_present) */
