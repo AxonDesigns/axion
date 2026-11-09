@@ -4007,8 +4007,17 @@ protocols, flex first, so grid, stack and custom layouts enter later without tou
   root's pixel scale (`ax_world_set_root_viewport` gains the surface's scale; 1 for other trees),
   using `floor`, which is exact everywhere, so frames are the same bits on every platform. The
   unrounded results stay in `ax_node_layout`; rounding descends only into nodes laid out in this
-  pass or whose absolute position moved. Intermediate frames of layout animations (M1's next PR)
-  are not rounded.
+  pass, whose absolute position moved, or rounded at another scale. Intermediate frames of layout
+  animations (M1's next PR) are not rounded.
+  - **A frame is rounded for the scale it was laid out at** (note added with commit 2004b29): each
+    box records that scale (`ax_node_layout.rounded_scale`), and a scale change re-rounds every
+    frame of the tree. A window moved to a monitor of another scale keeps its logical size, so
+    every cached layout still answers and nothing is laid out again; before the fix, rounding only
+    reached the nodes laid out in the pass, and every other frame stayed on the old monitor's grid,
+    between device pixels (blurry text and card edges), until an animation laid it out again. The
+    extra work happens only on a scale change; otherwise it is one comparison per node visited.
+    Test: `core.layout.a_new_scale_rounds_every_frame_to_its_grid` (scale 1 to 1.325, with only
+    the root marked, as `ax_world_set_root_viewport` does: every edge lands on a device pixel).
 - **Output.** The rounded frame goes to the store's layout column; changed frames are reported
   once the pass ends (the frame stage touches the mirror, decision 69's channel), listed through
   the layout column so frame jobs allocate nothing.
@@ -4023,16 +4032,20 @@ protocols, flex first, so grid, stack and custom layouts enter later without tou
     measured sizes it caches by key live in its side component.
 - **Counters** (`ax_layout_get_counters`): passes, roots, parallel roots, nodes laid out and
   measured, cache answers, measure calls, changed frames.
-- **Hot bytes per node** (x86-64, a reference for M2's virtualization): 666 = style 208, layout
-  352 (of which the measurement cache, the cached layout and the last request take 200), paint 32,
+- **Hot bytes per node** (x86-64, a reference for M2's virtualization): 698 = style 208, layout
+  384 (of which the measurement cache, the cached layout and the last request take 200), paint 32,
   composite 28, links 20, kind, dirty flags, component mask and row-to-slot 14, and the slot
-  table's 12. The mirror adds 104 bytes in each of its three copies.
+  table's 12. The mirror adds 104 bytes in each of its three copies. Updated with commit 2004b29:
+  the figure was 666 with layout at 352; decision 94's animation fields (the previous frame and
+  parent, the frame's parent, `had_frame`, the changed list's link) added 32 bytes, and
+  `rounded_scale` took 4 bytes of the struct's tail padding, so it costs nothing (measured with
+  `sizeof`, before and after).
 - **Changes elsewhere:** scenes placed by insets (tests, the headless golden scene, `m1_nodes`) set
   `POSITION` absolute, which gives the frames decision 76 gave; the headless golden changed only
   where frames now land on whole pixels (a 0.5-point hairline), updated on purpose (decision 82).
 - **Tests** (`tests/unit/core/test_layout.c`): a growing row, a column with padding and gap,
   centring, absolute insets, percentages, display none, rounding at scale 2 (33.33 points become
-  33.5, 33 and 33.5), a measure function wrapping and cached, the pass reporting only changed
+  33.5, 33 and 33.5) and again after a scale change, a measure function wrapping and cached, the pass reporting only changed
   frames, and the boundary and parallel tests of decision 92.
 
 **Status.** Approved by the owner.
